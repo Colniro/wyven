@@ -38,10 +38,6 @@ impl InputLatency {
         self.samples.back().copied()
     }
 
-    pub fn max(&self) -> Option<Duration> {
-        self.samples.iter().max().copied()
-    }
-
     pub fn average(&self) -> Option<Duration> {
         let n = self.samples.len() as u32;
         (n > 0).then(|| self.samples.iter().sum::<Duration>() / n)

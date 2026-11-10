@@ -6,9 +6,11 @@
 
 use std::sync::Arc;
 
-pub use glyphon::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping};
-/// Background clear color. Components are in *linear* space (the surface is sRGB).
-pub use wgpu::Color as ClearColor;
+mod quad;
+
+pub use glyphon::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Wrap};
+pub use quad::{Quad, Rgba};
+use quad::QuadPipeline;
 use glyphon::{
     Cache, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
@@ -19,7 +21,57 @@ pub struct TextBlock<'a> {
     pub buffer: &'a Buffer,
     pub x: f32,
     pub y: f32,
-    pub color: Color,
+    /// Color for spans without their own color.
+    pub color: Rgba,
+    /// Clip rectangle (left, top, right, bottom); `None` = whole window.
+    pub clip: Option<[i32; 4]>,
+}
+
+/// Everything to draw in one frame, back to front.
+pub struct Scene<'a> {
+    pub background: Rgba,
+    /// Rectangles behind the text (panels, selection, current line).
+    pub under: &'a [Quad],
+    pub text: &'a [TextBlock<'a>],
+    /// Rectangles in front of the text (cursors).
+    pub over: &'a [Quad],
+    /// Floating boxes (menus, popups): drawn last, above everything else.
+    pub overlay: &'a [Quad],
+    pub overlay_text: &'a [TextBlock<'a>],
+}
+
+/// Picks the first installed monospace font of a preference list.
+pub fn pick_monospace_family(font_system: &FontSystem) -> Option<String> {
+    const PREFERRED: &[&str] = &[
+        "Cascadia Mono",
+        "Cascadia Code",
+        "JetBrains Mono",
+        "Consolas",
+        "DejaVu Sans Mono",
+        "Liberation Mono",
+        "Noto Sans Mono",
+    ];
+    let db = font_system.db();
+    PREFERRED
+        .iter()
+        .find(|name| {
+            db.faces()
+                .any(|f| f.families.iter().any(|(fam, _)| fam.eq_ignore_ascii_case(name)))
+        })
+        .map(|s| s.to_string())
+}
+
+/// Width of one character cell for a monospace font.
+pub fn measure_cell_width(font_system: &mut FontSystem, metrics: Metrics, attrs: &Attrs) -> f32 {
+    let mut buffer = Buffer::new(font_system, metrics);
+    buffer.set_size(None, None);
+    buffer.set_text("MMMMMMMMMM", attrs, Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+    buffer
+        .layout_runs()
+        .next()
+        .map(|run| run.line_w / 10.0)
+        .unwrap_or(metrics.font_size * 0.6)
 }
 
 /// Information about the GPU, shown in the debug overlay.
@@ -43,6 +95,8 @@ pub struct Renderer {
     viewport: Viewport,
     atlas: TextAtlas,
     text_renderer: TextRenderer,
+    overlay_text_renderer: TextRenderer,
+    quads: QuadPipeline,
 
     // Keep the window last so it is dropped after the surface.
     window: Arc<Window>,
@@ -159,8 +213,13 @@ impl Renderer {
         let mut atlas = TextAtlas::new(&device, &queue, &cache, format);
         let text_renderer =
             TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
+        let overlay_text_renderer =
+            TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
+
+        let quads = QuadPipeline::new(&device, format);
 
         Self {
+            quads,
             instance,
             device,
             queue,
@@ -172,6 +231,7 @@ impl Renderer {
             viewport,
             atlas,
             text_renderer,
+            overlay_text_renderer,
             window,
         }
     }
@@ -184,6 +244,10 @@ impl Renderer {
         &self.gpu_info
     }
 
+    pub fn scale_factor(&self) -> f32 {
+        self.window.scale_factor() as f32
+    }
+
     pub fn size(&self) -> (u32, u32) {
         (self.config.width, self.config.height)
     }
@@ -194,40 +258,57 @@ impl Renderer {
         }
         self.config.width = width;
         self.config.height = height;
+        // wgpu's OpenGL backend on Windows keeps drawing at the old size after a resize
+        // (seen right after start, when Windows applies the DPI scale). A fresh surface fixes it.
+        if self.gpu_info.backend == "Gl" {
+            match self.instance.create_surface(self.window.clone()) {
+                Ok(surface) => self.surface = surface,
+                Err(e) => log::warn!("recreating GL surface failed: {e}"),
+            }
+        }
         self.surface.configure(&self.device, &self.config);
     }
 
     /// Draws one frame. Returns `false` if the frame was skipped and should be retried.
-    pub fn draw(&mut self, background: ClearColor, blocks: &[TextBlock<'_>]) -> bool {
+    pub fn draw(&mut self, scene: &Scene<'_>) -> bool {
         let (width, height) = self.size();
         self.viewport
             .update(&self.queue, Resolution { width, height });
-
-        let areas = blocks.iter().map(|b| TextArea {
-            buffer: b.buffer,
-            left: b.x,
-            top: b.y,
-            scale: 1.0,
-            bounds: TextBounds {
-                left: 0,
-                top: 0,
-                right: width as i32,
-                bottom: height as i32,
-            },
-            default_color: b.color,
-            custom_glyphs: &[],
-        });
-        if let Err(e) = self.text_renderer.prepare(
+        let ranges = self.quads.prepare(
             &self.device,
             &self.queue,
-            &mut self.font_system,
-            &mut self.atlas,
-            &self.viewport,
-            areas,
-            &mut self.swash_cache,
-        ) {
-            log::error!("text prepare failed: {e}");
-            return false;
+            (width, height),
+            &[scene.under, scene.over, scene.overlay],
+        );
+        fn to_area<'a>(b: &TextBlock<'a>, width: u32, height: u32) -> TextArea<'a> {
+            let [left, top, right, bottom] =
+                b.clip.unwrap_or([0, 0, width as i32, height as i32]);
+            TextArea {
+                buffer: b.buffer,
+                left: b.x,
+                top: b.y,
+                scale: 1.0,
+                bounds: TextBounds { left, top, right, bottom },
+                default_color: b.color.to_glyphon(),
+                custom_glyphs: &[],
+            }
+        }
+        for (renderer, blocks) in [
+            (&mut self.text_renderer, scene.text),
+            (&mut self.overlay_text_renderer, scene.overlay_text),
+        ] {
+            if let Err(e) = renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                blocks.iter().map(|b| to_area(b, width, height)),
+                &mut self.swash_cache,
+            ) {
+                log::error!("text prepare failed: {e}");
+                return false;
+            }
         }
 
         let frame = match self.surface.get_current_texture() {
@@ -264,7 +345,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(background),
+                        load: wgpu::LoadOp::Clear(scene.background.to_clear()),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -273,11 +354,20 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            self.quads.render(&mut pass, ranges[0].clone());
             if let Err(e) = self
                 .text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)
             {
                 log::error!("text render failed: {e}");
+            }
+            self.quads.render(&mut pass, ranges[1].clone());
+            self.quads.render(&mut pass, ranges[2].clone());
+            if let Err(e) = self
+                .overlay_text_renderer
+                .render(&self.atlas, &self.viewport, &mut pass)
+            {
+                log::error!("overlay text render failed: {e}");
             }
         }
 

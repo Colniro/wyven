@@ -10,6 +10,25 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 wyvern-render = { path = "crates/wyvern-render" }
+wyvern-buffer = { path = "crates/wyvern-buffer" }
+wyvern-syntax = { path = "crates/wyvern-syntax" }
+
+ropey = "1.6"
+unicode-width = "0.2"
+arboard = "3.7"
+rfd = "0.18"
+tree-sitter = "0.27"
+tree-sitter-language = "0.1"
+streaming-iterator = "0.1"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.25"
+tree-sitter-json = "0.24"
+tree-sitter-md = "0.5"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-rust = "0.24"
 
 wgpu = "30"
 glyphon = "0.12"

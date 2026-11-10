@@ -12,6 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 wyvern-render.workspace = true
+wyvern-buffer.workspace = true
+wyvern-syntax.workspace = true
+arboard.workspace = true
+rfd.workspace = true
 winit.workspace = true
 pollster.workspace = true
 memory-stats.workspace = true
