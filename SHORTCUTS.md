@@ -32,7 +32,10 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 | `Strg+S` | Speichern |
 | `Strg+A` | Alles auswählen |
 | `Strg+F` / `Strg+H` | Suchen / Ersetzen in der Datei |
-| `Strg+Shift+F` | In allen Dateien suchen (wie VS) |
+| `F3` / `Shift+F3` | Nächster / vorheriger Treffer |
+| `Alt+C` / `Alt+W` / `Alt+E` | Im Suchfeld: Groß/Klein, ganzes Wort, Regex (wie VS) |
+| `Alt+R` / `Alt+A` | Im Suchfeld: ersetzen / alle ersetzen (wie VS) |
+| `Strg+Shift+F` / `Strg+Shift+H` | In allen Dateien suchen / ersetzen (wie VS) |
 | `Strg+Q` | **Zentrales Suchfeld**: Dateien; `>` Befehle, `@` Symbole, `:` Zeile, `,` Einstellungen |
 | `Strg+G` | Gehe zu Zeile (wie VS) |
 | `Strg++` / `Strg+-` / `Strg+0` | Schrift größer / kleiner / zurücksetzen *(Vorschlag)* |

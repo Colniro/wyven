@@ -44,7 +44,7 @@ use Action::*;
 const ROOT: &[Item] = &[
     item('e', "Explorer ein/aus", ToggleExplorer),
     item('t', "Terminal", ToggleTerminal),
-    item('s', "Suche", Later("Die Suche kommt in Phase 2")),
+    item('s', "Suche im Projekt", Run(Command::ProjectSearch { replace: false })),
     item('g', "git …", Group("g")),
     item('d', "debug …", Group("d")),
     item('j', "jump …", Group("j")),

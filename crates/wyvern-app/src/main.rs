@@ -11,6 +11,7 @@ mod completion;
 mod config;
 mod editor;
 mod explorer;
+mod find;
 mod help;
 mod index;
 mod keymap;
@@ -20,6 +21,7 @@ mod menu;
 mod metrics;
 mod palette;
 mod popup;
+mod search_panel;
 mod settings;
 mod terminal;
 mod theme;
@@ -62,6 +64,7 @@ const HOVER_DELAY: Duration = Duration::from_millis(600);
 enum UserEvent {
     Lsp,
     Terminal,
+    Search,
 }
 
 /// Startup profiling: logs elapsed time and RAM after each startup stage.
@@ -103,6 +106,14 @@ enum Focus {
     Editor,
     Explorer,
     Terminal,
+    Search,
+}
+
+/// What the left sidebar shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sidebar {
+    Explorer,
+    Search,
 }
 
 enum Overlay {
@@ -186,6 +197,10 @@ struct State {
     settings_mtime: Option<std::time::SystemTime>,
     terminal: terminal::TerminalPanel,
     terminal_visible: bool,
+    find: find::FindBar,
+    find_labels: find::ToggleLabels,
+    search: search_panel::SearchPanel,
+    sidebar: Sidebar,
 
     latency: InputLatency,
     started: Instant,
@@ -324,6 +339,10 @@ impl ApplicationHandler<UserEvent> for App {
             match event {
                 UserEvent::Lsp => state.lsp_poll(),
                 UserEvent::Terminal => state.terminal_poll(),
+                UserEvent::Search => {
+                    state.search.poll();
+                    state.window.request_redraw();
+                }
             }
         }
     }
@@ -342,6 +361,15 @@ impl ApplicationHandler<UserEvent> for App {
         let mut wake = state.next_stats;
         if let Some(t) = state.lsp_tick(now) {
             wake = wake.min(t);
+        }
+        let proxy = state.proxy.clone();
+        let was_due = state.search.due.is_some();
+        match state.search.start_if_due(now, move || {
+            let _ = proxy.send_event(UserEvent::Search);
+        }) {
+            Some(t) => wake = wake.min(t),
+            None if was_due => state.window.request_redraw(),
+            None => {}
         }
         if matches!(state.overlay, Overlay::Palette) && state.palette.waiting_for_index {
             if state.index.files().is_some() {
@@ -423,6 +451,10 @@ impl State {
         let popup = Popup::new(fs, ui_font);
         let palette = Palette::new(fs, ui_font);
         let terminal_panel = terminal::TerminalPanel::new(fs, font, ui_font, family.clone());
+        let find_bar = find::FindBar::new(fs, ui_font);
+        let initial_theme = Theme::by_name(&settings.theme).unwrap_or_else(Theme::dark);
+        let find_labels = find::ToggleLabels::new(fs, ui_font, &family, &initial_theme);
+        let search = search_panel::SearchPanel::new(fs, ui_font, family.clone());
 
         let mut state = Self {
             window,
@@ -461,6 +493,10 @@ impl State {
             settings_mtime: settings::modified(),
             terminal: terminal_panel,
             terminal_visible: false,
+            find: find_bar,
+            find_labels,
+            search,
+            sidebar: Sidebar::Explorer,
             proxy,
             lsp: None,
             lsp_failed: false,
@@ -497,7 +533,7 @@ impl State {
         let (w, h) = (w as f32, h as f32);
         let status_h = (self.ui_font.line_h * 1.25).round();
         let tabs_h = (self.ui_font.line_h * 1.6).round();
-        let explorer_w = if self.explorer.is_some() && self.explorer_visible {
+        let explorer_w = if (self.explorer.is_some() || self.sidebar == Sidebar::Search) && self.explorer_visible {
             (self.settings.ui.explorer_width * self.ui_font.cell_w).min(w * 0.4).round()
         } else {
             0.0
@@ -527,6 +563,9 @@ impl State {
         if let (Some(ex), Some(r)) = (&mut self.explorer, self.layout.explorer) {
             ex.set_area(r);
         }
+        if let Some(r) = self.layout.explorer {
+            self.search.set_area(r);
+        }
         self.window.request_redraw();
     }
 
@@ -548,6 +587,9 @@ impl State {
         self.popup.set_font(ui);
         self.palette.set_font(ui);
         self.terminal.set_font(font, ui);
+        self.find.set_font(ui);
+        self.find_labels.set_font(ui);
+        self.search.set_font(ui);
         let m = Metrics::new(ui.size, ui.line_h);
         for b in [&mut self.status_left, &mut self.status_right, &mut self.tab_bar] {
             b.set_metrics(m);
@@ -882,6 +924,14 @@ impl State {
         self.tooltip = None;
         if self.focus == Focus::Terminal && self.terminal_visible {
             self.terminal_key(event);
+            return;
+        }
+        if self.focus == Focus::Search && self.explorer_visible && self.sidebar == Sidebar::Search {
+            self.search_key(event);
+            return;
+        }
+        if self.focus == Focus::Editor && self.find.open && self.find.focused {
+            self.find_key(event);
             return;
         }
         if self.focus == Focus::Editor && !mods.control_key() && !mods.alt_key()
@@ -1556,6 +1606,8 @@ impl State {
     fn set_theme(&mut self, name: &str) {
         let Some(theme) = Theme::by_name(name) else { return };
         self.terminal.dirty = true;
+        let fs = self.renderer.font_system();
+        self.find_labels.set(fs, &self.family, &theme);
         let display = theme.display_name();
         self.theme = theme;
         self.settings.theme = name.to_string();
@@ -1642,6 +1694,173 @@ impl State {
         }
         self.terminal.dirty = true;
         self.window.request_redraw();
+    }
+
+    // ----- find and project search -----
+
+    fn find_key(&mut self, event: &KeyEvent) {
+        let mods = self.modifiers;
+        let key = event.key_without_modifiers();
+        let ctrl = mods.control_key() && !mods.alt_key();
+        if ctrl && matches!(&key, Key::Character(c) if c.as_str() == "v") {
+            if let Some((text, _)) = self.get_clipboard() {
+                self.find.paste(&text);
+            }
+            return;
+        }
+        let active = self.active;
+        self.find.refresh(active, &self.tabs[active].doc);
+        let action = self.find.key(event, mods, &mut self.tabs[active].doc);
+        // Typing in the field: jump to the first match after the cursor, like Visual Studio.
+        let typed = Keymap::text(event, mods).is_some() || key == Key::Named(NamedKey::Backspace);
+        self.apply_find_action(action);
+        if typed && self.find.open {
+            self.find.refresh(active, &self.tabs[active].doc);
+            if let Some(i) = self.find.current {
+                let (s, e) = self.find.matches[i];
+                let ed = &mut self.tabs[active];
+                ed.doc.set_selection(wyvern_buffer::Selection::single(wyvern_buffer::Range::new(s, e)));
+                ed.ensure_cursor_visible();
+            }
+        }
+    }
+
+    fn apply_find_action(&mut self, action: find::FindAction) {
+        match action {
+            find::FindAction::None => {}
+            find::FindAction::Select(s, e) => {
+                let ed = self.editor_mut();
+                ed.doc.set_selection(wyvern_buffer::Selection::single(wyvern_buffer::Range::new(s, e)));
+                ed.ensure_cursor_visible();
+            }
+            find::FindAction::Edited => {
+                let ed = self.editor_mut();
+                ed.after_edit();
+                ed.ensure_cursor_visible();
+                self.lsp_after_edit();
+                let active = self.active;
+                self.find.refresh(active, &self.tabs[active].doc);
+                let n = self.find.matches.len();
+                if n == 0 {
+                    self.show("Alle Treffer ersetzt");
+                }
+            }
+            find::FindAction::Close => {
+                self.find.close();
+            }
+        }
+    }
+
+    /// Strg+Shift+F: shows the search panel in the sidebar.
+    fn open_search_panel(&mut self, replace: bool) {
+        let Some(root) = self.project_root().map(Path::to_path_buf) else {
+            self.show("Kein Ordner offen: Alt → p → o öffnet einen.");
+            return;
+        };
+        let prefill = find::FindBar::prefill_from(&self.editor().doc);
+        self.search.show(&root, replace, prefill);
+        self.sidebar = Sidebar::Search;
+        self.explorer_visible = true;
+        self.focus = Focus::Search;
+        self.relayout();
+    }
+
+    fn search_key(&mut self, event: &KeyEvent) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        if ctrl && matches!(&event.key_without_modifiers(), Key::Character(c) if c.as_str() == "v") {
+            if let Some((text, _)) = self.get_clipboard() {
+                self.search.paste(&text);
+            }
+            return;
+        }
+        let action = self.search.key(event, mods);
+        self.apply_panel_action(action);
+    }
+
+    fn apply_panel_action(&mut self, action: search_panel::PanelAction) {
+        match action {
+            search_panel::PanelAction::None => {}
+            search_panel::PanelAction::Close => {
+                self.sidebar = Sidebar::Explorer;
+                self.focus = Focus::Editor;
+                if self.explorer.is_none() {
+                    self.explorer_visible = false;
+                }
+                self.relayout();
+            }
+            search_panel::PanelAction::Open { path, line, column, len } => {
+                self.open_path(&path);
+                let ed = self.editor_mut();
+                if ed.doc.path() == Some(path.as_path()) {
+                    let rope = ed.doc.text();
+                    let line = line.min(rope.len_lines().saturating_sub(1));
+                    let start_byte = rope.line_to_byte(line) + column;
+                    let start = rope.byte_to_char(start_byte.min(rope.len_bytes()));
+                    let end = (start + len).min(rope.len_chars());
+                    ed.jump_to(start);
+                    ed.doc.set_selection(wyvern_buffer::Selection::single(wyvern_buffer::Range::new(start, end)));
+                }
+                // Keep the panel focused for quick browsing with arrows/Enter.
+                self.focus = Focus::Search;
+            }
+            search_panel::PanelAction::ReplaceAll => self.replace_in_project(),
+        }
+    }
+
+    /// Alt+A in the search panel: replaces in all files with matches. Open files are changed in
+    /// the editor (undo works), all other files are changed and saved right away.
+    fn replace_in_project(&mut self) {
+        let query = self.search.query.clone();
+        let Ok(Some(re)) = query.compile() else { return };
+        let replacement = self.search.replacement.clone();
+        let paths: Vec<PathBuf> = self.search.results.iter().map(|f| f.path.clone()).collect();
+        let (mut count, mut in_editor, mut saved, mut failed) = (0, 0, 0, 0);
+        let changes_for = |doc: &Document| -> Vec<wyvern_buffer::Change> {
+            let rope = doc.text();
+            let text = rope.to_string();
+            wyvern_search::find_all(&re, &text)
+                .into_iter()
+                .map(|r| wyvern_buffer::Change {
+                    start: rope.byte_to_char(r.start),
+                    end: rope.byte_to_char(r.end),
+                    text: wyvern_search::replacement_for(&re, &query, &text[r.clone()], &replacement),
+                })
+                .collect()
+        };
+        for path in paths {
+            if let Some(i) = self.tab_for(&path) {
+                let changes = changes_for(&self.tabs[i].doc);
+                count += changes.len();
+                let ed = &mut self.tabs[i];
+                ed.doc.apply_changes(changes);
+                ed.after_edit();
+                let version = ed.doc.version();
+                if let Some(server) = &mut self.lsp {
+                    server.changed(&path, version);
+                }
+                in_editor += 1;
+            } else {
+                match Document::open(&path) {
+                    Ok(mut doc) => {
+                        let changes = changes_for(&doc);
+                        count += changes.len();
+                        doc.apply_changes(changes);
+                        if doc.save().is_ok() { saved += 1 } else { failed += 1 }
+                    }
+                    Err(_) => failed += 1,
+                }
+            }
+        }
+        let mut msg = format!("{count} Ersetzungen: {saved} Dateien gespeichert");
+        if in_editor > 0 {
+            msg.push_str(&format!(", {in_editor} offene Datei(en) geändert (Strg+S speichert)"));
+        }
+        if failed > 0 {
+            msg.push_str(&format!(", {failed} fehlgeschlagen"));
+        }
+        self.show(msg);
+        self.search.schedule();
     }
 
     // ----- search field -----
@@ -1757,6 +1976,13 @@ impl State {
         match action {
             Group(_) => {}
             ToggleExplorer => {
+                if self.sidebar == Sidebar::Search && self.explorer_visible {
+                    self.sidebar = Sidebar::Explorer;
+                    self.focus = Focus::Explorer;
+                    self.relayout();
+                    return;
+                }
+                self.sidebar = Sidebar::Explorer;
                 if self.explorer.is_none() {
                     self.show("Kein Ordner offen: Alt → p → o öffnet einen.");
                     return;
@@ -1766,6 +1992,7 @@ impl State {
                 self.relayout();
             }
             FocusExplorer => {
+                self.sidebar = Sidebar::Explorer;
                 if self.explorer.is_some() {
                     self.explorer_visible = true;
                     self.focus = Focus::Explorer;
@@ -1884,6 +2111,7 @@ impl State {
             Command::Collapse => {
                 ed.doc.collapse_to_primary();
                 self.message = None;
+                self.find.close();
             }
             Command::MoveLines(dir) => ed.doc.move_lines(dir),
             Command::DuplicateLines(dir) => ed.doc.duplicate_lines(dir),
@@ -1950,6 +2178,28 @@ impl State {
             Command::Format => {
                 follow_cursor = false;
                 self.request_format();
+            }
+            Command::Find { replace } => {
+                follow_cursor = false;
+                let prefill = find::FindBar::prefill_from(&self.editor().doc);
+                self.find.show(replace, prefill);
+                self.focus = Focus::Editor;
+            }
+            Command::FindNext { back } => {
+                follow_cursor = false;
+                if self.find.query.text.is_empty() {
+                    let prefill = find::FindBar::prefill_from(&self.editor().doc);
+                    self.find.show(false, prefill);
+                }
+                self.find.open = true;
+                let active = self.active;
+                self.find.refresh(active, &self.tabs[active].doc);
+                let action = self.find.step(&self.tabs[active].doc, !back);
+                self.apply_find_action(action);
+            }
+            Command::ProjectSearch { replace } => {
+                follow_cursor = false;
+                self.open_search_panel(replace);
             }
             Command::Rename => {
                 follow_cursor = false;
@@ -2070,8 +2320,21 @@ impl State {
             }
             return;
         }
+        if self.find.contains(x, y) {
+            self.find.click(x, y);
+            self.focus = Focus::Editor;
+            return;
+        }
+        if self.sidebar == Sidebar::Search && self.explorer_visible && self.search.contains(x, y) {
+            self.focus = Focus::Search;
+            if button == MouseButton::Left {
+                let action = self.search.click(y);
+                self.apply_panel_action(action);
+            }
+            return;
+        }
         if let Some(ex) = &mut self.explorer
-            && self.explorer_visible && ex.contains(x, y) {
+            && self.explorer_visible && self.sidebar == Sidebar::Explorer && ex.contains(x, y) {
                 self.focus = Focus::Explorer;
                 if button == MouseButton::Left
                     && let Some(i) = ex.row_at(y)
@@ -2085,6 +2348,7 @@ impl State {
             return;
         }
         self.focus = Focus::Editor;
+        self.find.focused = false;
         let pos = self.editor().hit_test(x, y);
         let now = Instant::now();
         let double = self
@@ -2126,6 +2390,11 @@ impl State {
                 t.scroll(dy.round() as i32);
             }
             self.terminal.dirty = true;
+            self.window.request_redraw();
+            return;
+        }
+        if self.sidebar == Sidebar::Search && self.explorer_visible && self.search.contains(x, y) {
+            self.search.scroll_by(-dy.round() as isize);
             self.window.request_redraw();
             return;
         }
@@ -2293,6 +2562,22 @@ impl State {
                 ex.prepare(self.renderer.font_system(), theme, active_path.as_deref());
             }
         }
+        if self.sidebar == Sidebar::Search && self.explorer_visible {
+            let focused = self.focus == Focus::Search;
+            self.search.prepare(self.renderer.font_system(), &self.theme, focused);
+        }
+        let active = self.active;
+        if self.find.open {
+            self.find.refresh(active, &self.tabs[active].doc);
+            self.tabs[active].find_matches = self.find.matches.clone();
+            self.tabs[active].find_current = self.find.current;
+            self.find.prepare(self.renderer.font_system(), &self.theme, &self.family);
+            let (editor_area, scale) = (self.layout.editor, self.renderer.scale_factor());
+            self.find.place(self.ui_font, editor_area, scale);
+        } else {
+            self.tabs[active].find_matches.clear();
+            self.tabs[active].find_current = None;
+        }
 
         let theme = &self.theme;
         let scale = self.renderer.scale_factor();
@@ -2303,9 +2588,12 @@ impl State {
         let mut text: Vec<TextBlock<'_>> = Vec::with_capacity(8);
         let mut overlay_text: Vec<TextBlock<'_>> = Vec::new();
 
-        if let (Some(ex), true) = (&self.explorer, self.explorer_visible) {
+        if self.explorer_visible && self.sidebar == Sidebar::Search {
+            self.search.draw(theme, self.focus == Focus::Search, &mut under, &mut text);
+        } else if let (Some(ex), true) = (&self.explorer, self.explorer_visible) {
             ex.draw(theme, self.focus == Focus::Explorer, &mut under, &mut text);
-            let r = l.explorer.unwrap_or_default();
+        }
+        if let Some(r) = l.explorer {
             under.push(Quad { x: r.x + r.w - 1.0, y: r.y, w: 1.0, h: r.h, color: theme.divider });
         }
 
@@ -2359,6 +2647,10 @@ impl State {
             self.popup.draw(theme, self.ui_font, s.w, s.y, &mut overlay, &mut overlay_text);
         }
         let window = (s.w, s.y + s.h);
+        if self.find.open {
+            self.find.draw(theme, self.ui_font, scale, &mut overlay, &mut overlay_text);
+            self.find_labels.draw(&self.find, self.ui_font, theme, &mut overlay_text);
+        }
         if let Some(c) = &self.completion {
             let ed = &self.tabs[self.active];
             let (x, y) = ed.screen_pos(c.anchor);

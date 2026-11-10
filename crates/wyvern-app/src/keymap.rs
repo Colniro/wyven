@@ -50,6 +50,12 @@ pub enum Command {
     QuickInfo,
     Rename,
     QuickActions,
+    /// Strg+F / Strg+H: find (and replace) in the file.
+    Find { replace: bool },
+    /// F3 / Shift+F3.
+    FindNext { back: bool },
+    /// Strg+Shift+F / Strg+Shift+H: search (and replace) in the project.
+    ProjectSearch { replace: bool },
     NextProblem,
     Scroll(isize),
     FontSize(i32),
@@ -147,6 +153,7 @@ impl Keymap {
                 NamedKey::F12 => GotoDefinition,
                 NamedKey::F2 => Rename,
                 NamedKey::F8 => NextProblem,
+                NamedKey::F3 => FindNext { back: shift },
                 NamedKey::Space if ctrl => TriggerCompletion,
                 _ => return None,
             },
@@ -176,7 +183,10 @@ impl Keymap {
                 ("q", false) => OpenPalette(""),
                 ("p", true) => OpenPalette(">"),
                 ("g", false) => OpenPalette(":"),
-                ("f", _) | ("h", false) => NotYet("Suchen und Ersetzen kommt in Phase 2"),
+                ("f", false) => Find { replace: false },
+                ("h", false) => Find { replace: true },
+                ("f", true) => ProjectSearch { replace: false },
+                ("h", true) => ProjectSearch { replace: true },
                 (" ", _) => TriggerCompletion,
                 (".", false) => QuickActions,
                 _ => return None,

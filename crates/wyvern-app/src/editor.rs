@@ -53,6 +53,9 @@ pub struct DiagSpan {
 pub struct EditorView {
     pub doc: Document,
     pub diagnostics: Vec<DiagSpan>,
+    /// Matches of the find box (char ranges, sorted) and which one is current.
+    pub find_matches: Vec<(usize, usize)>,
+    pub find_current: Option<usize>,
     syntax: Option<Syntax>,
     pub scroll_line: usize,
     pub scroll_x: f32,
@@ -83,6 +86,8 @@ impl EditorView {
         Self {
             doc,
             diagnostics: Vec::new(),
+            find_matches: Vec::new(),
+            find_current: None,
             syntax,
             scroll_line: 0,
             scroll_x: 0.0,
@@ -461,6 +466,34 @@ impl EditorView {
                 h: lh,
                 color: theme.current_line,
             });
+        }
+
+        // Find matches: only those on visible lines.
+        let visible_start = rope.line_to_char(first);
+        let visible_end = rope.line_to_char(last);
+        let begin = self.find_matches.partition_point(|&(_, e)| e < visible_start);
+        for (i, &(s, e)) in self.find_matches.iter().enumerate().skip(begin) {
+            if s > visible_end {
+                break;
+            }
+            let color = if self.find_current == Some(i) {
+                theme.accent.with_alpha(0x90)
+            } else {
+                theme.accent.with_alpha(0x38)
+            };
+            let (l0, c0) = col_of(s);
+            let (l1, c1) = col_of(e);
+            for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
+                let start = if line == l0 { c0 } else { 0 };
+                let end = if line == l1 {
+                    c1
+                } else {
+                    char_to_display_col(rope.line(line), line_len_chars(rope, line), tab)
+                };
+                if let Some((x, w)) = clip(text_x + start as f32 * cw, (end.max(start + 1) - start) as f32 * cw) {
+                    under.push(Quad { x, y: line_y(line), w, h: lh, color });
+                }
+            }
         }
 
         for r in self.doc.selection().ranges() {

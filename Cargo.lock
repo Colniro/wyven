@@ -3687,6 +3687,7 @@ dependencies = [
  "memory-stats",
  "nucleo-matcher",
  "pollster 0.4.0",
+ "regex",
  "rfd",
  "serde",
  "toml",
@@ -3694,6 +3695,7 @@ dependencies = [
  "wyvern-buffer",
  "wyvern-lsp",
  "wyvern-render",
+ "wyvern-search",
  "wyvern-syntax",
  "wyvern-terminal",
 ]
@@ -3724,6 +3726,15 @@ dependencies = [
  "log",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "wyvern-search"
+version = "0.1.0"
+dependencies = [
+ "ignore",
+ "log",
+ "regex",
 ]
 
 [[package]]

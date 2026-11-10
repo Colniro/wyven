@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 fertig, Phase 2 läuft (Terminal fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Noch offen in Phase 2: Suchen/Ersetzen, Git, Minimap, Sticky Scroll und Code-Faltung (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1 fertig, Phase 2 läuft (Terminal und Suchen/Ersetzen fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Noch offen in Phase 2: Git, Minimap, Sticky Scroll und Code-Faltung (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -17,6 +17,14 @@ Mit einem Ordner öffnet sich dieser als Projekt, mit einer Datei die Datei samt
 Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 
 ## Was schon geht
+
+- **Suchen in der Datei** (wie Visual Studio): `Strg+F` öffnet das Suchfeld oben rechts (mit Auswahl oder Wort unter dem Cursor vorbelegt), `Strg+H` zusätzlich Ersetzen.
+  - `Enter` / `F3` nächster Treffer, `Shift+Enter` / `Shift+F3` vorheriger, `Tab` wechselt zwischen Suchen und Ersetzen, `Esc` schließt.
+  - `Alt+C` Groß/Klein, `Alt+W` ganzes Wort, `Alt+E` regulärer Ausdruck (Ersetzen mit `$1`, `$2` …), `Alt+R` ersetzt den Treffer, `Alt+A` alle (ein Rückgängig-Schritt).
+  - Alle Treffer sind im Editor hinterlegt, der aktuelle kräftiger.
+- **Suchen im Projekt**: `Strg+Shift+F` (oder `Alt → s`) zeigt die Suche links statt des Explorers; `Strg+Shift+H` mit Ersetzen.
+  - Sucht beim Tippen im Hintergrund, beachtet `.gitignore`, überspringt `bin`/`obj` und Binärdateien. Gleiche Optionen wie oben.
+  - `↑`/`↓` + `Enter` oder Klick öffnet den Treffer. `Alt+A` ersetzt im ganzen Projekt: offene Dateien werden im Editor geändert (Rückgängig möglich), alle anderen sofort gespeichert.
 
 - **Terminal** unter dem Editor: `Alt → t` öffnet es (beim ersten Mal startet die Shell im Projektordner), springt hinein oder schließt es. Start direkt mit Terminal: `wyvern <Ordner> --terminal`.
   - Alle Tasten gehen an die Shell, auch `Esc`, `Strg+C` und `Strg+V`. So laufen auch Programme wie Claude Code oder `dotnet watch` darin. `Alt` antippen öffnet weiterhin das Leader-Menü.
@@ -74,6 +82,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 | `crates/wyvern-app` | Startpunkt (`wyvern.exe`), Fenster, Tastenbelegung, Editor-Ansicht, Statusleiste |
 | `crates/wyvern-buffer` | Textpuffer (Rope), Multi-Cursor, Transaktionen, Undo/Redo, Laden/Speichern |
 | `crates/wyvern-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting, Symbole |
+| `crates/wyvern-search` | Suchen/Ersetzen: Abfragen (Text, Wort, Groß/Klein, Regex), Projektsuche |
 | `crates/wyvern-terminal` | Terminal: Shell in ConPTY, Emulation mit `alacritty_terminal`, Tasten-Kodierung |
 | `crates/wyvern-lsp` | Language-Server-Client: JSON-RPC über stdio, UTF-16-Positionen |
 | `crates/wyvern-render` | GPU-Rendering (wgpu): Rechtecke und Text (glyphon / cosmic-text) |
