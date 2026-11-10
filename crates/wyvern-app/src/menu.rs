@@ -110,13 +110,15 @@ impl Menu {
 pub struct Prompt {
     title: String,
     pub text: String,
+    /// Shows dots instead of the text (API keys).
+    pub masked: bool,
     fresh: bool,
     buffer: Buffer,
 }
 
 impl Prompt {
     pub fn new(fs: &mut FontSystem, font: FontMetrics, title: &str, text: &str) -> Self {
-        Self { title: title.into(), text: text.into(), fresh: true, buffer: line_buffer(fs, font) }
+        Self { title: title.into(), text: text.into(), fresh: true, buffer: line_buffer(fs, font), masked: false }
     }
 
     pub fn type_text(&mut self, s: &str) {
@@ -145,7 +147,7 @@ impl Prompt {
         let attrs = Attrs::new().family(Family::Name(family));
         let spans = [
             (format!("{}\n", self.title), theme.panel_dim),
-            (self.text.clone(), theme.tab_text_active),
+            (if self.masked { "•".repeat(self.text.chars().count()) } else { self.text.clone() }, theme.tab_text_active),
         ];
         self.buffer.set_rich_text(
             spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),

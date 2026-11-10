@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 und 2 fertig, Phase 3 läuft (Debugger fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Noch offen in Phase 3: Inlay Hints, CodeLens, Markdown-Vorschau, KI-Vorschläge, Claude-Code-Brücke, Web-Sprachen (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1 und 2 fertig, Phase 3 läuft (Debugger und KI-Vorschläge fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Noch offen in Phase 3: Inlay Hints, CodeLens, Markdown-Vorschau, Claude-Code-Brücke, Web-Sprachen (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -59,6 +59,11 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - Maus kurz auf einem Namen: zeigt seinen Wert (auch `spieler.Position.X`).
   - `Alt → d → a` hängt sich an einen laufenden `dotnet`- oder Godot-Prozess.
   - Technik: netcoredbg leitet die Konsole eines selbst gestarteten Programms immer um. Deshalb startet Wyvern das Programm selbst und hängt den Debugger an; ein kleiner Startup-Hook (einmalig nach `%APPDATA%\Wyvern\debughook` gebaut) lässt das Programm so lange warten und hält das Fenster am Ende offen.
+- **KI-Vorschläge** beim Tippen, standardmäßig **kostenlos und lokal**:
+  - Nach ~400 ms Tipp-Pause erscheint der Vorschlag grau am Cursor, bis zu 10 Zeilen; weitere Zeilen schieben den Code darunter nach unten. `Tab` nimmt alles an, `Ctrl+→` ein Wort, `Esc` verwirft. Vorschläge kommen nur, wenn rechts vom Cursor höchstens schließende Klammern, `;` oder `,` stehen.
+  - **Lokal (Standard):** das Code-Modell **Qwen2.5-Coder 7B (Base)** läuft über [Ollama](https://ollama.com) auf der eigenen Grafikkarte. Nichts verlässt den PC, es kostet nichts und geht auch offline. Einrichtung einmalig: Ollama installieren (`winget install Ollama.Ollama`), dann `ollama pull qwen2.5-coder:7b-base`. Wichtig ist die *Base*-Variante: Die Chat-Variante antwortet mit Erklärungen statt nur mit Code. Läuft Ollama nicht, sagt Wyvern es in der Statusleiste.
+  - **Claude (optional):** Claude Haiku 5.5 oder Sonnet 5.5 über die Anthropic-API mit eigenem, kostenpflichtigem API-Key (zählt nicht zum Pro-Abo). Key setzen mit `Alt → a → k`; er liegt im Windows-Tresor. Dann wechselt `Alt → a → m` zwischen lokal, Haiku und Sonnet. Gesendet wird nur die offene Datei; der Dateianfang wird zwischengespeichert (Prompt Caching), bei Sonnet springt bei einer Ablehnung durch die Sicherheitsfilter ein anderes Modell ein.
+  - An/aus mit `Alt → a → t` oder Klick auf den Schalter in der Statusleiste („✦ Qwen2.5-Coder 7B (local)“). Einstellungen in `settings.toml` unter `[ai]`: `provider`, `local_model`, `model`, `delay_ms`.
 - **Startoptionen**: `wyvern <Datei> --goto=120` springt zu Zeile 120; `--terminal`, `--git` und `--diff` öffnen gleich Terminal, Git-Panel bzw. Diff der Datei.
 - **Oberfläche auf Englisch**: Leader-Menü, Befehle im Suchfeld (`File: Save`, `Git: Commit All` …), Spickzettel, Panels, Statusmeldungen und die Vorlage der `settings.toml`. Tasten heißen `Ctrl`, `PgUp` usw. In `settings.toml` gelten `theme = "dark"`/`"light"` und `indent = "spaces"`/`"tabs"`, die alten Werte `dunkel`/`hell`/`leerzeichen` funktionieren weiter.
 - **Spickzettel** mit allen Kürzeln: `Alt → h`. Er wird aus denselben Listen erzeugt wie Suchfeld und Leader-Menü und ist deshalb immer aktuell.
@@ -111,6 +116,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 | `crates/wyvern-buffer` | Textpuffer (Rope), Multi-Cursor, Transaktionen, Undo/Redo, Laden/Speichern |
 | `crates/wyvern-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting, Symbole |
 | `crates/wyvern-search` | Suchen/Ersetzen: Abfragen (Text, Wort, Groß/Klein, Regex), Projektsuche |
+| `crates/wyvern-ai` | KI-Vorschläge: lokal über Ollama oder über die Anthropic-API (beides Streaming über HTTP), Prompt-Aufbau, API-Key im Windows-Tresor |
 | `crates/wyvern-dap` | Debug-Adapter-Client (DAP) für netcoredbg |
 | `crates/wyvern-git` | Git über die `git`-Kommandozeile: Status, Commit, Sync, Branches, Blame, Zeilen-Diffs |
 | `crates/wyvern-terminal` | Terminal: Shell in ConPTY, Emulation mit `alacritty_terminal`, Tasten-Kodierung |

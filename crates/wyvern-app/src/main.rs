@@ -7,6 +7,7 @@
 //! Start: `wyvern <ordner>` opens a project, `wyvern <datei>` opens the file and its folder.
 //! Without an argument the most recently used project opens.
 
+mod ai;
 mod completion;
 mod config;
 mod debug;
@@ -70,6 +71,7 @@ enum UserEvent {
     Search,
     Git,
     Debug,
+    Ai,
 }
 
 /// Startup profiling: logs elapsed time and RAM after each startup stage.
@@ -78,7 +80,29 @@ fn log_stage(stage: &str, started: Instant) {
     log::info!("startup {stage}: {} · RAM {ram}", metrics::ms(Some(started.elapsed())));
 }
 
+/// Release builds have no console, so a crash would vanish without a trace: write the panic
+/// message, where it happened and a backtrace to `%APPDATA%\Wyvern\crash.log`.
+fn install_crash_log() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let when = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let report = format!(
+            "Wyvern {} crashed (unix time {when})\n{info}\n\nBacktrace:\n{}\n",
+            env!("CARGO_PKG_VERSION"),
+            std::backtrace::Backtrace::force_capture()
+        );
+        if let Some(dir) = config::config_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("crash.log"), &report);
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() {
+    install_crash_log();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // wyvern [folder or file] [--terminal] [--git] [--diff] [--goto=LINE]
     let mut path = None;
@@ -154,6 +178,8 @@ enum Overlay {
     Processes(menu::Menu),
     /// Alt → d → w: expression to watch.
     Watch(menu::Prompt),
+    /// Alt → a → k: the Anthropic API key.
+    ApiKey(menu::Prompt),
 }
 
 struct Mouse {
@@ -212,6 +238,10 @@ struct State {
 
     status_left: Buffer,
     status_right: Buffer,
+    /// AI switch in the status bar, and where it was drawn (for clicks).
+    status_ai: Buffer,
+    status_ai_span: (f32, f32),
+    ai: ai::AiAssist,
     message: Option<(String, Instant)>,
     /// A destructive action waiting for confirmation by repeating it (close dirty tab/window).
     armed: Option<(&'static str, usize, Instant)>,
@@ -412,6 +442,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 UserEvent::Git => state.git_poll(),
                 UserEvent::Debug => state.debug_poll(),
+                UserEvent::Ai => state.ai_poll(),
             }
         }
     }
@@ -432,6 +463,13 @@ impl ApplicationHandler<UserEvent> for App {
         let mut wake = state.next_stats;
         if let Some(t) = state.lsp_tick(now) {
             wake = wake.min(t);
+        }
+        if let Some(due) = state.ai.due {
+            if now >= due {
+                state.ai_trigger();
+            } else {
+                wake = wake.min(due);
+            }
         }
         let proxy = state.proxy.clone();
         let was_due = state.search.due.is_some();
@@ -540,6 +578,12 @@ impl State {
             b
         };
         let (status_left, status_right, tab_bar) = (line_buffer(), line_buffer(), line_buffer());
+        let status_ai = line_buffer();
+        let mut ai = ai::AiAssist::new(settings.ai.enabled, ai::backend_from(&settings.ai), settings.ai.delay_ms);
+        let ai_proxy = proxy.clone();
+        ai.set_wake(move || {
+            let _ = ai_proxy.send_event(UserEvent::Ai);
+        });
         let popup = Popup::new(fs, ui_font);
         let palette = Palette::new(fs, ui_font);
         let terminal_panel = terminal::TerminalPanel::new(fs, font, ui_font, family.clone());
@@ -589,6 +633,9 @@ impl State {
             last_copy: None,
             status_left,
             status_right,
+            status_ai,
+            status_ai_span: (0.0, 0.0),
+            ai,
             message: None,
             armed: None,
             settings,
@@ -710,7 +757,7 @@ impl State {
         // The diff view keeps its own fonts; reopening is cheaper than re-measuring it.
         self.diff = None;
         let m = Metrics::new(ui.size, ui.line_h);
-        for b in [&mut self.status_left, &mut self.status_right, &mut self.tab_bar] {
+        for b in [&mut self.status_left, &mut self.status_right, &mut self.tab_bar, &mut self.status_ai] {
             b.set_metrics(m);
         }
         self.relayout();
@@ -1069,6 +1116,10 @@ impl State {
                 self.debug_menu_key(&key);
                 return;
             }
+            Overlay::ApiKey(_) => {
+                self.api_key_key(event, &key);
+                return;
+            }
             Overlay::Watch(_) => {
                 self.watch_key(event, &key);
                 return;
@@ -1109,6 +1160,9 @@ impl State {
             && self.completion_key(&key) {
                 return;
             }
+        if self.focus == Focus::Editor && self.completion.is_none() && self.ghost_key(&key) {
+            return;
+        }
         if self.focus == Focus::Explorer && !mods.control_key() && !mods.alt_key()
             && self.explorer_key(&key) {
                 return;
@@ -1779,6 +1833,8 @@ impl State {
         if let Some(ex) = &mut self.explorer {
             ex.invalidate();
         }
+        let a = &self.settings.ai;
+        self.ai.configure(a.enabled, ai::backend_from(a), a.delay_ms);
         self.relayout();
         if self.message.is_none() {
             self.show("Settings applied");
@@ -2407,6 +2463,203 @@ impl State {
         }
     }
 
+    // ----- AI suggestions -----
+
+    /// Typing paused: ask Claude for a suggestion at the cursor, if one makes sense here.
+    fn ai_trigger(&mut self) {
+        self.ai.due = None;
+        let ok_place = self.focus == Focus::Editor
+            && self.diff.is_none()
+            && matches!(self.overlay, Overlay::None)
+            && self.completion.is_none()
+            && !(self.find.open && self.find.focused);
+        let ed = self.editor();
+        let sel = ed.doc.selection();
+        if !ok_place || sel.len() != 1 || !sel.primary().is_empty() {
+            return;
+        }
+        let rope = ed.doc.text();
+        let head = sel.primary().head;
+        if rope.len_chars() == 0 || rope.len_bytes() > 4_000_000 {
+            return;
+        }
+        let line = rope.char_to_line(head);
+        let line_end = rope.line_to_char(line) + wyvern_buffer::line_len_chars(rope, line);
+        let rest: String = rope.slice(head..line_end).to_string();
+        if !ai::fits_cursor(&rest) {
+            return;
+        }
+        // Enough context for the crate's limits, without copying a huge file.
+        let start = head.saturating_sub(70_000);
+        let end = (head + 8_000).min(rope.len_chars());
+        let ctx = wyvern_ai::Context {
+            file_name: ed.file_name(),
+            language: ed.language_name().to_string(),
+            before: rope.slice(start..head).to_string(),
+            after: rope.slice(head..end).to_string(),
+        };
+        let (tab, version) = (self.active, ed.doc.version());
+        self.ai.start(tab, version, head, ctx);
+    }
+
+    fn ai_poll(&mut self) {
+        for update in self.ai.poll(Instant::now()) {
+            match update {
+                ai::AiUpdate::Show { tab, version, pos, text } => {
+                    let still_valid = tab == self.active
+                        && self.tabs.get(tab).is_some_and(|t| {
+                            t.doc.version() == version && t.doc.selection().primary().head == pos
+                        });
+                    if still_valid {
+                        self.tabs[tab].set_ghost(Some((pos, text)));
+                    }
+                }
+                ai::AiUpdate::Message(m) => self.show(m),
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// Tab, Ctrl+→ and Esc while a suggestion is shown. Returns true if the key was used.
+    fn ghost_key(&mut self, key: &Key) -> bool {
+        let mods = self.modifiers;
+        let Some((pos, text)) = self.editor().active_ghost().map(|(p, t)| (p, t.to_string())) else { return false };
+        let plain = !mods.control_key() && !mods.alt_key() && !mods.shift_key();
+        let ctrl_only = mods.control_key() && !mods.alt_key() && !mods.shift_key();
+        let piece = match key {
+            Key::Named(NamedKey::Tab) if plain => text.clone(),
+            Key::Named(NamedKey::ArrowRight) if ctrl_only => ai::next_word(&text).to_string(),
+            Key::Named(NamedKey::Escape) if plain => {
+                self.editor_mut().set_ghost(None);
+                self.ai.cancel();
+                return true;
+            }
+            _ => return false,
+        };
+        let rest = text[piece.len()..].to_string();
+        let ed = self.editor_mut();
+        ed.doc.insert(&piece);
+        ed.after_edit();
+        ed.ensure_cursor_visible();
+        let new_head = ed.doc.selection().primary().head;
+        ed.set_ghost((!rest.is_empty()).then_some((new_head, rest)));
+        let _ = pos;
+        self.lsp_after_edit();
+        self.ai.cancel();
+        self.window.request_redraw();
+        true
+    }
+
+    fn ai_toggle(&mut self) {
+        if !self.ai.usable() {
+            self.ask_api_key();
+            return;
+        }
+        let on = !self.settings.ai.enabled;
+        self.settings.ai.enabled = on;
+        let backend = self.ai.backend.clone();
+        let delay = self.settings.ai.delay_ms;
+        self.ai.configure(on, backend, delay);
+        if !on {
+            for t in &mut self.tabs {
+                t.set_ghost(None);
+            }
+        }
+        let label = if on { "AI suggestions on" } else { "AI suggestions off" };
+        self.store_ai_setting("enabled", if on { "true" } else { "false" }, label);
+    }
+
+    /// Alt → a → m: local → Claude Haiku → Claude Sonnet → local (Claude only with a key).
+    fn ai_switch_model(&mut self) {
+        use wyvern_ai::{Backend, Model};
+        let local = Backend::Local(match &self.ai.backend {
+            Backend::Local(m) => m.clone(),
+            _ => self.settings.ai.local_model.clone(),
+        });
+        let next = match &self.ai.backend {
+            Backend::Local(_) if self.ai.has_key() => Backend::Claude(Model::Haiku),
+            Backend::Local(_) => {
+                self.show("Only the local model is set up – Claude needs a paid API key (Alt → a → k)");
+                return;
+            }
+            Backend::Claude(Model::Haiku) => Backend::Claude(Model::Sonnet),
+            Backend::Claude(Model::Sonnet) => local,
+        };
+        let (provider, model) = match &next {
+            Backend::Local(_) => ("local", self.settings.ai.model.clone()),
+            Backend::Claude(m) => ("claude", m.name().to_string()),
+        };
+        self.settings.ai.provider = provider.into();
+        self.settings.ai.model = model.clone();
+        let (enabled, delay) = (self.settings.ai.enabled, self.settings.ai.delay_ms);
+        self.ai.configure(enabled, next.clone(), delay);
+        let _ = settings::store_value(Some("ai"), "model", &format!("\"{model}\""));
+        let label = format!("AI model: {}", next.display());
+        self.store_ai_setting("provider", &format!("\"{provider}\""), &label);
+    }
+
+    fn store_ai_setting(&mut self, key: &str, value: &str, label: &str) {
+        match settings::store_value(Some("ai"), key, value) {
+            Ok(()) => {
+                self.settings_mtime = settings::modified();
+                self.show(label.to_string());
+            }
+            Err(e) => self.show(format!("{label} (not saved: {e})")),
+        }
+        self.window.request_redraw();
+    }
+
+    fn ask_api_key(&mut self) {
+        let fs = self.renderer.font_system();
+        let title = "Anthropic API key (sk-ant-…), stored in the Windows Credential Manager. Enter saves, empty removes it, Esc cancels";
+        let mut prompt = menu::Prompt::new(fs, self.ui_font, title, "");
+        prompt.masked = true;
+        self.overlay = Overlay::ApiKey(prompt);
+    }
+
+    fn api_key_key(&mut self, event: &KeyEvent, key: &Key) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        let Overlay::ApiKey(prompt) = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::Enter) => {
+                let k = prompt.text.trim().to_string();
+                self.overlay = Overlay::None;
+                if !k.is_empty() && !k.starts_with("sk-ant-") {
+                    self.show("That does not look like an Anthropic API key (sk-ant-…); nothing saved");
+                    return;
+                }
+                match wyvern_ai::store_api_key(&k) {
+                    Ok(()) => {
+                        self.ai.reload_key();
+                        let msg = if k.is_empty() {
+                            "API key removed"
+                        } else {
+                            "API key saved – Alt → a → m switches to Claude"
+                        };
+                        self.show(msg);
+                    }
+                    Err(e) => self.show(format!("API key not saved: {e}")),
+                }
+            }
+            Key::Named(NamedKey::Backspace) => prompt.backspace(ctrl),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::End | NamedKey::Home) => prompt.keep(),
+            Key::Character(c) if ctrl && c.as_str() == "v" => {
+                if let Some(t) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok())
+                    && let Overlay::ApiKey(prompt) = &mut self.overlay
+                {
+                    prompt.type_text(t.lines().next().unwrap_or("").trim());
+                }
+            }
+            _ => {
+                if let Some(t) = Keymap::text(event, mods) {
+                    prompt.type_text(&t);
+                }
+            }
+        }
+    }
+
     // ----- debugging -----
 
     /// Breakpoints of all files: open tabs plus remembered ones of closed files.
@@ -2889,6 +3142,9 @@ impl State {
             }
             Git(cmd) => self.git_command(cmd),
             CycleMinimap => self.cycle_minimap(),
+            AiToggle => self.ai_toggle(),
+            AiModel => self.ai_switch_model(),
+            AiKey => self.ask_api_key(),
             ToggleStickyScroll => self.toggle_sticky_scroll(),
         }
     }
@@ -2940,6 +3196,11 @@ impl State {
             matches!(cmd, Command::Insert(_) | Command::Backspace | Command::TriggerCompletion);
         let mut trigger = None;
         let bps_before = self.editor().breakpoints().to_vec();
+        // Typing asks the AI again once typing pauses; anything else drops its suggestion.
+        let typing = matches!(
+            cmd,
+            Command::Insert(_) | Command::Newline | Command::Backspace | Command::Delete | Command::DeleteWord { .. }
+        );
         let ed = &mut self.tabs[self.active];
         match cmd {
             Command::Move(m, extend) => {
@@ -3137,6 +3398,12 @@ impl State {
             self.completion = None;
         }
         self.update_completion(typed.as_deref(), trigger);
+        self.editor_mut().set_ghost(None);
+        if typing && self.focus == Focus::Editor {
+            self.ai.schedule(Instant::now());
+        } else {
+            self.ai.cancel();
+        }
     }
 
     fn set_clipboard(&mut self, (text, line_mode): (String, bool)) {
@@ -3199,6 +3466,15 @@ impl State {
         self.latency.input();
         self.window.request_redraw();
 
+        let st = self.layout.status;
+        if button == MouseButton::Left
+            && y >= st.y
+            && x >= self.status_ai_span.0
+            && x < self.status_ai_span.1
+        {
+            self.ai_toggle();
+            return;
+        }
         let t = self.layout.tabs;
         if y >= t.y && y < t.y + t.h && x >= t.x {
             if let Some(i) = self.tab_spans.iter().position(|&(a, b)| x >= a && x < b) {
@@ -3469,6 +3745,9 @@ impl State {
         self.status_left.shape_until_scroll(fs, false);
         self.status_right.set_text(&right, &attrs, Shaping::Advanced, None);
         self.status_right.shape_until_scroll(fs, false);
+        let ai_label = self.ai.label();
+        self.status_ai.set_text(&ai_label, &attrs, Shaping::Advanced, None);
+        self.status_ai.shape_until_scroll(fs, false);
     }
 
     fn update_popup(&mut self) -> bool {
@@ -3517,7 +3796,9 @@ impl State {
             Overlay::Branches(m) | Overlay::DebugProjects(m) | Overlay::Processes(m) => {
                 m.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
-            Overlay::Watch(prompt) => prompt.prepare(self.renderer.font_system(), &self.theme, &self.family),
+            Overlay::Watch(prompt) | Overlay::ApiKey(prompt) => {
+                prompt.prepare(self.renderer.font_system(), &self.theme, &self.family)
+            }
             _ => {}
         }
         if self.terminal_visible {
@@ -3633,6 +3914,12 @@ impl State {
             color: theme.status_text,
             clip: None,
         });
+        // The AI switch, left of the right-hand status text (click toggles).
+        let ai_w = self.status_ai.layout_runs().next().map_or(0.0, |r| r.line_w);
+        let ai_x = s.w - right_w - 3.0 * pad - ai_w;
+        self.status_ai_span = (ai_x - pad * 0.5, ai_x + ai_w + pad * 0.5);
+        let ai_color = if self.ai.enabled && self.ai.has_key() { theme.status_accent } else { theme.status_text };
+        text.push(TextBlock { buffer: &self.status_ai, x: ai_x, y: text_y, color: ai_color, clip: None });
 
         if popup_visible {
             self.popup.draw(theme, self.ui_font, s.w, s.y, &mut overlay, &mut overlay_text);
@@ -3665,7 +3952,7 @@ impl State {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }
-                Overlay::NewBranch(prompt) | Overlay::Watch(prompt) => {
+                Overlay::NewBranch(prompt) | Overlay::Watch(prompt) | Overlay::ApiKey(prompt) => {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     prompt.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }

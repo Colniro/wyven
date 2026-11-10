@@ -29,6 +29,9 @@ pub enum Action {
     /// Minimap: blocks → bar → off.
     CycleMinimap,
     ToggleStickyScroll,
+    AiToggle,
+    AiModel,
+    AiKey,
     Git(GitCmd),
 }
 
@@ -147,9 +150,9 @@ const VIEW: &[Item] = &[
 ];
 
 const AI: &[Item] = &[
-    item('t', "toggle suggestions", Later("AI suggestions come in phase 3")),
-    item('m', "switch model", Later("AI suggestions come in phase 3")),
-    item('k', "set API key", Later("AI suggestions come in phase 3")),
+    item('t', "suggestions on/off", AiToggle),
+    item('m', "switch model (Haiku / Sonnet)", AiModel),
+    item('k', "set API key", AiKey),
     item('c', "claude code", Later("Claude Code in the terminal comes in phase 2/3")),
 ];
 

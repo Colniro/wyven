@@ -48,6 +48,21 @@ font_scale = 0.93
 # Width of the explorer in characters
 explorer_width = 30
 
+[ai]
+# AI suggestions while typing (Tab accepts, Ctrl+→ one word, Esc dismisses).
+# Alt → a → t switches them on/off, Alt → a → m switches the model.
+enabled = true
+# "local": a free code model on this PC via Ollama (nothing leaves the PC).
+# "claude": Anthropic's API; needs your own paid API key (Alt → a → k), only the open file is sent.
+provider = "local"
+# Ollama model for "local" (install: ollama pull qwen2.5-coder:7b-base). Use a *base* model:
+# chat ("instruct") models answer with explanations instead of just code.
+local_model = "qwen2.5-coder:7b-base"
+# Claude model for "claude": "haiku" (fast and cheap) or "sonnet" (better, a bit slower)
+model = "haiku"
+# Pause after typing, in milliseconds, before a suggestion is requested
+delay_ms = 400
+
 [terminal]
 # Shell for the terminal (Alt → t). Empty = automatic (PowerShell 7, else Windows PowerShell).
 # Examples: "cmd.exe", "pwsh.exe", 'C:\Program Files\Git\bin\bash.exe'
@@ -67,6 +82,29 @@ pub struct Settings {
     pub editor: EditorSettings,
     pub ui: UiSettings,
     pub terminal: TerminalSettings,
+    pub ai: AiSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AiSettings {
+    pub enabled: bool,
+    pub provider: String,
+    pub local_model: String,
+    pub model: String,
+    pub delay_ms: u64,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            provider: "local".into(),
+            local_model: wyvern_ai::DEFAULT_LOCAL_MODEL.into(),
+            model: "haiku".into(),
+            delay_ms: 400,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -117,6 +155,7 @@ impl Default for Settings {
             editor: EditorSettings::default(),
             ui: UiSettings::default(),
             terminal: TerminalSettings::default(),
+            ai: AiSettings::default(),
         }
     }
 }

@@ -282,9 +282,11 @@ pub struct EditorView {
     breakpoints: Vec<usize>,
     /// Line where the debugger is paused.
     debug_line: Option<usize>,
-    /// Bumped when breakpoints or the debug line change.
+    /// Bumped when breakpoints, the debug line or the AI suggestion change.
     marks_gen: u64,
     mark_buf: Buffer,
+    /// AI suggestion shown as ghost text at a char position (only while the cursor is there).
+    ghost: Option<(usize, String)>,
 }
 
 impl EditorView {
@@ -355,6 +357,7 @@ impl EditorView {
             debug_line: None,
             marks_gen: 0,
             mark_buf,
+            ghost: None,
         };
         view.refresh_disk_mtime();
         view
@@ -477,7 +480,8 @@ impl EditorView {
         let col = char_to_display_col(rope.line(line), pos - rope.line_to_char(line), self.doc.tab_width);
         let x = self.text_x() - self.scroll_x + col as f32 * self.font.cell_w;
         let rows = if line >= self.scroll_line {
-            self.rows_between(self.scroll_line, line) as f32
+            let below_ghost = self.ghost_rows().filter(|&(g, _)| g >= self.scroll_line && line > g).map_or(0, |(_, k)| k);
+            (self.rows_between(self.scroll_line, line) + below_ghost) as f32
         } else {
             -(self.rows_between(line, self.scroll_line) as f32)
         };
@@ -761,8 +765,10 @@ impl EditorView {
     pub fn hit_test(&self, x: f32, y: f32) -> usize {
         let rope = self.doc.text();
         let row = ((y - self.area.y) / self.font.line_h).floor().max(0.0) as usize;
-        let lines = self.visible_from(self.scroll_line, row + 1);
-        let line = lines.get(row).or(lines.last()).copied().unwrap_or(0);
+        let line = self
+            .line_at_row(row)
+            .or_else(|| self.screen_lines().last().copied())
+            .unwrap_or(0);
         let col = ((x - self.text_x() + self.scroll_x) / self.font.cell_w)
             .round()
             .max(0.0) as usize;
@@ -772,6 +778,57 @@ impl EditorView {
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.area.x && x < self.area.x + self.area.w && y >= self.area.y
             && y < self.area.y + self.area.h
+    }
+
+    // ----- AI suggestion (ghost text) -----
+
+    pub fn set_ghost(&mut self, ghost: Option<(usize, String)>) {
+        let ghost = ghost.filter(|(_, t)| !t.is_empty());
+        if ghost != self.ghost {
+            self.ghost = ghost;
+            self.marks_gen += 1;
+        }
+    }
+
+    /// The suggestion if it is shown: the cursor is a single caret at its position.
+    pub fn active_ghost(&self) -> Option<(usize, &str)> {
+        let (pos, text) = self.ghost.as_ref()?;
+        let sel = self.doc.selection();
+        let r = sel.primary();
+        (sel.len() == 1 && r.is_empty() && r.head == *pos && *pos <= self.doc.text().len_chars())
+            .then_some((*pos, text.as_str()))
+    }
+
+    /// Line of the suggestion and how many extra rows its further lines take.
+    fn ghost_rows(&self) -> Option<(usize, usize)> {
+        let (pos, text) = self.active_ghost()?;
+        Some((self.doc.text().char_to_line(pos), text.matches('\n').count()))
+    }
+
+    /// Screen row of a document line on screen (`lines` from [`Self::screen_lines`]); rows
+    /// below a multi-line suggestion move down.
+    fn row_of(&self, lines: &[usize], line: usize) -> Option<usize> {
+        let row = lines.binary_search(&line).ok()?;
+        match self.ghost_rows() {
+            Some((g, k)) if line > g && lines.binary_search(&g).is_ok() => Some(row + k),
+            _ => Some(row),
+        }
+    }
+
+    /// The document line shown in screen row `row` (suggestion rows belong to its line).
+    fn line_at_row(&self, row: usize) -> Option<usize> {
+        let lines = self.screen_lines();
+        if let Some((g, k)) = self.ghost_rows()
+            && let Ok(gi) = lines.binary_search(&g)
+        {
+            if row > gi && row <= gi + k {
+                return Some(g);
+            }
+            if row > gi + k {
+                return lines.get(row - k).copied();
+            }
+        }
+        lines.get(row).copied()
     }
 
     // ----- breakpoints and the debugger's line -----
@@ -841,7 +898,7 @@ impl EditorView {
             return None;
         }
         let row = ((y - a.y) / self.font.line_h) as usize;
-        self.visible_from(self.scroll_line, row + 1).get(row).copied()
+        self.line_at_row(row)
     }
 
     // ----- folding -----
@@ -871,7 +928,8 @@ impl EditorView {
 
     /// The document lines on screen, top first.
     fn screen_lines(&self) -> Vec<usize> {
-        self.visible_from(self.scroll_line, self.rows())
+        let extra = self.ghost_rows().map_or(0, |(_, k)| k);
+        self.visible_from(self.scroll_line, self.rows().saturating_sub(extra).max(1))
     }
 
     /// Number of shown lines in `a..b`.
@@ -1108,7 +1166,7 @@ impl EditorView {
             return false;
         }
         let row = ((y - a.y) / self.font.line_h) as usize;
-        let Some(&line) = self.visible_from(self.scroll_line, row + 1).get(row) else { return false };
+        let Some(line) = self.line_at_row(row) else { return false };
         let arrow_left = a.x + (self.gutter_cells as f32 + 1.0) * self.font.cell_w;
         let in_gutter = x >= arrow_left && x < a.x + self.gutter_w();
         if x < arrow_left {
@@ -1174,6 +1232,12 @@ impl EditorView {
         }
 
         let lines = self.screen_lines();
+        // The suggestion: its line, its char column there, and its text.
+        let ghost = self.active_ghost().map(|(pos, text)| {
+            let line = rope.char_to_line(pos);
+            (line, pos - rope.line_to_char(line), text.to_string())
+        });
+        let ghost_extra = ghost.as_ref().map_or(0, |(_, _, t)| t.matches('\n').count());
 
         // Build colored runs for the visible lines; tabs become spaces so the grid holds.
         let tab_width = self.doc.tab_width;
@@ -1199,10 +1263,40 @@ impl EditorView {
             for &line in &lines[seg..seg_end] {
             let mut byte = rope.line_to_byte(line);
             let mut col = 0;
+            let ghost_here = ghost.as_ref().filter(|(g, _, _)| *g == line).map(|(_, c, t)| (*c, t.as_str()));
+            // Writes the suggestion (dimmed) at the cursor; the rest of the line follows its
+            // last line.
+            let put_ghost = |push: &mut dyn FnMut(&str, Rgba), col: &mut usize, text: &str| {
+                for (i, part) in text.split('\n').enumerate() {
+                    if i > 0 {
+                        push("\n", theme.text);
+                        *col = 0;
+                    }
+                    let mut expanded = String::new();
+                    for ch in part.chars() {
+                        if ch == '\t' {
+                            let n = tab_width - *col % tab_width;
+                            expanded.push_str(&" ".repeat(n));
+                            *col += n;
+                        } else if ch != '\r' {
+                            expanded.push(ch);
+                            *col += 1;
+                        }
+                    }
+                    push(&expanded, theme.gutter_text);
+                }
+            };
+            let mut char_i = 0;
             for ch in rope.line(line).chars() {
-                if ch == '\n' {
+                if ch == '\n' || ch == '\r' {
                     break;
                 }
+                if let Some((gc, gt)) = ghost_here
+                    && gc == char_i
+                {
+                    put_ghost(&mut push, &mut col, gt);
+                }
+                char_i += 1;
                 while span_i < spans.len() && spans[span_i].end <= byte {
                     span_i += 1;
                 }
@@ -1220,6 +1314,11 @@ impl EditorView {
                     col += 1;
                 }
                 byte += ch.len_utf8();
+            }
+            if let Some((gc, gt)) = ghost_here
+                && gc >= char_i
+            {
+                put_ghost(&mut push, &mut col, gt);
             }
             if self.folded.binary_search_by_key(&line, |f| f.0).is_ok() {
                 push(" … ", theme.gutter_current);
@@ -1264,6 +1363,13 @@ impl EditorView {
                 None => (line + 1).to_string(),
             };
             gutter.push((format!("{label:>digits$}\n"), color));
+            if ghost.as_ref().is_some_and(|(g, _, _)| *g == line) {
+                for _ in 0..ghost_extra {
+                    gutter.push(("\n".into(), color));
+                    marks.push(("\n".into(), theme.text));
+                    arrows.push('\n');
+                }
+            }
         }
         self.gutter_buf.set_rich_text(
             gutter
@@ -1306,7 +1412,7 @@ impl EditorView {
         let first = lines.first().copied().unwrap_or(0);
         let last = lines.last().map_or(first, |l| l + 1);
         let tab = self.doc.tab_width;
-        let row_of = |line: usize| lines.binary_search(&line).ok();
+        let row_of = |line: usize| self.row_of(&lines, line);
         let row_y = |row: usize| a.y + row as f32 * lh;
         let col_of = |pos: usize| {
             let line = rope.char_to_line(pos);
@@ -1337,7 +1443,8 @@ impl EditorView {
         }
 
         // The debugger's line, and a faint tint on breakpoint lines.
-        for (row, &line) in lines.iter().enumerate() {
+        for &line in &lines {
+            let Some(row) = row_of(line) else { continue };
             let color = if self.debug_line == Some(line) {
                 Some(theme.debug_line)
             } else if self.breakpoints.binary_search(&line).is_ok() {
@@ -1455,7 +1562,8 @@ impl EditorView {
         }
 
         // Line backgrounds (diff view).
-        for (row, &line) in lines.iter().enumerate() {
+        for &line in &lines {
+            let Some(row) = row_of(line) else { continue };
             if let Some(Some(color)) = self.line_bg.get(line) {
                 under.push(Quad { x: text_left, y: row_y(row), w: text_right - text_left, h: lh, color: *color });
             }
@@ -1872,6 +1980,65 @@ mod tests {
         v.doc.apply_changes(vec![wyvern_buffer::Change { start: at, end: at + 1, text: "w".into() }]);
         v.after_edit();
         assert_eq!(v.screen_lines().len(), 13);
+    }
+
+    #[test]
+    fn a_multi_line_suggestion_pushes_the_lines_below_down() {
+        let mut v = view(CS);
+        let at = v.doc.text().line_to_char(4) + 8; // line 5: "        x();" after the indent
+        v.doc.set_cursor(at);
+        v.set_ghost(Some((at, "a();\n        b();".into())));
+        assert_eq!(v.ghost_rows(), Some((4, 1)));
+        let lines = v.screen_lines();
+        assert_eq!(v.row_of(&lines, 4), Some(4));
+        assert_eq!(v.row_of(&lines, 5), Some(6), "line 6 moves one row down");
+        assert_eq!(v.line_at_row(5), Some(4), "the suggestion row belongs to its line");
+        assert_eq!(v.line_at_row(6), Some(5));
+        // Moving the cursor hides it.
+        v.doc.set_cursor(0);
+        assert_eq!(v.ghost_rows(), None);
+        assert_eq!(v.row_of(&v.screen_lines(), 5), Some(5));
+    }
+
+    /// The crash report: Tab on a long chat-style suggestion after `for(`.
+    #[test]
+    fn accepting_a_long_suggestion_and_redrawing_works() {
+        let mut fs = wyvern_render::FontSystem::new();
+        let font = super::FontMetrics { size: 14.0, line_h: 20.0, cell_w: 8.0 };
+        let theme = crate::theme::Theme::dark();
+        let text = "int count = 0;
+for()
+";
+        let mut v = super::EditorView::virtual_doc("t", text, "a.cs", &mut fs, font, "monospace".into());
+        v.set_area(super::Rect { x: 0.0, y: 0.0, w: 800.0, h: 400.0 });
+        // As in the app: minimap and sticky scroll on.
+        v.minimap = super::MinimapMode::Blocks;
+        v.sticky_scroll = true;
+        v.scale = 1.5;
+        let at = v.doc.text().line_to_char(1) + 4; // after "for("
+        v.doc.set_cursor(at);
+        let ghost = "It looks like you're trying to write a program that reads a list of numbers from the user, removes
+
+```csharp
+string? input;
+List<int> numbers = new List<int>();
+while (true)
+{
+    System.Console.Write(\"Gib eine Zahl ein: \");
+    input = Console.ReadLine();";
+        v.set_ghost(Some((at, ghost.into())));
+        v.prepare(&mut fs, &theme);
+        let (mut under, mut over, mut texts) = (Vec::new(), Vec::new(), Vec::new());
+        v.draw(&theme, 1.0, &mut under, &mut over, &mut texts);
+        drop(texts);
+        // Tab: accept all of it.
+        v.doc.insert(ghost);
+        v.after_edit();
+        v.ensure_cursor_visible();
+        v.set_ghost(None);
+        v.prepare(&mut fs, &theme);
+        let (mut under, mut over, mut texts) = (Vec::new(), Vec::new(), Vec::new());
+        v.draw(&theme, 1.0, &mut under, &mut over, &mut texts);
     }
 
     #[test]

@@ -91,8 +91,8 @@ Grundprinzipien:
 
 ## 5. KI
 
-- **Inline-Vorschläge** über die Anthropic-API mit eigenem API-Key, abgerechnet getrennt vom Pro-Abo.
-  - Standard: **Claude Haiku 5.5**, weil Vorschläge beim Tippen schnell kommen müssen. Umschaltbar auf **Claude Sonnet 5.5** (bessere Qualität, langsamer).
+- **Inline-Vorschläge** standardmäßig **lokal und kostenlos** über Ollama mit **Qwen2.5-Coder 7B (Base)** auf der eigenen Grafikkarte (das Pro-Abo gilt nicht für die API).
+  - Optional über die Anthropic-API mit eigenem, kostenpflichtigem Key: **Claude Haiku 5.5** oder **Claude Sonnet 5.5**.
   - Button in der Statusleiste: an/aus mit einem Klick. Ohne Key bleibt es aus.
 - **Claude Code** nutzt dein Pro-Abo und läuft im integrierten Terminal. Die Brücke schickt die aktuelle Datei und Auswahl an Claude Code und zeigt dessen Änderungen als Diff zum Annehmen oder Ablehnen. Wie Claude Code mit IDEs spricht, prüfen wir beim Bau der Brücke.
 
@@ -114,7 +114,7 @@ Cargo-Workspace, Fenster, wgpu-Rendering, Text auf dem Bildschirm, Benchmarks f�
 ~~Integriertes Terminal~~ ✅, ~~Git (Status, Diff nebeneinander, Commit von allem, Sync, Branches, Blame auf Abruf)~~ ✅, ~~globale Suche/Ersetzen~~ ✅, ~~Minimap (Blöcke / Leiste / aus)~~ ✅, ~~Sticky Scroll~~ ✅, ~~Folding~~ ✅ – **Phase 2 fertig**.
 
 **Phase 3 – Profi-Features**
-~~Debugger (netcoredbg)~~ ✅, Inlay Hints, CodeLens, Markdown-Vorschau, KI-Inline-Vorschläge, Claude-Code-Brücke, Web-Sprachen per LSP.
+~~Debugger (netcoredbg)~~ ✅, Inlay Hints, CodeLens, Markdown-Vorschau, ~~KI-Inline-Vorschläge~~ ✅, Claude-Code-Brücke, Web-Sprachen per LSP.
 
 **Phase 4 – Anpassbarkeit**
 Andockbare Panels im VS-2026-Stil, grafische Einstellungsseite, Import von VS-Code-Themes, Multi-Root-Workspaces, WASM-Plugin-System.

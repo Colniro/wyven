@@ -24,6 +24,8 @@ const BASICS: &[(&str, &str)] = &[
     ("F2", "Rename"),
     ("Ctrl+.", "Quick actions"),
     ("F8", "Next error"),
+    ("Tab (AI suggestion shown)", "Accept the suggestion"),
+    ("Ctrl+→ (AI suggestion shown)", "Accept its next word"),
     ("Click on a line number", "Toggle a breakpoint (like F9)"),
     ("Mouse on a name while paused", "Shows its value"),
     ("Ctrl+Enter in the git panel", "Commit all (open files are saved first)"),

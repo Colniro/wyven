@@ -14,6 +14,7 @@ wyvern-buffer = { path = "crates/wyvern-buffer" }
 wyvern-syntax = { path = "crates/wyvern-syntax" }
 wyvern-lsp = { path = "crates/wyvern-lsp" }
 wyvern-dap = { path = "crates/wyvern-dap" }
+wyvern-ai = { path = "crates/wyvern-ai" }
 wyvern-terminal = { path = "crates/wyvern-terminal" }
 wyvern-search = { path = "crates/wyvern-search" }
 wyvern-git = { path = "crates/wyvern-git" }
@@ -64,6 +65,8 @@ inherits = "release"
 lto = false
 codegen-units = 256
 incremental = true
+# Line numbers in backtraces (crash.log), at little cost.
+debug = "line-tables-only"
 
 # Fast debug builds while keeping dependencies optimized (GPU and text code is slow unoptimized).
 [profile.dev.package."*"]

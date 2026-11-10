@@ -31,3 +31,4 @@ wyvern-search.workspace = true
 regex.workspace = true
 wyvern-git.workspace = true
 wyvern-dap.workspace = true
+wyvern-ai.workspace = true
