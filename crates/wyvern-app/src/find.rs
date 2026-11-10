@@ -105,6 +105,11 @@ impl FindBar {
         self.computed_for = None;
     }
 
+    /// Forces the matches to be recomputed (the document was reloaded from disk).
+    pub fn invalidate(&mut self) {
+        self.computed_for = None;
+    }
+
     /// Recomputes matches if the text or the query changed. `doc_id` tells documents apart.
     pub fn refresh(&mut self, doc_id: usize, doc: &Document) {
         let key = (doc_id, doc.version(), self.query.clone());

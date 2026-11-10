@@ -24,6 +24,8 @@ const BASICS: &[(&str, &str)] = &[
     ("F2", "Umbenennen"),
     ("Strg+.", "Quick Actions"),
     ("F8", "Nächster Fehler"),
+    ("Strg+Enter im Git-Panel", "Alles committen (offene Dateien werden vorher gespeichert)"),
+    ("F8 / Shift+F8 im Diff", "Nächste / vorige Änderung (Esc schließt den Diff)"),
     ("Strg+Tab", "Zuletzt benutzte Datei (Strg halten, Tab mehrmals)"),
     ("Mittlere Maustaste auf Tab", "Tab schließen"),
 ];

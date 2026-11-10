@@ -9,9 +9,11 @@
 
 mod completion;
 mod config;
+mod diff_view;
 mod editor;
 mod explorer;
 mod find;
+mod git_panel;
 mod help;
 mod index;
 mod keymap;
@@ -65,6 +67,7 @@ enum UserEvent {
     Lsp,
     Terminal,
     Search,
+    Git,
 }
 
 /// Startup profiling: logs elapsed time and RAM after each startup stage.
@@ -75,12 +78,16 @@ fn log_stage(stage: &str, started: Instant) {
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // wyvern [Ordner oder Datei] [--terminal]
+    // wyvern [Ordner oder Datei] [--terminal] [--git] [--diff]
     let mut path = None;
-    let mut open_terminal = false;
+    let (mut open_terminal, mut open_git, mut open_diff) = (false, false, false);
     for arg in std::env::args_os().skip(1) {
         if arg == "--terminal" {
             open_terminal = true;
+        } else if arg == "--git" {
+            open_git = true;
+        } else if arg == "--diff" {
+            open_diff = true;
         } else if path.is_none() {
             path = Some(PathBuf::from(arg));
         }
@@ -90,13 +97,15 @@ fn main() {
         .expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
-    let mut app = App { path, open_terminal, state: None, proxy };
+    let mut app = App { path, open_terminal, open_git, open_diff, state: None, proxy };
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
 struct App {
     path: Option<PathBuf>,
     open_terminal: bool,
+    open_git: bool,
+    open_diff: bool,
     state: Option<State>,
     proxy: EventLoopProxy<UserEvent>,
 }
@@ -107,6 +116,7 @@ enum Focus {
     Explorer,
     Terminal,
     Search,
+    Git,
 }
 
 /// What the left sidebar shows.
@@ -114,6 +124,7 @@ enum Focus {
 enum Sidebar {
     Explorer,
     Search,
+    Git,
 }
 
 enum Overlay {
@@ -125,6 +136,10 @@ enum Overlay {
     Menu(menu::Menu),
     /// New name for the symbol at `pos`.
     Rename { prompt: menu::Prompt, pos: usize },
+    /// Branch picker (items: branch names, `null` = create a new branch).
+    Branches(menu::Menu),
+    /// Name for a new branch.
+    NewBranch(menu::Prompt),
 }
 
 struct Mouse {
@@ -201,6 +216,9 @@ struct State {
     find_labels: find::ToggleLabels,
     search: search_panel::SearchPanel,
     sidebar: Sidebar,
+    git: git_panel::GitPanel,
+    /// Side-by-side diff shown instead of the editor.
+    diff: Option<diff_view::DiffView>,
 
     latency: InputLatency,
     started: Instant,
@@ -264,6 +282,12 @@ impl ApplicationHandler<UserEvent> for App {
         log_stage("state", started);
         if self.open_terminal {
             state.toggle_terminal();
+        }
+        if self.open_git {
+            state.git_command(leader::GitCmd::Panel);
+        }
+        if self.open_diff {
+            state.git_command(leader::GitCmd::Diff);
         }
         // Hidden windows get no redraw events, so draw the first frame now; it shows the window.
         state.redraw();
@@ -343,6 +367,7 @@ impl ApplicationHandler<UserEvent> for App {
                     state.search.poll();
                     state.window.request_redraw();
                 }
+                UserEvent::Git => state.git_poll(),
             }
         }
     }
@@ -356,6 +381,8 @@ impl ApplicationHandler<UserEvent> for App {
             if state.message.as_ref().is_some_and(|(_, t)| t.elapsed() > MESSAGE_TIME) {
                 state.message = None;
             }
+            state.reload_changed_files();
+            state.git_tick(now);
             state.window.request_redraw();
         }
         let mut wake = state.next_stats;
@@ -455,6 +482,11 @@ impl State {
         let initial_theme = Theme::by_name(&settings.theme).unwrap_or_else(Theme::dark);
         let find_labels = find::ToggleLabels::new(fs, ui_font, &family, &initial_theme);
         let search = search_panel::SearchPanel::new(fs, ui_font, family.clone());
+        let mut git = git_panel::GitPanel::new(fs, ui_font, family.clone());
+        let git_proxy = proxy.clone();
+        git.set_wake(move || {
+            let _ = git_proxy.send_event(UserEvent::Git);
+        });
 
         let mut state = Self {
             window,
@@ -497,6 +529,8 @@ impl State {
             find_labels,
             search,
             sidebar: Sidebar::Explorer,
+            git,
+            diff: None,
             proxy,
             lsp: None,
             lsp_failed: false,
@@ -533,7 +567,7 @@ impl State {
         let (w, h) = (w as f32, h as f32);
         let status_h = (self.ui_font.line_h * 1.25).round();
         let tabs_h = (self.ui_font.line_h * 1.6).round();
-        let explorer_w = if (self.explorer.is_some() || self.sidebar == Sidebar::Search) && self.explorer_visible {
+        let explorer_w = if (self.explorer.is_some() || self.sidebar != Sidebar::Explorer) && self.explorer_visible {
             (self.settings.ui.explorer_width * self.ui_font.cell_w).min(w * 0.4).round()
         } else {
             0.0
@@ -565,6 +599,10 @@ impl State {
         }
         if let Some(r) = self.layout.explorer {
             self.search.set_area(r);
+            self.git.set_area(r);
+        }
+        if let Some(d) = &mut self.diff {
+            d.set_area(area);
         }
         self.window.request_redraw();
     }
@@ -590,6 +628,9 @@ impl State {
         self.find.set_font(ui);
         self.find_labels.set_font(ui);
         self.search.set_font(ui);
+        self.git.set_font(ui);
+        // The diff view keeps its own fonts; reopening is cheaper than re-measuring it.
+        self.diff = None;
         let m = Metrics::new(ui.size, ui.line_h);
         for b in [&mut self.status_left, &mut self.status_right, &mut self.tab_bar] {
             b.set_metrics(m);
@@ -625,6 +666,11 @@ impl State {
         self.explorer_visible = true;
         config::remember_project(&path);
         self.index.rebuild(&path);
+        self.git.open_repo(&path);
+        for t in &mut self.tabs {
+            t.git_base = None;
+        }
+        self.load_git_heads();
         self.relayout();
     }
 
@@ -657,6 +703,7 @@ impl State {
             let mut view = EditorView::new(doc, fs, self.font, self.family.clone());
             view.set_area(self.layout.editor);
             self.configure_view(&mut view);
+            self.git.load_head(path);
             if self.tabs[self.active].is_untouched() {
                 self.tabs[self.active] = view;
                 self.activate(self.active);
@@ -671,11 +718,13 @@ impl State {
         }
         self.focus = Focus::Editor;
         self.completion = None;
+        self.diff = None;
         self.lsp_open_all();
     }
 
     fn activate(&mut self, index: usize) {
         self.active = index;
+        self.diff = None;
         if self.cycling.is_none() {
             self.mru.retain(|&i| i != index);
             self.mru.insert(0, index);
@@ -781,6 +830,7 @@ impl State {
         let ed = &mut self.tabs[self.active];
         match ed.doc.save() {
             Ok(()) => {
+                ed.refresh_disk_mtime();
                 let name = ed.file_name();
                 if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
                     server.saved(path);
@@ -789,6 +839,9 @@ impl State {
                 self.show(format!("{name} gespeichert"));
                 if is_settings {
                     self.reload_settings();
+                }
+                if self.git.repo.is_some() {
+                    self.git.refresh_status();
                 }
             }
             Err(e) => self.show(format!("Speichern fehlgeschlagen: {e}")),
@@ -815,6 +868,7 @@ impl State {
         match self.editor_mut().save_as(path.clone()) {
             Ok(()) => {
                 self.show(format!("{} gespeichert", file_name(&path)));
+                self.git.load_head(&path);
                 self.lsp_open_all();
                 if let Some(ex) = &mut self.explorer {
                     ex.refresh();
@@ -917,6 +971,14 @@ impl State {
                 self.rename_key(event, &key);
                 return;
             }
+            Overlay::Branches(_) => {
+                self.branch_menu_key(&key);
+                return;
+            }
+            Overlay::NewBranch(_) => {
+                self.new_branch_key(event, &key);
+                return;
+            }
             Overlay::None => {}
         }
 
@@ -928,6 +990,14 @@ impl State {
         }
         if self.focus == Focus::Search && self.explorer_visible && self.sidebar == Sidebar::Search {
             self.search_key(event);
+            return;
+        }
+        if self.focus == Focus::Git && self.explorer_visible && self.sidebar == Sidebar::Git {
+            self.git_key(event);
+            return;
+        }
+        if self.diff.is_some() && self.focus == Focus::Editor {
+            self.diff_key(event);
             return;
         }
         if self.focus == Focus::Editor && self.find.open && self.find.focused {
@@ -1782,30 +1852,39 @@ impl State {
         match action {
             search_panel::PanelAction::None => {}
             search_panel::PanelAction::Close => {
-                self.sidebar = Sidebar::Explorer;
-                self.focus = Focus::Editor;
-                if self.explorer.is_none() {
-                    self.explorer_visible = false;
-                }
-                self.relayout();
+                self.close_sidebar_panel();
             }
             search_panel::PanelAction::Open { path, line, column, len } => {
-                self.open_path(&path);
-                let ed = self.editor_mut();
-                if ed.doc.path() == Some(path.as_path()) {
-                    let rope = ed.doc.text();
-                    let line = line.min(rope.len_lines().saturating_sub(1));
-                    let start_byte = rope.line_to_byte(line) + column;
-                    let start = rope.byte_to_char(start_byte.min(rope.len_bytes()));
-                    let end = (start + len).min(rope.len_chars());
-                    ed.jump_to(start);
-                    ed.doc.set_selection(wyvern_buffer::Selection::single(wyvern_buffer::Range::new(start, end)));
-                }
-                // Keep the panel focused for quick browsing with arrows/Enter.
-                self.focus = Focus::Search;
+                self.open_search_result(path, line, column, len);
             }
             search_panel::PanelAction::ReplaceAll => self.replace_in_project(),
         }
+    }
+
+    /// Back from the search or git panel to the explorer.
+    fn close_sidebar_panel(&mut self) {
+        self.sidebar = Sidebar::Explorer;
+        self.focus = Focus::Editor;
+        if self.explorer.is_none() {
+            self.explorer_visible = false;
+        }
+        self.relayout();
+    }
+
+    fn open_search_result(&mut self, path: PathBuf, line: usize, column: usize, len: usize) {
+        self.open_path(&path);
+        let ed = self.editor_mut();
+        if ed.doc.path() == Some(path.as_path()) {
+            let rope = ed.doc.text();
+            let line = line.min(rope.len_lines().saturating_sub(1));
+            let start_byte = rope.line_to_byte(line) + column;
+            let start = rope.byte_to_char(start_byte.min(rope.len_bytes()));
+            let end = (start + len).min(rope.len_chars());
+            ed.jump_to(start);
+            ed.doc.set_selection(wyvern_buffer::Selection::single(wyvern_buffer::Range::new(start, end)));
+        }
+        // Keep the panel focused for quick browsing with arrows/Enter.
+        self.focus = Focus::Search;
     }
 
     /// Alt+A in the search panel: replaces in all files with matches. Open files are changed in
@@ -1861,6 +1940,365 @@ impl State {
         }
         self.show(msg);
         self.search.schedule();
+    }
+
+    // ----- git -----
+
+    /// Asks the background worker for the committed version of every open file.
+    fn load_git_heads(&mut self) {
+        if self.git.repo.is_none() {
+            return;
+        }
+        for t in &self.tabs {
+            if let Some(p) = t.doc.path() {
+                self.git.load_head(p);
+            }
+        }
+    }
+
+    /// Files changed by another program (git, Claude Code, a formatter): load them again if
+    /// they have no unsaved changes here.
+    fn reload_changed_files(&mut self) {
+        let mut reloaded = Vec::new();
+        for t in &mut self.tabs {
+            if t.reload_if_changed_on_disk()
+                && let Some(p) = t.doc.path() {
+                    reloaded.push(p.to_path_buf());
+                }
+        }
+        if reloaded.is_empty() {
+            return;
+        }
+        if let Some(server) = &mut self.lsp {
+            for p in &reloaded {
+                server.close(p);
+            }
+        }
+        self.lsp_open_all();
+        if self.git.repo.is_some() {
+            for p in &reloaded {
+                self.git.load_head(p);
+            }
+            self.git.refresh_status();
+        }
+        if self.find.open {
+            self.find.invalidate();
+        }
+        self.window.request_redraw();
+    }
+
+    /// Refreshes the status while the panel is visible, fetches now and then.
+    fn git_tick(&mut self, now: Instant) {
+        if self.git.repo.is_none() || self.git.busy.is_some() {
+            return;
+        }
+        let visible = self.explorer_visible && self.sidebar == Sidebar::Git;
+        let due = |last: Option<Instant>, every: Duration| last.is_none_or(|t| now.duration_since(t) >= every);
+        let upstream = self.git.status.as_ref().is_some_and(|s| s.has_upstream);
+        if upstream && due(self.git.last_fetch, git_panel::FETCH_INTERVAL) {
+            self.git.fetch();
+        } else if visible && due(self.git.last_status, git_panel::STATUS_INTERVAL) {
+            self.git.refresh_status();
+        }
+    }
+
+    fn git_poll(&mut self) {
+        use git_panel::GitResult as R;
+        for result in self.git.poll() {
+            match result {
+                R::Status(Ok(_)) => {}
+                R::Status(Err(e)) => log::warn!("git status: {e}"),
+                R::Committed(Ok(summary)) => {
+                    self.git.message.clear();
+                    self.show(format!("Committet: {summary}"));
+                    self.git.refresh_status();
+                    self.load_git_heads();
+                }
+                R::Synced(Ok(msg)) => {
+                    self.show(msg);
+                    self.git.refresh_status();
+                    self.reload_changed_files();
+                    self.load_git_heads();
+                }
+                R::Switched(Ok(branch)) => {
+                    self.show(format!("Gewechselt zu „{branch}“"));
+                    self.git.refresh_status();
+                    self.reload_changed_files();
+                    self.load_git_heads();
+                }
+                R::Committed(Err(e)) | R::Synced(Err(e)) | R::Switched(Err(e)) | R::Branches(Err(e)) => {
+                    self.show(e);
+                    self.git.refresh_status();
+                }
+                R::Branches(Ok(list)) => {
+                    let current = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+                    let mut items = vec![("+ neuer Branch …".to_string(), wyvern_lsp::Value::Null)];
+                    items.extend(list.into_iter().map(|b| {
+                        let label = if b == current { format!("{b}   (aktuell)") } else { b.clone() };
+                        (label, wyvern_lsp::Value::String(b))
+                    }));
+                    let fs = self.renderer.font_system();
+                    let title = "Branch wechseln (Ziffer oder Enter, Esc)";
+                    self.overlay = Overlay::Branches(menu::Menu::new(fs, self.ui_font, title, items));
+                }
+                R::Head(path, content) => {
+                    if let Some(i) = self.tab_for(&path) {
+                        self.tabs[i].git_base = content;
+                    }
+                }
+                R::Blame(Ok(b), x, y) => {
+                    let text = if b.uncommitted {
+                        "Noch nicht committet".to_string()
+                    } else {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs() as i64);
+                        let short: String = b.hash.chars().take(8).collect();
+                        format!("{} · {}\n{}\n{short}", b.author, wyvern_git::relative_time(b.time, now), b.summary)
+                    };
+                    let fs = self.renderer.font_system();
+                    self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &text, x, y));
+                }
+                R::Blame(Err(e), ..) => self.show(e),
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    fn git_command(&mut self, cmd: leader::GitCmd) {
+        use leader::GitCmd as G;
+        if self.git.repo.is_none() {
+            let msg = if self.explorer.is_none() {
+                "Kein Ordner offen: Alt → p → o öffnet einen."
+            } else {
+                "Kein Git-Repository in diesem Ordner (im Terminal: git init)."
+            };
+            self.show(msg);
+            if !matches!(cmd, G::Panel) {
+                return;
+            }
+        }
+        let busy = self.git.busy.clone();
+        if let (Some(b), G::Commit | G::Sync | G::Branch | G::NewBranch) = (&busy, cmd) {
+            self.show(format!("Git ist beschäftigt: {b}"));
+            return;
+        }
+        match cmd {
+            G::Panel => self.show_git_panel(),
+            G::Commit => {
+                if self.git.message.trim().is_empty() {
+                    self.show_git_panel();
+                    self.show("Commit-Nachricht eingeben, dann Strg+Enter");
+                } else {
+                    self.commit();
+                }
+            }
+            G::Sync => self.git.sync(),
+            G::Branch => self.git.branches(),
+            G::NewBranch => self.start_new_branch(),
+            G::Diff => match self.editor().doc.path().map(Path::to_path_buf) {
+                Some(p) => self.open_diff(&p),
+                None => self.show("Die Datei ist noch nicht gespeichert."),
+            },
+            G::Blame => {
+                let ed = self.editor();
+                let Some(path) = ed.doc.path().map(Path::to_path_buf) else {
+                    self.show("Die Datei ist noch nicht gespeichert.");
+                    return;
+                };
+                let head = ed.doc.selection().primary().head;
+                let line = ed.doc.text().char_to_line(head);
+                let (x, y) = ed.screen_pos(head);
+                let y = y + ed.line_height();
+                self.git.blame(&path, line, x, y);
+            }
+        }
+    }
+
+    fn show_git_panel(&mut self) {
+        self.sidebar = Sidebar::Git;
+        self.explorer_visible = true;
+        self.focus = Focus::Git;
+        if self.git.repo.is_some() {
+            self.git.refresh_status();
+        }
+        self.relayout();
+    }
+
+    /// "Immer alles committen": saves open files first, then `git add -A` + commit.
+    fn commit(&mut self) {
+        let mut saved = 0;
+        for t in &mut self.tabs {
+            if t.doc.is_dirty() && t.doc.path().is_some() && t.doc.save().is_ok() {
+                t.refresh_disk_mtime();
+                saved += 1;
+                if let (Some(server), Some(p)) = (&mut self.lsp, t.doc.path()) {
+                    server.saved(p);
+                }
+            }
+        }
+        if saved > 0 {
+            self.show(format!("{saved} Datei(en) vor dem Commit gespeichert"));
+        }
+        self.git.commit();
+    }
+
+    fn git_key(&mut self, event: &KeyEvent) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        if ctrl && matches!(&event.key_without_modifiers(), Key::Character(c) if c.as_str() == "v") {
+            if let Some((text, _)) = self.get_clipboard() {
+                self.git.paste(&text);
+            }
+            return;
+        }
+        let action = self.git.key(event, mods);
+        self.apply_git_action(action);
+    }
+
+    fn apply_git_action(&mut self, action: git_panel::GitAction) {
+        use git_panel::GitAction as A;
+        match action {
+            A::None => {}
+            A::Close => self.close_sidebar_panel(),
+            A::Commit => self.git_command(leader::GitCmd::Commit),
+            A::OpenDiff(rel) => {
+                let Some(root) = self.git.repo.as_ref().map(|r| r.root().to_path_buf()) else { return };
+                let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                self.open_diff(&path);
+                // Stay in the panel to look through the changes with arrows and Enter.
+                self.focus = Focus::Git;
+            }
+        }
+    }
+
+    /// Shows the committed version next to the current one.
+    fn open_diff(&mut self, path: &Path) {
+        let Some(repo) = self.git.repo.clone() else { return };
+        let Some(rel) = repo.relative(path) else {
+            self.show("Die Datei liegt nicht im Git-Repository.");
+            return;
+        };
+        let old = repo.head_content(&rel).unwrap_or_default().replace("\r\n", "\n");
+        let new = match self.tab_for(path) {
+            Some(i) => self.tabs[i].doc.text().to_string(),
+            None => std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n"),
+        };
+        if old == new {
+            self.show(format!("{rel}: keine Änderungen seit dem letzten Commit"));
+            return;
+        }
+        let fs = self.renderer.font_system();
+        let mut view = diff_view::DiffView::new(fs, self.font, self.ui_font, self.family.clone(), &self.theme, &rel, &old, &new);
+        view.set_area(self.layout.editor);
+        view.jump_change(true);
+        self.diff = Some(view);
+        self.focus = Focus::Editor;
+        self.completion = None;
+        self.find.close();
+        self.window.request_redraw();
+    }
+
+    fn diff_key(&mut self, event: &KeyEvent) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        let Some(d) = &mut self.diff else { return };
+        match event.key_without_modifiers() {
+            Key::Named(NamedKey::Escape) => self.diff = None,
+            Key::Character(c) if ctrl && c.as_str() == "w" => self.diff = None,
+            Key::Named(NamedKey::ArrowUp) => d.scroll_by(-1),
+            Key::Named(NamedKey::ArrowDown) => d.scroll_by(1),
+            Key::Named(NamedKey::PageUp) => d.scroll_by(-d.page()),
+            Key::Named(NamedKey::PageDown) => d.scroll_by(d.page()),
+            Key::Named(NamedKey::Home) if ctrl => d.scroll_to(0),
+            Key::Named(NamedKey::End) if ctrl => d.scroll_to(usize::MAX / 2),
+            Key::Named(NamedKey::F8) => {
+                d.jump_change(!mods.shift_key());
+            }
+            Key::Character(c) if ctrl && c.as_str() == "q" => self.open_palette(""),
+            _ => self.show("Diff-Ansicht: Esc schließt, F8 / Shift+F8 springen zur nächsten Änderung"),
+        }
+    }
+
+    fn start_new_branch(&mut self) {
+        let fs = self.renderer.font_system();
+        let prompt = menu::Prompt::new(fs, self.ui_font, "Neuer Branch (Enter erstellt und wechselt, Esc)", "");
+        self.overlay = Overlay::NewBranch(prompt);
+    }
+
+    fn branch_menu_key(&mut self, key: &Key) {
+        let Overlay::Branches(menu) = &mut self.overlay else { return };
+        let picked = match key {
+            Key::Named(NamedKey::Escape) => {
+                self.overlay = Overlay::None;
+                return;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.move_selection(-1);
+                None
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                menu.move_selection(1);
+                None
+            }
+            Key::Named(NamedKey::Enter) => menu.selected(),
+            Key::Character(c) => c.chars().next().and_then(|ch| ch.to_digit(10)).and_then(|n| menu.numbered(n as usize)),
+            _ => None,
+        };
+        let Some(picked) = picked else { return };
+        self.overlay = Overlay::None;
+        match picked.as_str() {
+            Some(branch) => {
+                if self.git.status.as_ref().is_some_and(|s| s.branch == branch) {
+                    self.show(format!("Schon auf „{branch}“"));
+                } else {
+                    self.warn_unsaved_before_switch();
+                    self.git.switch(branch.to_string(), false);
+                }
+            }
+            None => self.start_new_branch(),
+        }
+    }
+
+    fn new_branch_key(&mut self, event: &KeyEvent, key: &Key) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        let Overlay::NewBranch(prompt) = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::Enter) => {
+                let name = prompt.text.trim().replace(' ', "-");
+                self.overlay = Overlay::None;
+                let valid = !name.is_empty()
+                    && !name.starts_with('-')
+                    && name.chars().all(|c| c.is_alphanumeric() || "-_./".contains(c));
+                if !valid {
+                    self.show("Ungültiger Branch-Name (erlaubt: Buchstaben, Ziffern, - _ . /)");
+                    return;
+                }
+                self.git.switch(name, true);
+            }
+            Key::Named(NamedKey::Backspace) => prompt.backspace(ctrl),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::End | NamedKey::Home) => prompt.keep(),
+            Key::Character(c) if ctrl && c.as_str() == "v" => {
+                if let Some(t) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok())
+                    && let Overlay::NewBranch(prompt) = &mut self.overlay {
+                        prompt.type_text(t.lines().next().unwrap_or("").trim());
+                    }
+            }
+            _ => {
+                if let Some(t) = Keymap::text(event, mods) {
+                    prompt.type_text(&t);
+                }
+            }
+        }
+    }
+
+    fn warn_unsaved_before_switch(&mut self) {
+        let dirty = self.tabs.iter().filter(|t| t.doc.is_dirty()).count();
+        if dirty > 0 {
+            self.show(format!("{dirty} Datei(en) ungespeichert: sie bleiben wie im Editor und werden nicht neu geladen"));
+        }
     }
 
     // ----- search field -----
@@ -1976,7 +2414,7 @@ impl State {
         match action {
             Group(_) => {}
             ToggleExplorer => {
-                if self.sidebar == Sidebar::Search && self.explorer_visible {
+                if self.sidebar != Sidebar::Explorer && self.explorer_visible {
                     self.sidebar = Sidebar::Explorer;
                     self.focus = Focus::Explorer;
                     self.relayout();
@@ -2042,6 +2480,7 @@ impl State {
                 let next = if self.theme.name == "dunkel" { "hell" } else { "dunkel" };
                 self.set_theme(next);
             }
+            Git(cmd) => self.git_command(cmd),
         }
     }
 
@@ -2333,6 +2772,19 @@ impl State {
             }
             return;
         }
+        if self.sidebar == Sidebar::Git && self.explorer_visible && self.git.contains(x, y) {
+            self.focus = Focus::Git;
+            if button == MouseButton::Left {
+                let action = self.git.click(y);
+                self.apply_git_action(action);
+            }
+            return;
+        }
+        if let Some(d) = &self.diff
+            && d.contains(x, y) {
+                self.focus = Focus::Editor;
+                return;
+            }
         if let Some(ex) = &mut self.explorer
             && self.explorer_visible && self.sidebar == Sidebar::Explorer && ex.contains(x, y) {
                 self.focus = Focus::Explorer;
@@ -2398,8 +2850,19 @@ impl State {
             self.window.request_redraw();
             return;
         }
+        if self.sidebar == Sidebar::Git && self.explorer_visible && self.git.contains(x, y) {
+            self.git.scroll_by(-dy.round() as isize);
+            self.window.request_redraw();
+            return;
+        }
+        if let Some(d) = &mut self.diff
+            && d.contains(x, y) {
+                d.scroll_by(-dy.round() as isize);
+                self.window.request_redraw();
+                return;
+            }
         if let Some(ex) = &mut self.explorer
-            && self.explorer_visible && ex.contains(x, y) {
+            && self.explorer_visible && self.sidebar == Sidebar::Explorer && ex.contains(x, y) {
                 ex.scroll_by(-dy.round() as isize);
                 self.window.request_redraw();
                 return;
@@ -2470,6 +2933,9 @@ impl State {
         }
         if self.focus == Focus::Terminal && self.terminal_visible {
             left = "Terminal".to_string();
+        }
+        if let Some(d) = &self.diff {
+            left = format!("Diff: {}", d.title);
         }
         if let Some((msg, _)) = &self.message {
             left.push_str("   ·   ");
@@ -2543,9 +3009,10 @@ impl State {
         }
         match &mut self.overlay {
             Overlay::Menu(m) => m.prepare(self.renderer.font_system(), &self.theme, &self.family),
-            Overlay::Rename { prompt, .. } => {
+            Overlay::Rename { prompt, .. } | Overlay::NewBranch(prompt) => {
                 prompt.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
+            Overlay::Branches(m) => m.prepare(self.renderer.font_system(), &self.theme, &self.family),
             _ => {}
         }
         if self.terminal_visible {
@@ -2557,7 +3024,10 @@ impl State {
         {
             let theme = &self.theme;
             let fs = self.renderer.font_system();
-            self.tabs[self.active].prepare(fs, theme);
+            match &mut self.diff {
+                Some(d) => d.prepare(fs, theme),
+                None => self.tabs[self.active].prepare(fs, theme),
+            }
             if let Some(ex) = &mut self.explorer {
                 ex.prepare(self.renderer.font_system(), theme, active_path.as_deref());
             }
@@ -2565,6 +3035,10 @@ impl State {
         if self.sidebar == Sidebar::Search && self.explorer_visible {
             let focused = self.focus == Focus::Search;
             self.search.prepare(self.renderer.font_system(), &self.theme, focused);
+        }
+        if self.sidebar == Sidebar::Git && self.explorer_visible {
+            let focused = self.focus == Focus::Git;
+            self.git.prepare(self.renderer.font_system(), &self.theme, focused);
         }
         let active = self.active;
         if self.find.open {
@@ -2590,6 +3064,8 @@ impl State {
 
         if self.explorer_visible && self.sidebar == Sidebar::Search {
             self.search.draw(theme, self.focus == Focus::Search, &mut under, &mut text);
+        } else if self.explorer_visible && self.sidebar == Sidebar::Git {
+            self.git.draw(theme, self.focus == Focus::Git, &mut under, &mut text);
         } else if let (Some(ex), true) = (&self.explorer, self.explorer_visible) {
             ex.draw(theme, self.focus == Focus::Explorer, &mut under, &mut text);
         }
@@ -2615,7 +3091,10 @@ impl State {
             clip: Some([l.tabs.x as i32, 0, (l.tabs.x + l.tabs.w) as i32, l.tabs.h as i32]),
         });
 
-        self.tabs[self.active].draw(theme, scale, &mut under, &mut over, &mut text);
+        match &self.diff {
+            Some(d) => d.draw(theme, scale, &mut under, &mut over, &mut text),
+            None => self.tabs[self.active].draw(theme, scale, &mut under, &mut over, &mut text),
+        }
         if self.terminal_visible {
             let focused = self.focus == Focus::Terminal;
             self.terminal.draw(theme, focused, scale, &mut under, &mut over, &mut text);
@@ -2668,6 +3147,15 @@ impl State {
                 Overlay::Menu(m) => m.draw(theme, self.ui_font, cx, below, window, scale, &mut overlay, &mut overlay_text),
                 Overlay::Rename { prompt, .. } => {
                     prompt.draw(theme, self.ui_font, cx, below, window, scale, &mut overlay, &mut overlay_text)
+                }
+                // Git popups belong to no cursor: show them near the top of the editor.
+                Overlay::Branches(m) => {
+                    let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
+                    m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
+                }
+                Overlay::NewBranch(prompt) => {
+                    let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
+                    prompt.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }
                 _ => {}
             }

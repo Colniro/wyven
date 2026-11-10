@@ -58,6 +58,7 @@ pub struct Sources<'a> {
 
 pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
     use leader::Action as L;
+    use leader::GitCmd as G;
     use Cmd::{Key as K, Leader as Ld};
     use Command as C;
     vec![
@@ -73,6 +74,13 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Projekt: Explorer fokussieren", "Alt p e", Ld(L::FocusExplorer)),
         ("Ansicht: Explorer ein/aus", "Alt e", Ld(L::ToggleExplorer)),
         ("Ansicht: Terminal öffnen/schließen", "Alt t", Ld(L::ToggleTerminal)),
+        ("Git: Panel anzeigen", "Alt g g", Ld(L::Git(G::Panel))),
+        ("Git: Alles committen", "Alt g c", Ld(L::Git(G::Commit))),
+        ("Git: Sync (pull + push)", "Alt g s", Ld(L::Git(G::Sync))),
+        ("Git: Branch wechseln …", "Alt g b", Ld(L::Git(G::Branch))),
+        ("Git: Neuer Branch …", "Alt g n", Ld(L::Git(G::NewBranch))),
+        ("Git: Diff der Datei", "Alt g d", Ld(L::Git(G::Diff))),
+        ("Git: Blame der Zeile", "Alt g l", Ld(L::Git(G::Blame))),
         ("Theme: Wyvern Dunkel", "", Ld(L::SetTheme("dunkel"))),
         ("Theme: Wyvern Hell", "", Ld(L::SetTheme("hell"))),
         ("Theme: hell/dunkel umschalten", "Alt v t", Ld(L::ToggleTheme)),

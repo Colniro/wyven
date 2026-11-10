@@ -26,6 +26,18 @@ pub enum Action {
     ToggleTheme,
     /// Opens/focuses/closes the terminal panel.
     ToggleTerminal,
+    Git(GitCmd),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitCmd {
+    Panel,
+    Commit,
+    Sync,
+    Branch,
+    NewBranch,
+    Diff,
+    Blame,
 }
 
 pub struct Item {
@@ -75,13 +87,13 @@ const PROJECT: &[Item] = &[
 ];
 
 const GIT: &[Item] = &[
-    item('g', "Git-Panel", Later("Git kommt in Phase 2")),
-    item('c', "commit", Later("Git kommt in Phase 2")),
-    item('p', "push", Later("Git kommt in Phase 2")),
-    item('u', "pull", Later("Git kommt in Phase 2")),
-    item('b', "Branch wechseln", Later("Git kommt in Phase 2")),
-    item('d', "Diff der Datei", Later("Git kommt in Phase 2")),
-    item('l', "Blame", Later("Git kommt in Phase 2")),
+    item('g', "Git-Panel", Git(GitCmd::Panel)),
+    item('c', "alles committen", Git(GitCmd::Commit)),
+    item('s', "Sync (pull + push)", Git(GitCmd::Sync)),
+    item('b', "Branch wechseln", Git(GitCmd::Branch)),
+    item('n', "neuer Branch", Git(GitCmd::NewBranch)),
+    item('d', "Diff der Datei", Git(GitCmd::Diff)),
+    item('l', "Blame der Zeile", Git(GitCmd::Blame)),
 ];
 
 const DEBUG: &[Item] = &[

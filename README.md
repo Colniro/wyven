@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 fertig, Phase 2 läuft (Terminal und Suchen/Ersetzen fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Noch offen in Phase 2: Git, Minimap, Sticky Scroll und Code-Faltung (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1 fertig, Phase 2 läuft (Terminal, Suchen/Ersetzen und Git fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Noch offen in Phase 2: Minimap, Sticky Scroll und Code-Faltung (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -30,6 +30,15 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - Alle Tasten gehen an die Shell, auch `Esc`, `Strg+C` und `Strg+V`. So laufen auch Programme wie Claude Code oder `dotnet watch` darin. `Alt` antippen öffnet weiterhin das Leader-Menü.
   - Kopieren/Einfügen: `Strg+Shift+C` / `Strg+Shift+V`, Auswahl mit der Maus. Mausrad scrollt zurück (bis 5000 Zeilen).
   - Volle Farben (256 und True Color), Shell und Höhe in `settings.toml` unter `[terminal]`. Standard: PowerShell 7, sonst Windows PowerShell.
+
+- **Git** (nutzt das installierte `git`, alles läuft im Hintergrund):
+  - **Balken im Zeilenrand**: grün neu, blau geändert, rote Marke für gelöschte Zeilen, verglichen mit dem letzten Commit und beim Tippen aktualisiert.
+  - **Git-Panel** links statt des Explorers (`Alt → g → g`): Branch, ↑/↓ gegenüber dem Server, Commit-Nachricht und alle geänderten Dateien. Nachricht eintippen, `Strg+Enter` committet **alles** (vorher werden offene Dateien gespeichert). `↑`/`↓` + `Enter` oder Klick zeigt den Diff einer Datei, `Esc` zurück zum Explorer.
+  - **Diff nebeneinander** (`Alt → g → d` für die aktuelle Datei): links der letzte Commit, rechts der aktuelle Stand, beide scrollen gemeinsam. `F8` / `Shift+F8` springen zur nächsten/vorigen Änderung, `Esc` schließt.
+  - **Sync** (`Alt → g → s`): pull, dann push. Ein neuer Branch wird beim ersten Sync veröffentlicht. Alle 3 Minuten wird im Hintergrund `fetch` ausgeführt.
+  - **Branches**: `Alt → g → b` wechseln (Ziffer oder Enter), `Alt → g → n` neuen Branch anlegen und wechseln.
+  - **Blame auf Abruf** (`Alt → g → l`): Autor, Alter und Commit-Nachricht der Cursorzeile als Tooltip.
+- **Dateien, die sich auf der Festplatte ändern** (Branch-Wechsel, Pull, Claude Code, Formatter), werden automatisch neu geladen, solange sie im Editor keine ungespeicherten Änderungen haben.
 
 - **Einstellungen** in `settings.toml` (`%APPDATA%\Wyvern\settings.toml`, öffnen mit `Alt → ,`): Theme, Schriftart/-größe, Zeilenhöhe, Tab-Breite, Einrückung, Autovervollständigung und Info-Tooltip an/aus, Oberflächenschrift und Explorer-Breite. Die Datei wird beim ersten Start mit allen Optionen und deutschen Erklärungen angelegt. Speichern in Wyvern wendet sie sofort an. Tippfehler bei Optionsnamen werden in der Statusleiste gemeldet, die alten Einstellungen bleiben dann aktiv.
 - **Themes** „Wyvern Dunkel“ und „Wyvern Hell“: umschalten mit `Alt → v → t` oder im Suchfeld `>Theme`. Die Wahl wird in `settings.toml` gespeichert.
@@ -83,6 +92,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 | `crates/wyvern-buffer` | Textpuffer (Rope), Multi-Cursor, Transaktionen, Undo/Redo, Laden/Speichern |
 | `crates/wyvern-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting, Symbole |
 | `crates/wyvern-search` | Suchen/Ersetzen: Abfragen (Text, Wort, Groß/Klein, Regex), Projektsuche |
+| `crates/wyvern-git` | Git über die `git`-Kommandozeile: Status, Commit, Sync, Branches, Blame, Zeilen-Diffs |
 | `crates/wyvern-terminal` | Terminal: Shell in ConPTY, Emulation mit `alacritty_terminal`, Tasten-Kodierung |
 | `crates/wyvern-lsp` | Language-Server-Client: JSON-RPC über stdio, UTF-16-Positionen |
 | `crates/wyvern-render` | GPU-Rendering (wgpu): Rechtecke und Text (glyphon / cosmic-text) |

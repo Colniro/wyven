@@ -29,3 +29,4 @@ toml.workspace = true
 wyvern-terminal.workspace = true
 wyvern-search.workspace = true
 regex.workspace = true
+wyvern-git.workspace = true

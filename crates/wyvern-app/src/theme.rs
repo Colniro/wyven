@@ -52,6 +52,13 @@ pub struct Theme {
     pub error: Rgba,
     pub warning: Rgba,
     pub info: Rgba,
+    pub git_added: Rgba,
+    pub git_modified: Rgba,
+    pub git_deleted: Rgba,
+    /// Line backgrounds in the diff view.
+    pub diff_removed: Rgba,
+    pub diff_added: Rgba,
+    pub diff_filler: Rgba,
     pub syntax: SyntaxColors,
 }
 
@@ -95,6 +102,12 @@ impl Theme {
             error: Rgba::rgb(0xF1, 0x4C, 0x4C),
             warning: Rgba::rgb(0xCC, 0xA7, 0x00),
             info: Rgba::rgb(0x3F, 0x9C, 0xD6),
+            git_added: Rgba::rgb(0x48, 0x9E, 0x5A),
+            git_modified: Rgba::rgb(0x2F, 0x7F, 0xC8),
+            git_deleted: Rgba::rgb(0xD0, 0x4A, 0x4A),
+            diff_removed: Rgba(0xC0, 0x40, 0x40, 0x40),
+            diff_added: Rgba(0x40, 0xA0, 0x50, 0x40),
+            diff_filler: Rgba(0x00, 0x00, 0x00, 0x40),
             // Inspired by Visual Studio's dark theme.
             syntax: SyntaxColors {
                 keyword: Rgba::rgb(0x56, 0x9C, 0xD6),
@@ -143,6 +156,12 @@ impl Theme {
             error: Rgba::rgb(0xD3, 0x2F, 0x2F),
             warning: Rgba::rgb(0xB5, 0x89, 0x00),
             info: Rgba::rgb(0x1F, 0x6F, 0xC5),
+            git_added: Rgba::rgb(0x2E, 0xA0, 0x43),
+            git_modified: Rgba::rgb(0x1F, 0x6F, 0xC5),
+            git_deleted: Rgba::rgb(0xCF, 0x22, 0x2E),
+            diff_removed: Rgba(0xFF, 0x80, 0x80, 0x50),
+            diff_added: Rgba(0x80, 0xE0, 0x90, 0x60),
+            diff_filler: Rgba(0x00, 0x00, 0x00, 0x14),
             // Inspired by Visual Studio's light theme.
             syntax: SyntaxColors {
                 keyword: Rgba::rgb(0x00, 0x00, 0xFF),

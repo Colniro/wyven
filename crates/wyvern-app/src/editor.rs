@@ -56,6 +56,18 @@ pub struct EditorView {
     /// Matches of the find box (char ranges, sorted) and which one is current.
     pub find_matches: Vec<(usize, usize)>,
     pub find_current: Option<usize>,
+    /// The file's content in the last commit; enables the git bars in the gutter.
+    pub git_base: Option<String>,
+    git_marks: Vec<(usize, wyvern_git::LineMark)>,
+    git_marks_version: Option<u64>,
+    /// Background color per line (diff view).
+    pub line_bg: Vec<Option<Rgba>>,
+    /// Replaces the line numbers (diff view: original numbers, blank for filler lines).
+    pub gutter_labels: Option<Vec<String>>,
+    /// Modification time of the file when it was loaded or saved.
+    disk_mtime: Option<std::time::SystemTime>,
+    /// Draw cursor and current-line highlight (off in the diff view).
+    pub show_cursor: bool,
     syntax: Option<Syntax>,
     pub scroll_line: usize,
     pub scroll_x: f32,
@@ -72,6 +84,12 @@ pub struct EditorView {
 
 impl EditorView {
     pub fn new(doc: Document, fs: &mut FontSystem, font: FontMetrics, family: String) -> Self {
+        #[allow(clippy::let_and_return)]
+        let view = Self::build(doc, fs, font, family);
+        view
+    }
+
+    fn build(doc: Document, fs: &mut FontSystem, font: FontMetrics, family: String) -> Self {
         let syntax = doc
             .path()
             .and_then(language_for_path)
@@ -83,11 +101,18 @@ impl EditorView {
             b.set_wrap(Wrap::None);
             b.set_monospace_width(Some(font.cell_w));
         }
-        Self {
+        let mut view = Self {
             doc,
             diagnostics: Vec::new(),
             find_matches: Vec::new(),
             find_current: None,
+            git_base: None,
+            git_marks: Vec::new(),
+            git_marks_version: None,
+            line_bg: Vec::new(),
+            gutter_labels: None,
+            disk_mtime: None,
+            show_cursor: true,
             syntax,
             scroll_line: 0,
             scroll_x: 0.0,
@@ -99,7 +124,47 @@ impl EditorView {
             gutter_buf,
             cache: None,
             title: None,
+        };
+        view.refresh_disk_mtime();
+        view
+    }
+
+    fn file_mtime(&self) -> Option<std::time::SystemTime> {
+        self.doc.path().and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+    }
+
+    /// Remembers the file's current modification time (after loading or saving).
+    pub fn refresh_disk_mtime(&mut self) {
+        self.disk_mtime = self.file_mtime();
+    }
+
+    /// If the file changed on disk (another program, git, Claude Code) and has no unsaved
+    /// changes here, loads it again, keeping the cursor and scroll position. Returns true if
+    /// the text was reloaded.
+    pub fn reload_if_changed_on_disk(&mut self) -> bool {
+        let Some(path) = self.doc.path().map(Path::to_path_buf) else { return false };
+        let now = self.file_mtime();
+        if now.is_none() || now == self.disk_mtime || self.doc.is_dirty() {
+            return false;
         }
+        self.disk_mtime = now;
+        let Ok(mut doc) = Document::open(&path) else { return false };
+        if doc.text() == self.doc.text() {
+            return false;
+        }
+        let head = self.doc.selection().primary().head.min(doc.text().len_chars());
+        doc.tab_width = self.doc.tab_width;
+        if !doc.indent_detected() {
+            doc.indent_unit = self.doc.indent_unit.clone();
+        }
+        doc.set_cursor(head);
+        self.syntax = doc.path().and_then(language_for_path).map(|cfg| Syntax::new(cfg, doc.text()));
+        self.doc = doc;
+        self.doc.take_edits();
+        self.diagnostics.clear();
+        self.git_marks_version = None;
+        self.cache = None;
+        true
     }
 
     /// A document without a file, with its own tab title and highlighting chosen by
@@ -160,6 +225,7 @@ impl EditorView {
             .map(|cfg| Syntax::new(cfg, self.doc.text()));
         self.doc.take_edits();
         self.cache = None;
+        self.refresh_disk_mtime();
         Ok(())
     }
 
@@ -335,6 +401,15 @@ impl EditorView {
 
     /// Re-shapes the visible text if anything relevant changed.
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme) {
+        if let Some(base) = &self.git_base {
+            if self.git_marks_version != Some(self.doc.version()) {
+                self.git_marks = wyvern_git::line_marks(base, &self.doc.text().to_string());
+                self.git_marks_version = Some(self.doc.version());
+            }
+        } else if !self.git_marks.is_empty() {
+            self.git_marks.clear();
+            self.git_marks_version = None;
+        }
         let rope = self.doc.text();
         let digits = rope.len_lines().max(1).to_string().len().max(3);
         self.gutter_cells = digits;
@@ -410,7 +485,11 @@ impl EditorView {
         let mut gutter: Vec<(String, Rgba)> = Vec::new();
         for line in first..last {
             let color = if line == current_line { theme.gutter_current } else { theme.gutter_text };
-            gutter.push((format!("{:>width$}\n", line + 1, width = digits), color));
+            let label = match &self.gutter_labels {
+                Some(labels) => labels.get(line).cloned().unwrap_or_default(),
+                None => (line + 1).to_string(),
+            };
+            gutter.push((format!("{label:>digits$}\n"), color));
         }
         self.gutter_buf.set_rich_text(
             gutter
@@ -458,7 +537,7 @@ impl EditorView {
 
         let primary = self.doc.selection().primary();
         let (cur_line, _) = col_of(primary.head);
-        if primary.is_empty() && (first..last).contains(&cur_line) {
+        if self.show_cursor && primary.is_empty() && (first..last).contains(&cur_line) {
             under.push(Quad {
                 x: text_left,
                 y: line_y(cur_line),
@@ -560,6 +639,41 @@ impl EditorView {
                     }
                     x += step;
                     up = !up;
+                }
+            }
+        }
+
+        // Line backgrounds (diff view).
+        for line in first..last {
+            if let Some(Some(color)) = self.line_bg.get(line) {
+                under.push(Quad { x: text_left, y: line_y(line), w: a.w - (text_left - a.x), h: lh, color: *color });
+            }
+        }
+
+        // Git bars in the gutter: green new, blue changed, red triangle-ish mark for deletions.
+        let bar_w = (3.0 * scale).round().max(2.0);
+        let bar_x = text_left - cw * 0.6;
+        for &(line, mark) in &self.git_marks {
+            match mark {
+                wyvern_git::LineMark::Added | wyvern_git::LineMark::Modified => {
+                    if (first..last).contains(&line) {
+                        let color = if mark == wyvern_git::LineMark::Added { theme.git_added } else { theme.git_modified };
+                        under.push(Quad { x: bar_x, y: line_y(line), w: bar_w, h: lh, color });
+                    }
+                }
+                wyvern_git::LineMark::DeletedAfter => {
+                    // usize::MAX = deleted at the very top: mark above the first line.
+                    let y = if line == usize::MAX {
+                        Some(a.y)
+                    } else if (first..last).contains(&line) {
+                        Some(line_y(line) + lh)
+                    } else {
+                        None
+                    };
+                    if let Some(y) = y {
+                        let h = (lh * 0.3).round();
+                        under.push(Quad { x: bar_x - bar_w, y: y - h / 2.0, w: bar_w * 3.0, h, color: theme.git_deleted });
+                    }
                 }
             }
         }

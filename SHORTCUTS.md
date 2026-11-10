@@ -90,7 +90,7 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 | `e` | **e**xplorer | Explorer ein/aus |
 | `t` | **t**erminal | Terminal ein/aus |
 | `s` | **s**earch | Suchpanel ein/aus |
-| `g` | **g**it | `g` Panel · `c` commit · `p` push · `u` pull · `b` branch wechseln · `d` diff der Datei · `l` blame (Zeile) |
+| `g` | **g**it | `g` Panel · `c` alles committen · `s` Sync (pull + push) · `b` Branch wechseln · `n` neuer Branch · `d` Diff der Datei · `l` Blame (Zeile) |
 | `d` | **d**ebug | `d` Panel · `b` alle Breakpoints · `w` Watch hinzufügen · `a` an Prozess anhängen (z. B. Godot) |
 | `j` | **j**ump | `d` Definition · `i` Implementierung · `r` Referenzen · `s` Symbol in Datei · `l` Zeile |
 | `c` | **c**ode | `r` umbenennen · `f` formatieren · `a` Quick Actions · `o` Usings ordnen · `e` nächster Fehler |
