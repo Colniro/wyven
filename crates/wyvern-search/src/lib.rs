@@ -41,9 +41,9 @@ impl Query {
             .map(Some)
             .map_err(|e| match e {
                 regex::Error::Syntax(s) => {
-                    format!("Ungültiger regulärer Ausdruck: {}", s.lines().last().unwrap_or(&s))
+                    format!("Invalid regular expression: {}", s.lines().last().unwrap_or(&s))
                 }
-                other => format!("Ungültiger regulärer Ausdruck: {other}"),
+                other => format!("Invalid regular expression: {other}"),
             })
     }
 }
@@ -242,7 +242,7 @@ mod tests {
     fn regex_errors_are_reported() {
         let mut query = q("(abc");
         query.regex = true;
-        assert!(query.compile().unwrap_err().starts_with("Ungültiger regulärer Ausdruck"));
+        assert!(query.compile().unwrap_err().starts_with("Invalid regular expression"));
         assert!(q("").compile().unwrap().is_none());
     }
 

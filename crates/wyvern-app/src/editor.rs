@@ -207,7 +207,7 @@ impl EditorView {
         self.doc
             .path()
             .and_then(Path::file_name)
-            .map_or("Unbenannt".into(), |n| n.to_string_lossy().into_owned())
+            .map_or("Untitled".into(), |n| n.to_string_lossy().into_owned())
     }
 
     /// An unnamed, never edited, empty document (can be replaced when opening a file).

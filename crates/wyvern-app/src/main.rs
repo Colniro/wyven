@@ -687,14 +687,14 @@ impl State {
                 match Document::open(path) {
                     Ok(d) => d,
                     Err(e) => {
-                        self.show(format!("{} kann nicht geöffnet werden: {e}", file_name(path)));
+                        self.show(format!("{} cannot be opened: {e}", file_name(path)));
                         return;
                     }
                 }
             } else {
                 let mut d = Document::default();
                 if let Err(e) = d.save_as(path.to_path_buf()) {
-                    self.show(format!("{} kann nicht angelegt werden: {e}", file_name(path)));
+                    self.show(format!("{} cannot be created: {e}", file_name(path)));
                     return;
                 }
                 d
@@ -749,7 +749,7 @@ impl State {
     fn close_tab(&mut self, index: usize) {
         let tab = &self.tabs[index];
         if tab.doc.is_dirty() {
-            let msg = format!("{} ungespeichert! Nochmal Strg+W verwirft", tab.file_name());
+            let msg = format!("{} is unsaved! Ctrl+W again discards it", tab.file_name());
             if !self.confirm("close-tab", index, &msg) {
                 return;
             }
@@ -793,7 +793,7 @@ impl State {
             }
         }
         if kept > 0 {
-            self.show(format!("{kept} Datei(en) mit ungespeicherten Änderungen bleiben offen."));
+            self.show(format!("{kept} file(s) with unsaved changes stay open."));
         }
     }
 
@@ -836,7 +836,7 @@ impl State {
                     server.saved(path);
                 }
                 let is_settings = ed.doc.path().is_some() && ed.doc.path() == settings::path().as_deref();
-                self.show(format!("{name} gespeichert"));
+                self.show(format!("{name} saved"));
                 if is_settings {
                     self.reload_settings();
                 }
@@ -844,7 +844,7 @@ impl State {
                     self.git.refresh_status();
                 }
             }
-            Err(e) => self.show(format!("Speichern fehlgeschlagen: {e}")),
+            Err(e) => self.show(format!("Save failed: {e}")),
         }
     }
 
@@ -859,7 +859,7 @@ impl State {
 
     fn save_as(&mut self) {
         let mut dialog = rfd::FileDialog::new()
-            .set_title("Speichern unter")
+            .set_title("Save As")
             .set_file_name(self.editor().file_name());
         if let Some(dir) = self.dialog_dir() {
             dialog = dialog.set_directory(dir);
@@ -867,7 +867,7 @@ impl State {
         let Some(path) = dialog.save_file() else { return };
         match self.editor_mut().save_as(path.clone()) {
             Ok(()) => {
-                self.show(format!("{} gespeichert", file_name(&path)));
+                self.show(format!("{} saved", file_name(&path)));
                 self.git.load_head(&path);
                 self.lsp_open_all();
                 if let Some(ex) = &mut self.explorer {
@@ -875,12 +875,12 @@ impl State {
                     ex.reveal(&path);
                 }
             }
-            Err(e) => self.show(format!("Speichern fehlgeschlagen: {e}")),
+            Err(e) => self.show(format!("Save failed: {e}")),
         }
     }
 
     fn pick_file(&mut self) {
-        let mut dialog = rfd::FileDialog::new().set_title("Datei öffnen");
+        let mut dialog = rfd::FileDialog::new().set_title("Open File");
         if let Some(dir) = self.dialog_dir() {
             dialog = dialog.set_directory(dir);
         }
@@ -890,7 +890,7 @@ impl State {
     }
 
     fn pick_folder(&mut self) {
-        let mut dialog = rfd::FileDialog::new().set_title("Ordner öffnen");
+        let mut dialog = rfd::FileDialog::new().set_title("Open Folder");
         if let Some(dir) = self.project_root() {
             dialog = dialog.set_directory(dir);
         }
@@ -904,7 +904,7 @@ impl State {
         if dirty == 0 {
             return true;
         }
-        let msg = format!("{dirty} Datei(en) ungespeichert! Nochmal schließen verwirft");
+        let msg = format!("{dirty} file(s) unsaved! Close again to discard");
         let ok = self.confirm("close-window", 0, &msg);
         self.window.request_redraw();
         ok
@@ -1018,11 +1018,11 @@ impl State {
             .handle(event, mods)
             .or_else(|| Keymap::text(event, mods).map(Command::Insert));
         if self.keymap.chord_pending() {
-            self.show("Strg+K … (C = auskommentieren, U = Kommentar entfernen, D = formatieren, I = Info)");
+            self.show("Ctrl+K … (C = comment, U = uncomment, D = format, I = info)");
             return;
         }
         // The chord hint has done its job once the second key arrived.
-        if self.message.as_ref().is_some_and(|(m, _)| m.starts_with("Strg+K …")) {
+        if self.message.as_ref().is_some_and(|(m, _)| m.starts_with("Ctrl+K …")) {
             self.message = None;
         }
         if let Some(cmd) = cmd {
@@ -1179,7 +1179,7 @@ impl State {
         let Some(trigger) = trigger else { return };
         if !self.lsp_ready() {
             if typed.is_none() {
-                self.show("Der C#-Server lädt noch das Projekt …");
+                self.show("The C# server is still loading the project …");
             }
             return;
         }
@@ -1219,11 +1219,11 @@ impl State {
 
     fn request_definition(&mut self, pos: usize) {
         if !self.tabs[self.active].is_csharp() {
-            self.show("Gehe zu Definition gibt es bisher nur für C#.");
+            self.show("Go to definition is only available for C# so far.");
             return;
         }
         if !self.lsp_ready() {
-            self.show("Der C#-Server lädt noch das Projekt …");
+            self.show("The C# server is still loading the project …");
             return;
         }
         self.lsp_sync_active();
@@ -1246,11 +1246,11 @@ impl State {
 
     fn request_format(&mut self) {
         if !self.tabs[self.active].is_csharp() {
-            self.show("Formatieren gibt es bisher nur für C#.");
+            self.show("Formatting is only available for C# so far.");
             return;
         }
         if !self.lsp_ready() {
-            self.show("Der C#-Server lädt noch das Projekt …");
+            self.show("The C# server is still loading the project …");
             return;
         }
         self.lsp_sync_active();
@@ -1293,9 +1293,9 @@ impl State {
                         ed.jump_to(pos);
                     }
                 }
-                lsp::Event::DefinitionNotFound => self.show("Keine Definition gefunden"),
+                lsp::Event::DefinitionNotFound => self.show("No definition found"),
                 lsp::Event::WorkspaceEdit { edit, what } => self.apply_workspace_edit(&edit, &what),
-                lsp::Event::CodeActions(actions) => self.show_actions("Quick Actions (Ziffer oder Enter, Esc)", actions),
+                lsp::Event::CodeActions(actions) => self.show_actions("Quick actions (digit or Enter, Esc)", actions),
                 lsp::Event::Hover { text, x, y } => {
                     let fs = self.renderer.font_system();
                     self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &text, x, y));
@@ -1321,7 +1321,7 @@ impl State {
                     if let Some(server) = &mut self.lsp {
                         server.changed(&path, self.tabs[i].doc.version());
                     }
-                    self.show(if n == 0 { "Schon formatiert".to_string() } else { "Formatiert".to_string() });
+                    self.show(if n == 0 { "Already formatted".to_string() } else { "Formatted".to_string() });
                 }
             }
         }
@@ -1391,11 +1391,11 @@ impl State {
     /// F2: asks for the new name of the symbol under the cursor.
     fn start_rename(&mut self) {
         if !self.tabs[self.active].is_csharp() {
-            self.show("Umbenennen gibt es bisher nur für C#.");
+            self.show("Rename is only available for C# so far.");
             return;
         }
         if !self.lsp_ready() {
-            self.show("Der C#-Server lädt noch das Projekt …");
+            self.show("The C# server is still loading the project …");
             return;
         }
         let ed = self.editor();
@@ -1410,12 +1410,12 @@ impl State {
             end += 1;
         }
         if start == end {
-            self.show("Cursor auf einen Namen setzen, dann F2");
+            self.show("Put the cursor on a name, then press F2");
             return;
         }
         let name = rope.slice(start..end).to_string();
         let fs = self.renderer.font_system();
-        let prompt = menu::Prompt::new(fs, self.ui_font, &format!("„{name}“ umbenennen in … (Enter / Esc)"), &name);
+        let prompt = menu::Prompt::new(fs, self.ui_font, &format!("Rename “{name}” to … (Enter / Esc)"), &name);
         self.overlay = Overlay::Rename { prompt, pos: start };
     }
 
@@ -1431,7 +1431,7 @@ impl State {
                 let valid = !name.is_empty()
                     && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '@');
                 if !valid {
-                    self.show("Ungültiger Name");
+                    self.show("Invalid name");
                     return;
                 }
                 self.lsp_sync_active();
@@ -1459,11 +1459,11 @@ impl State {
     /// Strg+.: asks the server what can be done at the cursor or selection.
     fn request_quick_actions(&mut self) {
         if !self.tabs[self.active].is_csharp() {
-            self.show("Quick Actions gibt es bisher nur für C#.");
+            self.show("Quick actions are only available for C# so far.");
             return;
         }
         if !self.lsp_ready() {
-            self.show("Der C#-Server lädt noch das Projekt …");
+            self.show("The C# server is still loading the project …");
             return;
         }
         self.lsp_sync_active();
@@ -1483,7 +1483,7 @@ impl State {
 
     fn show_actions(&mut self, title: &str, actions: Vec<wyvern_lsp::Value>) {
         if actions.is_empty() {
-            self.show("Hier gibt es keine Quick Actions");
+            self.show("No quick actions here");
             return;
         }
         let items = actions
@@ -1504,7 +1504,7 @@ impl State {
             return;
         }
         if action["edit"].is_object() && action.get("data").is_none() {
-            let what = action["title"].as_str().unwrap_or("Quick Action").to_string();
+            let what = action["title"].as_str().unwrap_or("Quick action").to_string();
             self.apply_workspace_edit(&action["edit"], &what);
             return;
         }
@@ -1597,10 +1597,10 @@ impl State {
         let mut msg = if files == 1 && others == 0 {
             what.to_string()
         } else {
-            format!("{what}: {count} Stelle(n) in {files} Dateien – Strg+S in jedem Tab speichert")
+            format!("{what}: {count} place(s) in {files} files – Ctrl+S in each tab saves")
         };
         if skipped > 0 {
-            msg.push_str(&format!(" ({skipped} Teil(e) übersprungen)"));
+            msg.push_str(&format!(" ({skipped} part(s) skipped)"));
         }
         self.show(msg);
         self.editor_mut().ensure_cursor_visible();
@@ -1616,7 +1616,7 @@ impl State {
         let next = starts.iter().find(|&&s| s > head).or(starts.first()).copied();
         match next {
             Some(pos) => ed.jump_to(pos),
-            None => self.show("Keine Fehler oder Warnungen in dieser Datei"),
+            None => self.show("No errors or warnings in this file"),
         }
     }
 
@@ -1650,7 +1650,7 @@ impl State {
             self.theme = theme;
             self.terminal.dirty = true;
         } else {
-            self.show(format!("Unbekanntes Theme „{}“ (dunkel oder hell)", self.settings.theme));
+            self.show(format!("Unknown theme “{}” (dark or light)", self.settings.theme));
         }
         if font_changed {
             let fs = self.renderer.font_system();
@@ -1668,7 +1668,7 @@ impl State {
         }
         self.relayout();
         if self.message.is_none() {
-            self.show("Einstellungen übernommen");
+            self.show("Settings applied");
         }
     }
 
@@ -1682,7 +1682,7 @@ impl State {
         self.theme = theme;
         self.settings.theme = name.to_string();
         if let Err(e) = settings::store_theme(name) {
-            self.show(format!("Theme nicht gespeichert: {e}"));
+            self.show(format!("Theme not saved: {e}"));
         } else {
             self.settings_mtime = settings::modified();
             self.show(format!("Theme: {display}"));
@@ -1740,7 +1740,7 @@ impl State {
                 if let Some(t) = &self.terminal.term {
                     t.clear_selection();
                 }
-                self.show("Kopiert");
+                self.show("Copied");
             }
             terminal::KeyResult::Paste => {
                 if let Some((text, _)) = self.get_clipboard()
@@ -1759,7 +1759,7 @@ impl State {
             match event {
                 wyvern_terminal::TermEvent::Wakeup | wyvern_terminal::TermEvent::Title(_) => {}
                 wyvern_terminal::TermEvent::Copy(text) => self.set_clipboard((text, false)),
-                wyvern_terminal::TermEvent::Exited => self.show("Terminal beendet – Enter startet neu"),
+                wyvern_terminal::TermEvent::Exited => self.show("Terminal exited – Enter restarts it"),
             }
         }
         self.terminal.dirty = true;
@@ -1812,7 +1812,7 @@ impl State {
                 self.find.refresh(active, &self.tabs[active].doc);
                 let n = self.find.matches.len();
                 if n == 0 {
-                    self.show("Alle Treffer ersetzt");
+                    self.show("All matches replaced");
                 }
             }
             find::FindAction::Close => {
@@ -1824,7 +1824,7 @@ impl State {
     /// Strg+Shift+F: shows the search panel in the sidebar.
     fn open_search_panel(&mut self, replace: bool) {
         let Some(root) = self.project_root().map(Path::to_path_buf) else {
-            self.show("Kein Ordner offen: Alt → p → o öffnet einen.");
+            self.show("No folder open: Alt → p → o opens one.");
             return;
         };
         let prefill = find::FindBar::prefill_from(&self.editor().doc);
@@ -1931,12 +1931,12 @@ impl State {
                 }
             }
         }
-        let mut msg = format!("{count} Ersetzungen: {saved} Dateien gespeichert");
+        let mut msg = format!("{count} replacements: {saved} files saved");
         if in_editor > 0 {
-            msg.push_str(&format!(", {in_editor} offene Datei(en) geändert (Strg+S speichert)"));
+            msg.push_str(&format!(", {in_editor} open file(s) changed (Ctrl+S saves)"));
         }
         if failed > 0 {
-            msg.push_str(&format!(", {failed} fehlgeschlagen"));
+            msg.push_str(&format!(", {failed} failed"));
         }
         self.show(msg);
         self.search.schedule();
@@ -2010,7 +2010,7 @@ impl State {
                 R::Status(Err(e)) => log::warn!("git status: {e}"),
                 R::Committed(Ok(summary)) => {
                     self.git.message.clear();
-                    self.show(format!("Committet: {summary}"));
+                    self.show(format!("Committed: {summary}"));
                     self.git.refresh_status();
                     self.load_git_heads();
                 }
@@ -2021,7 +2021,7 @@ impl State {
                     self.load_git_heads();
                 }
                 R::Switched(Ok(branch)) => {
-                    self.show(format!("Gewechselt zu „{branch}“"));
+                    self.show(format!("Switched to “{branch}”"));
                     self.git.refresh_status();
                     self.reload_changed_files();
                     self.load_git_heads();
@@ -2032,13 +2032,13 @@ impl State {
                 }
                 R::Branches(Ok(list)) => {
                     let current = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
-                    let mut items = vec![("+ neuer Branch …".to_string(), wyvern_lsp::Value::Null)];
+                    let mut items = vec![("+ new branch …".to_string(), wyvern_lsp::Value::Null)];
                     items.extend(list.into_iter().map(|b| {
-                        let label = if b == current { format!("{b}   (aktuell)") } else { b.clone() };
+                        let label = if b == current { format!("{b}   (current)") } else { b.clone() };
                         (label, wyvern_lsp::Value::String(b))
                     }));
                     let fs = self.renderer.font_system();
-                    let title = "Branch wechseln (Ziffer oder Enter, Esc)";
+                    let title = "Switch branch (digit or Enter, Esc)";
                     self.overlay = Overlay::Branches(menu::Menu::new(fs, self.ui_font, title, items));
                 }
                 R::Head(path, content) => {
@@ -2048,7 +2048,7 @@ impl State {
                 }
                 R::Blame(Ok(b), x, y) => {
                     let text = if b.uncommitted {
-                        "Noch nicht committet".to_string()
+                        "Not committed yet".to_string()
                     } else {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -2069,9 +2069,9 @@ impl State {
         use leader::GitCmd as G;
         if self.git.repo.is_none() {
             let msg = if self.explorer.is_none() {
-                "Kein Ordner offen: Alt → p → o öffnet einen."
+                "No folder open: Alt → p → o opens one."
             } else {
-                "Kein Git-Repository in diesem Ordner (im Terminal: git init)."
+                "No git repository in this folder (in the terminal: git init)."
             };
             self.show(msg);
             if !matches!(cmd, G::Panel) {
@@ -2080,7 +2080,7 @@ impl State {
         }
         let busy = self.git.busy.clone();
         if let (Some(b), G::Commit | G::Sync | G::Branch | G::NewBranch) = (&busy, cmd) {
-            self.show(format!("Git ist beschäftigt: {b}"));
+            self.show(format!("Git is busy: {b}"));
             return;
         }
         match cmd {
@@ -2088,7 +2088,7 @@ impl State {
             G::Commit => {
                 if self.git.message.trim().is_empty() {
                     self.show_git_panel();
-                    self.show("Commit-Nachricht eingeben, dann Strg+Enter");
+                    self.show("Type a commit message, then Ctrl+Enter");
                 } else {
                     self.commit();
                 }
@@ -2098,12 +2098,12 @@ impl State {
             G::NewBranch => self.start_new_branch(),
             G::Diff => match self.editor().doc.path().map(Path::to_path_buf) {
                 Some(p) => self.open_diff(&p),
-                None => self.show("Die Datei ist noch nicht gespeichert."),
+                None => self.show("The file has not been saved yet."),
             },
             G::Blame => {
                 let ed = self.editor();
                 let Some(path) = ed.doc.path().map(Path::to_path_buf) else {
-                    self.show("Die Datei ist noch nicht gespeichert.");
+                    self.show("The file has not been saved yet.");
                     return;
                 };
                 let head = ed.doc.selection().primary().head;
@@ -2138,7 +2138,7 @@ impl State {
             }
         }
         if saved > 0 {
-            self.show(format!("{saved} Datei(en) vor dem Commit gespeichert"));
+            self.show(format!("{saved} file(s) saved before the commit"));
         }
         self.git.commit();
     }
@@ -2176,7 +2176,7 @@ impl State {
     fn open_diff(&mut self, path: &Path) {
         let Some(repo) = self.git.repo.clone() else { return };
         let Some(rel) = repo.relative(path) else {
-            self.show("Die Datei liegt nicht im Git-Repository.");
+            self.show("The file is not in the git repository.");
             return;
         };
         let old = repo.head_content(&rel).unwrap_or_default().replace("\r\n", "\n");
@@ -2185,7 +2185,7 @@ impl State {
             None => std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n"),
         };
         if old == new {
-            self.show(format!("{rel}: keine Änderungen seit dem letzten Commit"));
+            self.show(format!("{rel}: no changes since the last commit"));
             return;
         }
         let fs = self.renderer.font_system();
@@ -2216,13 +2216,13 @@ impl State {
                 d.jump_change(!mods.shift_key());
             }
             Key::Character(c) if ctrl && c.as_str() == "q" => self.open_palette(""),
-            _ => self.show("Diff-Ansicht: Esc schließt, F8 / Shift+F8 springen zur nächsten Änderung"),
+            _ => self.show("Diff view: Esc closes, F8 / Shift+F8 jump to the next change"),
         }
     }
 
     fn start_new_branch(&mut self) {
         let fs = self.renderer.font_system();
-        let prompt = menu::Prompt::new(fs, self.ui_font, "Neuer Branch (Enter erstellt und wechselt, Esc)", "");
+        let prompt = menu::Prompt::new(fs, self.ui_font, "New branch (Enter creates and switches, Esc)", "");
         self.overlay = Overlay::NewBranch(prompt);
     }
 
@@ -2250,7 +2250,7 @@ impl State {
         match picked.as_str() {
             Some(branch) => {
                 if self.git.status.as_ref().is_some_and(|s| s.branch == branch) {
-                    self.show(format!("Schon auf „{branch}“"));
+                    self.show(format!("Already on “{branch}”"));
                 } else {
                     self.warn_unsaved_before_switch();
                     self.git.switch(branch.to_string(), false);
@@ -2273,7 +2273,7 @@ impl State {
                     && !name.starts_with('-')
                     && name.chars().all(|c| c.is_alphanumeric() || "-_./".contains(c));
                 if !valid {
-                    self.show("Ungültiger Branch-Name (erlaubt: Buchstaben, Ziffern, - _ . /)");
+                    self.show("Invalid branch name (allowed: letters, digits, - _ . /)");
                     return;
                 }
                 self.git.switch(name, true);
@@ -2297,7 +2297,7 @@ impl State {
     fn warn_unsaved_before_switch(&mut self) {
         let dirty = self.tabs.iter().filter(|t| t.doc.is_dirty()).count();
         if dirty > 0 {
-            self.show(format!("{dirty} Datei(en) ungespeichert: sie bleiben wie im Editor und werden nicht neu geladen"));
+            self.show(format!("{dirty} file(s) unsaved: they keep their editor content and are not reloaded"));
         }
     }
 
@@ -2405,7 +2405,7 @@ impl State {
                 self.overlay = Overlay::Leader { group: g, since: Instant::now(), shown: false };
             }
             Some(action) => self.leader_action(action),
-            None => self.show(format!("Alt → {group}{c} ist nicht belegt (Alt → h zeigt alle Kürzel)")),
+            None => self.show(format!("Alt → {group}{c} is not assigned (Alt → h shows all shortcuts)")),
         }
     }
 
@@ -2422,7 +2422,7 @@ impl State {
                 }
                 self.sidebar = Sidebar::Explorer;
                 if self.explorer.is_none() {
-                    self.show("Kein Ordner offen: Alt → p → o öffnet einen.");
+                    self.show("No folder open: Alt → p → o opens one.");
                     return;
                 }
                 self.explorer_visible = !self.explorer_visible;
@@ -2441,7 +2441,7 @@ impl State {
             RecentProjects => {
                 let list = config::recent_projects();
                 if list.is_empty() {
-                    self.show("Noch keine zuletzt geöffneten Projekte.");
+                    self.show("No recent projects yet.");
                 } else {
                     self.overlay = Overlay::Recent(list);
                 }
@@ -2461,7 +2461,7 @@ impl State {
             CheatSheet => {
                 let fs = self.renderer.font_system();
                 let mut view = EditorView::virtual_doc(
-                    "Tastenkürzel",
+                    "Keyboard Shortcuts",
                     &help::cheat_sheet(),
                     "help.md",
                     fs,
@@ -2477,7 +2477,7 @@ impl State {
             SetTheme(name) => self.set_theme(name),
             ToggleTerminal => self.toggle_terminal(),
             ToggleTheme => {
-                let next = if self.theme.name == "dunkel" { "hell" } else { "dunkel" };
+                let next = if self.theme.name == "dark" { "light" } else { "dark" };
                 self.set_theme(next);
             }
             Git(cmd) => self.git_command(cmd),
@@ -2924,12 +2924,12 @@ impl State {
         let line = rope.char_to_line(head);
         let col = head - rope.line_to_char(line);
         let cursors = ed.doc.selection().len();
-        let mut left = format!("Zeile {}, Spalte {}", line + 1, col + 1);
+        let mut left = format!("Ln {}, Col {}", line + 1, col + 1);
         if cursors > 1 {
-            left.push_str(&format!("   {cursors} Cursor"));
+            left.push_str(&format!("   {cursors} cursors"));
         }
         if self.focus == Focus::Explorer {
-            left.push_str("   ·   Explorer (Esc = zurück zum Editor)");
+            left.push_str("   ·   Explorer (Esc = back to the editor)");
         }
         if self.focus == Focus::Terminal && self.terminal_visible {
             left = "Terminal".to_string();
@@ -2957,7 +2957,7 @@ impl State {
         };
         let ram = metrics::ram_mb().map_or("–".into(), |mb| format!("{mb:.0} MB"));
         let right = format!(
-            "{problems}{language}  ·  {ending}  ·  RAM {ram}  ·  Taste→Bild {} (Ø {})",
+            "{problems}{language}  ·  {ending}  ·  RAM {ram}  ·  key→frame {} (avg {})",
             metrics::ms(self.latency.last()),
             metrics::ms(self.latency.average()),
         );
@@ -2979,7 +2979,7 @@ impl State {
                     .collect(),
             ),
             Overlay::Recent(list) => (
-                "Zuletzt geöffnet (Ziffer wählen, Esc = abbrechen)".into(),
+                "Recent projects (pick a digit, Esc = cancel)".into(),
                 list.iter()
                     .enumerate()
                     .map(|(i, p)| ((i + 1).to_string(), p.display().to_string()))

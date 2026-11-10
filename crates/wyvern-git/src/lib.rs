@@ -82,12 +82,12 @@ fn git(dir: &Path, args: &[&str]) -> std::io::Result<Output> {
 }
 
 fn run(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = git(dir, args).map_err(|e| format!("git kann nicht gestartet werden: {e}"))?;
+    let out = git(dir, args).map_err(|e| format!("git cannot be started: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
-        let msg = err.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("unbekannter Fehler");
+        let msg = err.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("unknown error");
         Err(msg.trim().to_string())
     }
 }
@@ -134,7 +134,7 @@ impl Repo {
     /// Commits all changes (including new files) with `message`.
     pub fn commit_all(&self, message: &str) -> Result<String, String> {
         if message.trim().is_empty() {
-            return Err("Commit-Nachricht fehlt".into());
+            return Err("Commit message is missing".into());
         }
         run(&self.root, &["add", "-A"])?;
         let out = run(&self.root, &["commit", "-q", "-m", message])?;
@@ -148,19 +148,19 @@ impl Repo {
         let status = self.status()?;
         let remotes = run(&self.root, &["remote"])?;
         let Some(remote) = remotes.lines().next().map(str::to_string) else {
-            return Err("Kein Remote eingerichtet (z. B. GitHub) – nichts zu synchronisieren".into());
+            return Err("No remote set up (e.g. GitHub) – nothing to sync".into());
         };
         if !status.has_upstream {
             run(&self.root, &["push", "-u", &remote, &status.branch])?;
-            return Ok(format!("Branch „{}“ veröffentlicht", status.branch));
+            return Ok(format!("Branch “{}” published", status.branch));
         }
         if let Err(e) = run(&self.root, &["pull", "--no-edit", "--no-rebase"]) {
             if e.contains("CONFLICT") || e.contains("conflict") {
-                return Err("Pull hat Konflikte: bitte im Git-Panel auflösen".into());
+                return Err("Pull has conflicts: please resolve them".into());
             }
-            return Err(format!("Pull fehlgeschlagen: {e}"));
+            return Err(format!("Pull failed: {e}"));
         }
-        run(&self.root, &["push"]).map_err(|e| format!("Push fehlgeschlagen: {e}"))?;
+        run(&self.root, &["push"]).map_err(|e| format!("Push failed: {e}"))?;
         Ok("Synchronisiert".into())
     }
 
@@ -193,7 +193,7 @@ impl Repo {
     pub fn blame_line(&self, rel: &str, line: usize) -> Result<BlameLine, String> {
         let range = format!("{line},{line}");
         let out = run(&self.root, &["blame", "--porcelain", "-L", &range, "--", rel])?;
-        parse_blame(&out).ok_or_else(|| "Keine Blame-Information".into())
+        parse_blame(&out).ok_or_else(|| "No blame information".into())
     }
 }
 
@@ -279,18 +279,18 @@ fn parse_blame(out: &str) -> Option<BlameLine> {
     Some(b)
 }
 
-/// "vor 3 Tagen" for a unix time.
+/// "3 days ago" for a unix time.
 pub fn relative_time(time: i64, now: i64) -> String {
     let d = (now - time).max(0);
     let (n, unit_one, unit_many) = match d {
-        0..60 => return "gerade eben".into(),
-        60..3600 => (d / 60, "Minute", "Minuten"),
-        3600..86_400 => (d / 3600, "Stunde", "Stunden"),
-        86_400..2_592_000 => (d / 86_400, "Tag", "Tagen"),
-        2_592_000..31_536_000 => (d / 2_592_000, "Monat", "Monaten"),
-        _ => (d / 31_536_000, "Jahr", "Jahren"),
+        0..60 => return "just now".into(),
+        60..3600 => (d / 60, "minute", "minutes"),
+        3600..86_400 => (d / 3600, "hour", "hours"),
+        86_400..2_592_000 => (d / 86_400, "day", "days"),
+        2_592_000..31_536_000 => (d / 2_592_000, "month", "months"),
+        _ => (d / 31_536_000, "year", "years"),
     };
-    format!("vor {n} {}", if n == 1 { unit_one } else { unit_many })
+    format!("{n} {} ago", if n == 1 { unit_one } else { unit_many })
 }
 
 // ----- line diff -----
@@ -414,9 +414,9 @@ mod tests {
 
     #[test]
     fn relative_times() {
-        assert_eq!(relative_time(0, 30), "gerade eben");
-        assert_eq!(relative_time(0, 3 * 86_400), "vor 3 Tagen");
-        assert_eq!(relative_time(0, 3600), "vor 1 Stunde");
+        assert_eq!(relative_time(0, 30), "just now");
+        assert_eq!(relative_time(0, 3 * 86_400), "3 days ago");
+        assert_eq!(relative_time(0, 3600), "1 hour ago");
     }
 
     /// Full round trip with a real temporary repository.
@@ -445,7 +445,7 @@ mod tests {
         repo.create_branch("feature").unwrap();
         assert_eq!(repo.branches().unwrap(), vec!["feature", "main"]);
         assert_eq!(repo.relative(&dir.join("a.txt")).unwrap(), "a.txt");
-        assert!(repo.sync().unwrap_err().contains("Kein Remote"));
+        assert!(repo.sync().unwrap_err().contains("No remote"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

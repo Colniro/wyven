@@ -147,9 +147,9 @@ impl DiffView {
         let attrs = Attrs::new().family(Family::Name(&self.family));
         let n = self.changes();
         let text = format!(
-            "{}   ·   links: letzter Commit   ·   rechts: aktuell   ·   {n} Änderung{}   ·   F8 / Shift+F8 springen, Esc schließt",
+            "{}   ·   left: last commit   ·   right: current   ·   {n} change{}   ·   F8 / Shift+F8 jump, Esc closes",
             self.title,
-            if n == 1 { "" } else { "en" }
+            if n == 1 { "" } else { "s" }
         );
         self.header.set_text(&text, &attrs.color(theme.panel_text.to_glyphon()), Shaping::Advanced, None);
         self.header.shape_until_scroll(fs, false);

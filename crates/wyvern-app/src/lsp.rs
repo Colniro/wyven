@@ -219,7 +219,7 @@ impl LanguageServer {
                 wake();
             }
         })
-        .map_err(|e| format!("C#-Server startet nicht: {e}"))?;
+        .map_err(|e| format!("C# server does not start: {e}"))?;
         let mut server = Self {
             client,
             rx,
@@ -246,8 +246,8 @@ impl LanguageServer {
 
     pub fn status_text(&self) -> String {
         match &self.status {
-            Status::Starting => "C#: startet …".into(),
-            Status::Loading(m) if m.is_empty() => "C#: lädt Projekt …".into(),
+            Status::Starting => "C#: starting …".into(),
+            Status::Loading(m) if m.is_empty() => "C#: loading project …".into(),
             Status::Loading(m) => format!("C#: {m}"),
             Status::Ready => "C#".into(),
             Status::Failed(e) => format!("C#: {e}"),
@@ -476,7 +476,7 @@ impl LanguageServer {
                     self.notification(&method, params, &mut events);
                 }
                 Incoming::Exited => {
-                    self.status = Status::Failed("Server beendet".into());
+                    self.status = Status::Failed("server stopped".into());
                     events.push(Event::Status);
                 }
             }
@@ -562,7 +562,7 @@ impl LanguageServer {
                         events.push(Event::Status);
                     }
                     Pending::Rename { .. } | Pending::Resolve { .. } => {
-                        events.push(Event::Message(format!("Nicht möglich: {e}")));
+                        events.push(Event::Message(format!("Not possible: {e}")));
                     }
                     _ => {}
                 }
@@ -644,9 +644,9 @@ impl LanguageServer {
             }
             Pending::Rename { new_name } => {
                 if value.is_null() {
-                    events.push(Event::Message("Hier kann nichts umbenannt werden".into()));
+                    events.push(Event::Message("Nothing to rename here".into()));
                 } else {
-                    events.push(Event::WorkspaceEdit { edit: value, what: format!("Umbenannt in „{new_name}“") });
+                    events.push(Event::WorkspaceEdit { edit: value, what: format!("Renamed to “{new_name}”") });
                 }
             }
             Pending::CodeActions => {
@@ -666,7 +666,7 @@ impl LanguageServer {
                 if value["edit"].is_object() {
                     events.push(Event::WorkspaceEdit { edit: value["edit"].clone(), what: title });
                 } else {
-                    events.push(Event::Message(format!("„{title}“ liefert keine Änderung")));
+                    events.push(Event::Message(format!("“{title}” makes no change")));
                 }
             }
             Pending::Format { path, version } => {
@@ -754,23 +754,23 @@ fn parse_diagnostics(list: &Value) -> Vec<Diagnostic> {
 
 fn kind_name(kind: u64) -> &'static str {
     match kind {
-        2 => "Methode",
-        3 => "Funktion",
-        4 => "Konstruktor",
-        5 => "Feld",
-        6 => "Variable",
-        7 => "Klasse",
-        8 => "Interface",
-        9 => "Namespace",
-        10 => "Eigenschaft",
-        13 => "Enum",
-        14 => "Schlüsselwort",
-        15 => "Snippet",
-        20 => "Enum-Wert",
-        21 => "Konstante",
-        22 => "Struct",
-        23 => "Ereignis",
-        25 => "Typparameter",
+        2 => "method",
+        3 => "function",
+        4 => "constructor",
+        5 => "field",
+        6 => "variable",
+        7 => "class",
+        8 => "interface",
+        9 => "namespace",
+        10 => "property",
+        13 => "enum",
+        14 => "keyword",
+        15 => "snippet",
+        20 => "enum member",
+        21 => "constant",
+        22 => "struct",
+        23 => "event",
+        25 => "type parameter",
         _ => "",
     }
 }

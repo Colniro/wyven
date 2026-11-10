@@ -1,11 +1,11 @@
-//! Colors. Two built-in themes, "dunkel" and "hell"; chosen in settings.toml or via the
+//! Colors. Two built-in themes, "dark" and "light"; chosen in settings.toml or via the
 //! search field (`>Theme`). Importing VS Code themes is planned for phase 4.
 
 use wyvern_render::Rgba;
 use wyvern_syntax::Highlight;
 
 /// Theme names as written in settings.toml, with their display names.
-pub const THEMES: &[(&str, &str)] = &[("dunkel", "Wyvern Dunkel"), ("hell", "Wyvern Hell")];
+pub const THEMES: &[(&str, &str)] = &[("dark", "Wyvern Dark"), ("light", "Wyvern Light")];
 
 /// Syntax colors of one theme.
 pub struct SyntaxColors {
@@ -63,18 +63,18 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Theme by settings name ("dunkel"/"dark", "hell"/"light").
+    /// Theme by settings name ("dark"/"dunkel", "light"/"hell").
     pub fn by_name(name: &str) -> Option<Self> {
         match name.trim().to_lowercase().as_str() {
-            "dunkel" | "dark" | "wyvern dunkel" => Some(Self::dark()),
-            "hell" | "light" | "wyvern hell" => Some(Self::light()),
+            "dark" | "dunkel" | "wyvern dark" | "wyvern dunkel" => Some(Self::dark()),
+            "light" | "hell" | "wyvern light" | "wyvern hell" => Some(Self::light()),
             _ => None,
         }
     }
 
     pub const fn dark() -> Self {
         Self {
-            name: "dunkel",
+            name: "dark",
             background: Rgba::rgb(0x16, 0x18, 0x1D),
             text: Rgba::rgb(0xD4, 0xD7, 0xDE),
             gutter_text: Rgba::rgb(0x4B, 0x52, 0x5E),
@@ -128,7 +128,7 @@ impl Theme {
 
     pub const fn light() -> Self {
         Self {
-            name: "hell",
+            name: "light",
             background: Rgba::rgb(0xFB, 0xFB, 0xFC),
             text: Rgba::rgb(0x1F, 0x23, 0x28),
             gutter_text: Rgba::rgb(0xA0, 0xA6, 0xAF),
@@ -184,7 +184,7 @@ impl Theme {
     pub fn terminal_palette(&self) -> wyvern_terminal::Palette {
         let rgb = |c: Rgba| [c.0, c.1, c.2];
         let hex = |v: u32| [(v >> 16) as u8, (v >> 8) as u8, v as u8];
-        let ansi = if self.name == "hell" {
+        let ansi = if self.name == "light" {
             // VS Code light terminal colors.
             [
                 0x000000, 0xCD3131, 0x107C10, 0x949800, 0x0451A5, 0xBC05BC, 0x0598BC, 0x555555,

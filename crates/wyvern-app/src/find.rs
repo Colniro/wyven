@@ -310,15 +310,15 @@ impl FindBar {
         }
         match (self.matches.len(), self.current) {
             (0, _) if self.query.text.is_empty() => String::new(),
-            (0, _) => "Keine Treffer".into(),
-            (n, Some(i)) => format!("{} von {n}", i + 1),
-            (n, None) => format!("{n} Treffer"),
+            (0, _) => "No matches".into(),
+            (n, Some(i)) => format!("{} of {n}", i + 1),
+            (n, None) => format!("{n} matches"),
         }
     }
 
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, family: &str) {
         let attrs = Attrs::new().family(Family::Name(family));
-        let find_line = if self.query.text.is_empty() { "Suchen".to_string() } else { self.query.text.clone() };
+        let find_line = if self.query.text.is_empty() { "Find".to_string() } else { self.query.text.clone() };
         let find_color = if self.query.text.is_empty() { theme.panel_dim } else { theme.tab_text_active };
         let count = self.count_text();
         let count_color = if self.error.is_some() { theme.error } else { theme.panel_dim };
@@ -331,7 +331,7 @@ impl FindBar {
         );
         self.find_buf.shape_until_scroll(fs, false);
         let (rep, rep_color) = if self.replacement.is_empty() {
-            ("Ersetzen  (Alt+R eins · Alt+A alle)".to_string(), theme.panel_dim)
+            ("Replace  (Alt+R one · Alt+A all)".to_string(), theme.panel_dim)
         } else {
             (self.replacement.clone(), theme.tab_text_active)
         };
@@ -485,7 +485,7 @@ mod tests {
         f.show(false, Some("wert".into()));
         f.refresh(0, &doc);
         assert_eq!(f.matches, vec![(2, 6), (9, 13), (16, 20)]);
-        assert_eq!(f.count_text(), "1 von 3");
+        assert_eq!(f.count_text(), "1 of 3");
         let FindAction::Select(s, e) = f.step(&doc, true) else { panic!() };
         doc.set_selection(Selection::single(wyvern_buffer::Range::new(s, e)));
         let FindAction::Select(s, _) = f.step(&doc, true) else { panic!() };
@@ -527,6 +527,6 @@ mod tests {
         f.show(false, Some("(".into()));
         f.toggle('e');
         f.refresh(0, &doc);
-        assert!(f.count_text().starts_with("Ungültiger regulärer Ausdruck"));
+        assert!(f.count_text().starts_with("Invalid regular expression"));
     }
 }

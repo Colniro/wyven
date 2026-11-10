@@ -348,7 +348,7 @@ impl SearchPanel {
 
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, focused: bool) {
         let attrs = Attrs::new().family(Family::Name(&self.family));
-        let mut top: Vec<(String, Rgba)> = vec![("SUCHEN\n".into(), theme.panel_dim)];
+        let mut top: Vec<(String, Rgba)> = vec![("SEARCH\n".into(), theme.panel_dim)];
         let input = |text: &str, placeholder: &str, active: bool| -> (String, Rgba) {
             if text.is_empty() {
                 (format!("{placeholder}\n"), theme.panel_dim)
@@ -356,9 +356,9 @@ impl SearchPanel {
                 (format!("{text}\n"), if active { theme.tab_text_active } else { theme.panel_text })
             }
         };
-        top.push(input(&self.query.text, "Suchen im Projekt", focused && self.field == Field::Find));
+        top.push(input(&self.query.text, "Search in project", focused && self.field == Field::Find));
         if self.replace_open {
-            top.push(input(&self.replacement, "Ersetzen (Alt+A: alle)", focused && self.field == Field::Replace));
+            top.push(input(&self.replacement, "Replace (Alt+A: all)", focused && self.field == Field::Replace));
         }
         let on = |b: bool, s: &str| if b { format!("[{s}]") } else { format!(" {s} ") };
         top.push((
@@ -367,7 +367,7 @@ impl SearchPanel {
                 on(self.query.case_sensitive, "Aa"),
                 on(self.query.whole_word, "W"),
                 on(self.query.regex, ".*"),
-                if self.replace_open { "" } else { " · Strg+H ersetzen" }
+                if self.replace_open { "" } else { " · Ctrl+H replace" }
             ),
             theme.panel_dim,
         ));
@@ -376,12 +376,12 @@ impl SearchPanel {
         } else if self.query.text.is_empty() {
             (String::new(), theme.panel_dim)
         } else if self.running {
-            (format!("Suche läuft … {} Treffer", self.total()), theme.panel_dim)
+            (format!("Searching … {} matches", self.total()), theme.panel_dim)
         } else if self.results.is_empty() {
-            (format!("Keine Treffer ({} Dateien durchsucht)", self.searched), theme.panel_dim)
+            (format!("No matches ({} files searched)", self.searched), theme.panel_dim)
         } else {
             let more = if self.total() >= wyvern_search::MAX_MATCHES { "+" } else { "" };
-            (format!("{}{more} Treffer in {} Dateien", self.total(), self.results.len()), theme.accent)
+            (format!("{}{more} matches in {} files", self.total(), self.results.len()), theme.accent)
         };
         top.push(status);
         self.top.set_rich_text(

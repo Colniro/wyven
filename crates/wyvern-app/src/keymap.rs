@@ -148,7 +148,7 @@ impl Keymap {
                 NamedKey::Tab => Indent,
                 NamedKey::Escape => Collapse,
                 NamedKey::F5 | NamedKey::F9 | NamedKey::F10 | NamedKey::F11 => {
-                    NotYet("Debuggen kommt in Phase 3")
+                    NotYet("Debugging comes in phase 3")
                 }
                 NamedKey::F12 => GotoDefinition,
                 NamedKey::F2 => Rename,

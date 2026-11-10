@@ -21,7 +21,7 @@ pub enum Action {
     Later(&'static str),
     OpenSettings,
     CheatSheet,
-    /// Switches to a theme by its settings name ("dunkel", "hell") and stores it.
+    /// Switches to a theme by its settings name ("dark", "light") and stores it.
     SetTheme(&'static str),
     ToggleTheme,
     /// Opens/focuses/closes the terminal panel.
@@ -54,9 +54,9 @@ use crate::keymap::Command;
 use Action::*;
 
 const ROOT: &[Item] = &[
-    item('e', "Explorer ein/aus", ToggleExplorer),
-    item('t', "Terminal", ToggleTerminal),
-    item('s', "Suche im Projekt", Run(Command::ProjectSearch { replace: false })),
+    item('e', "toggle explorer", ToggleExplorer),
+    item('t', "terminal", ToggleTerminal),
+    item('s', "search in project", Run(Command::ProjectSearch { replace: false })),
     item('g', "git …", Group("g")),
     item('d', "debug …", Group("d")),
     item('j', "jump …", Group("j")),
@@ -66,80 +66,80 @@ const ROOT: &[Item] = &[
     item('w', "window …", Group("w")),
     item('v', "view …", Group("v")),
     item('a', "ai …", Group("a")),
-    item('m', "Markdown-Vorschau", Later("Die Markdown-Vorschau kommt in Phase 3")),
-    item(',', "Einstellungen", OpenSettings),
-    item('h', "Hilfe: alle Kürzel", CheatSheet),
+    item('m', "markdown preview", Later("Markdown preview comes in phase 3")),
+    item(',', "settings", OpenSettings),
+    item('h', "help: all shortcuts", CheatSheet),
 ];
 
 const FILE: &[Item] = &[
-    item('n', "neue Datei", NewFile),
-    item('o', "Datei öffnen", OpenFile),
-    item('s', "speichern unter", SaveAs),
-    item('w', "alle schließen", CloseAll),
-    item('r', "umbenennen", Later("Umbenennen im Explorer kommt in Phase 2")),
+    item('n', "new file", NewFile),
+    item('o', "open file", OpenFile),
+    item('s', "save as", SaveAs),
+    item('c', "close all", CloseAll),
+    item('r', "rename", Later("Renaming in the explorer comes in phase 2")),
 ];
 
 const PROJECT: &[Item] = &[
-    item('o', "Ordner öffnen", OpenFolder),
-    item('r', "zuletzt geöffnet", RecentProjects),
-    item('e', "Explorer fokussieren", FocusExplorer),
-    item('a', "Ordner hinzufügen", Later("Mehrere Ordner kommen in Phase 4")),
+    item('o', "open folder", OpenFolder),
+    item('r', "recent projects", RecentProjects),
+    item('e', "focus explorer", FocusExplorer),
+    item('a', "add folder", Later("Multiple folders come in phase 4")),
 ];
 
 const GIT: &[Item] = &[
-    item('g', "Git-Panel", Git(GitCmd::Panel)),
-    item('c', "alles committen", Git(GitCmd::Commit)),
-    item('s', "Sync (pull + push)", Git(GitCmd::Sync)),
-    item('b', "Branch wechseln", Git(GitCmd::Branch)),
-    item('n', "neuer Branch", Git(GitCmd::NewBranch)),
-    item('d', "Diff der Datei", Git(GitCmd::Diff)),
-    item('l', "Blame der Zeile", Git(GitCmd::Blame)),
+    item('g', "git panel", Git(GitCmd::Panel)),
+    item('c', "commit all", Git(GitCmd::Commit)),
+    item('s', "sync (pull + push)", Git(GitCmd::Sync)),
+    item('b', "switch branch", Git(GitCmd::Branch)),
+    item('n', "new branch", Git(GitCmd::NewBranch)),
+    item('d', "diff current file", Git(GitCmd::Diff)),
+    item('l', "line blame", Git(GitCmd::Blame)),
 ];
 
 const DEBUG: &[Item] = &[
-    item('d', "Debug-Panel", Later("Debuggen kommt in Phase 3")),
-    item('b', "alle Breakpoints", Later("Debuggen kommt in Phase 3")),
-    item('w', "Watch hinzufügen", Later("Debuggen kommt in Phase 3")),
-    item('a', "an Prozess anhängen", Later("Debuggen kommt in Phase 3")),
+    item('d', "debug panel", Later("Debugging comes in phase 3")),
+    item('b', "all breakpoints", Later("Debugging comes in phase 3")),
+    item('w', "add watch", Later("Debugging comes in phase 3")),
+    item('a', "attach to process", Later("Debugging comes in phase 3")),
 ];
 
 const JUMP: &[Item] = &[
-    item('d', "Definition", Run(Command::GotoDefinition)),
-    item('i', "Implementierung", Later("Kommt mit dem C#-Language-Server")),
-    item('r', "Referenzen", Later("Kommt mit dem C#-Language-Server")),
-    item('s', "Symbol in Datei", Palette("@")),
-    item('l', "Zeile", Palette(":")),
-    item('f', "Datei", Palette("")),
+    item('d', "definition", Run(Command::GotoDefinition)),
+    item('i', "implementation", Later("Comes with the C# language server")),
+    item('r', "references", Later("Comes with the C# language server")),
+    item('s', "symbol in file", Palette("@")),
+    item('l', "line", Palette(":")),
+    item('f', "file", Palette("")),
 ];
 
 const CODE: &[Item] = &[
-    item('r', "umbenennen", Run(Command::Rename)),
-    item('f', "formatieren", Run(Command::Format)),
-    item('a', "Quick Actions", Run(Command::QuickActions)),
-    item('o', "Usings ordnen", Later("Usings ordnen kommt in Phase 3")),
-    item('e', "nächster Fehler", Run(Command::NextProblem)),
+    item('r', "rename", Run(Command::Rename)),
+    item('f', "format", Run(Command::Format)),
+    item('a', "quick actions", Run(Command::QuickActions)),
+    item('o', "organize usings", Later("Organize usings comes in phase 3")),
+    item('e', "next error", Run(Command::NextProblem)),
 ];
 
 const WINDOW: &[Item] = &[
-    item('v', "rechts teilen", Later("Geteilte Ansichten kommen in Phase 2")),
-    item('h', "unten teilen", Later("Geteilte Ansichten kommen in Phase 2")),
-    item('c', "Teilung schließen", Later("Geteilte Ansichten kommen in Phase 2")),
+    item('v', "split vertically", Later("Split views come in phase 2")),
+    item('h', "split horizontally", Later("Split views come in phase 2")),
+    item('c', "close split", Later("Split views come in phase 2")),
 ];
 
 const VIEW: &[Item] = &[
-    item('m', "Minimap", Later("Die Minimap kommt in Phase 2")),
-    item('s', "Sticky Scroll", Later("Sticky Scroll kommt in Phase 2")),
-    item('i', "Inlay Hints", Later("Inlay Hints kommen in Phase 3")),
-    item('w', "Zeilenumbruch", Later("Zeilenumbruch kommt in Phase 2")),
-    item('z', "Zen-Modus", Later("Der Zen-Modus kommt in Phase 4")),
-    item('t', "Theme hell/dunkel", ToggleTheme),
+    item('m', "minimap", Later("The minimap comes in phase 2")),
+    item('s', "sticky scroll", Later("Sticky scroll comes in phase 2")),
+    item('i', "inlay hints", Later("Inlay hints come in phase 3")),
+    item('w', "word wrap", Later("Word wrap comes in phase 2")),
+    item('z', "zen mode", Later("Zen mode comes in phase 4")),
+    item('t', "toggle light/dark theme", ToggleTheme),
 ];
 
 const AI: &[Item] = &[
-    item('t', "Vorschläge an/aus", Later("KI-Vorschläge kommen in Phase 3")),
-    item('m', "Modell wechseln", Later("KI-Vorschläge kommen in Phase 3")),
-    item('k', "API-Key setzen", Later("KI-Vorschläge kommen in Phase 3")),
-    item('c', "Claude Code", Later("Claude Code im Terminal kommt in Phase 2/3")),
+    item('t', "toggle suggestions", Later("AI suggestions come in phase 3")),
+    item('m', "switch model", Later("AI suggestions come in phase 3")),
+    item('k', "set API key", Later("AI suggestions come in phase 3")),
+    item('c', "claude code", Later("Claude Code in the terminal comes in phase 2/3")),
 ];
 
 pub fn items(group: &str) -> &'static [Item] {

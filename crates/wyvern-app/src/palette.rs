@@ -1,4 +1,4 @@
-//! The central search field (`Strg+Q`).
+//! The central search field (`Ctrl+Q`).
 //!
 //! One input, four modes chosen by the first character:
 //! - no prefix: files of the project (fuzzy, e.g. `prgcs` finds `Program.cs`)
@@ -62,52 +62,52 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
     use Cmd::{Key as K, Leader as Ld};
     use Command as C;
     vec![
-        ("Datei: Neue Datei", "Strg+N", K(C::NewFile)),
-        ("Datei: Öffnen …", "Strg+O", K(C::OpenFile)),
-        ("Datei: Speichern", "Strg+S", K(C::Save)),
-        ("Datei: Speichern unter …", "Strg+Shift+S", K(C::SaveAs)),
-        ("Datei: Tab schließen", "Strg+W", K(C::CloseTab)),
-        ("Datei: Alle schließen", "Alt f w", Ld(L::CloseAll)),
-        ("Datei: Geschlossenen Tab wieder öffnen", "Strg+Shift+T", K(C::ReopenClosed)),
-        ("Projekt: Ordner öffnen …", "Alt p o", Ld(L::OpenFolder)),
-        ("Projekt: Zuletzt geöffnet", "Alt p r", Ld(L::RecentProjects)),
-        ("Projekt: Explorer fokussieren", "Alt p e", Ld(L::FocusExplorer)),
-        ("Ansicht: Explorer ein/aus", "Alt e", Ld(L::ToggleExplorer)),
-        ("Ansicht: Terminal öffnen/schließen", "Alt t", Ld(L::ToggleTerminal)),
-        ("Git: Panel anzeigen", "Alt g g", Ld(L::Git(G::Panel))),
-        ("Git: Alles committen", "Alt g c", Ld(L::Git(G::Commit))),
-        ("Git: Sync (pull + push)", "Alt g s", Ld(L::Git(G::Sync))),
-        ("Git: Branch wechseln …", "Alt g b", Ld(L::Git(G::Branch))),
-        ("Git: Neuer Branch …", "Alt g n", Ld(L::Git(G::NewBranch))),
-        ("Git: Diff der Datei", "Alt g d", Ld(L::Git(G::Diff))),
-        ("Git: Blame der Zeile", "Alt g l", Ld(L::Git(G::Blame))),
-        ("Theme: Wyvern Dunkel", "", Ld(L::SetTheme("dunkel"))),
-        ("Theme: Wyvern Hell", "", Ld(L::SetTheme("hell"))),
-        ("Theme: hell/dunkel umschalten", "Alt v t", Ld(L::ToggleTheme)),
-        ("Einstellungen öffnen (settings.toml)", "Alt ,", Ld(L::OpenSettings)),
-        ("Hilfe: Alle Tastenkürzel", "Alt h", Ld(L::CheatSheet)),
-        ("Ansicht: Schrift größer", "Strg++", K(C::FontSize(1))),
-        ("Ansicht: Schrift kleiner", "Strg+-", K(C::FontSize(-1))),
-        ("Ansicht: Schriftgröße zurücksetzen", "Strg+0", K(C::FontSizeReset)),
-        ("Suchen in Datei", "Strg+F", K(C::Find { replace: false })),
-        ("Ersetzen in Datei", "Strg+H", K(C::Find { replace: true })),
-        ("Suchen im Projekt", "Strg+Shift+F", K(C::ProjectSearch { replace: false })),
-        ("Ersetzen im Projekt", "Strg+Shift+H", K(C::ProjectSearch { replace: true })),
-        ("Gehe zu: Zeile …", "Strg+G", K(C::OpenPalette(":"))),
-        ("Gehe zu: Symbol in Datei …", "Alt j s", K(C::OpenPalette("@"))),
-        ("Gehe zu: Datei …", "Strg+Q", K(C::OpenPalette(""))),
-        ("Bearbeiten: Rückgängig", "Strg+Z", K(C::Undo)),
-        ("Bearbeiten: Wiederholen", "Strg+Y", K(C::Redo)),
-        ("Bearbeiten: Alles auswählen", "Strg+A", K(C::SelectAll)),
-        ("Bearbeiten: Nächstes Vorkommen auswählen", "Strg+D", K(C::AddNextOccurrence)),
-        ("Bearbeiten: Zeile nach oben verschieben", "Alt+↑", K(C::MoveLines(Direction::Up))),
-        ("Bearbeiten: Zeile nach unten verschieben", "Alt+↓", K(C::MoveLines(Direction::Down))),
-        ("Bearbeiten: Zeile nach oben duplizieren", "Alt+Shift+↑", K(C::DuplicateLines(Direction::Up))),
-        ("Bearbeiten: Zeile nach unten duplizieren", "Alt+Shift+↓", K(C::DuplicateLines(Direction::Down))),
-        ("Bearbeiten: Zeile löschen", "Strg+Shift+L", K(C::DeleteLines)),
-        ("Bearbeiten: Auskommentieren", "Strg+K Strg+C", K(C::Comment(CommentMode::Add))),
-        ("Bearbeiten: Kommentar entfernen", "Strg+K Strg+U", K(C::Comment(CommentMode::Remove))),
-        ("Bearbeiten: Kommentar umschalten", "Strg+#", K(C::Comment(CommentMode::Toggle))),
+        ("File: New File", "Ctrl+N", K(C::NewFile)),
+        ("File: Open …", "Ctrl+O", K(C::OpenFile)),
+        ("File: Save", "Ctrl+S", K(C::Save)),
+        ("File: Save As …", "Ctrl+Shift+S", K(C::SaveAs)),
+        ("File: Close Tab", "Ctrl+W", K(C::CloseTab)),
+        ("File: Close All", "Alt f c", Ld(L::CloseAll)),
+        ("File: Reopen Closed Tab", "Ctrl+Shift+T", K(C::ReopenClosed)),
+        ("Project: Open Folder …", "Alt p o", Ld(L::OpenFolder)),
+        ("Project: Recent Projects", "Alt p r", Ld(L::RecentProjects)),
+        ("Project: Focus Explorer", "Alt p e", Ld(L::FocusExplorer)),
+        ("View: Toggle Explorer", "Alt e", Ld(L::ToggleExplorer)),
+        ("View: Toggle Terminal", "Alt t", Ld(L::ToggleTerminal)),
+        ("Git: Show Panel", "Alt g g", Ld(L::Git(G::Panel))),
+        ("Git: Commit All", "Alt g c", Ld(L::Git(G::Commit))),
+        ("Git: Sync (Pull + Push)", "Alt g s", Ld(L::Git(G::Sync))),
+        ("Git: Switch Branch …", "Alt g b", Ld(L::Git(G::Branch))),
+        ("Git: New Branch …", "Alt g n", Ld(L::Git(G::NewBranch))),
+        ("Git: Diff Current File", "Alt g d", Ld(L::Git(G::Diff))),
+        ("Git: Blame Current Line", "Alt g l", Ld(L::Git(G::Blame))),
+        ("Theme: Wyvern Dark", "", Ld(L::SetTheme("dark"))),
+        ("Theme: Wyvern Light", "", Ld(L::SetTheme("light"))),
+        ("Theme: Toggle Light/Dark", "Alt v t", Ld(L::ToggleTheme)),
+        ("Preferences: Open Settings (settings.toml)", "Alt ,", Ld(L::OpenSettings)),
+        ("Help: All Keyboard Shortcuts", "Alt h", Ld(L::CheatSheet)),
+        ("View: Zoom In", "Ctrl++", K(C::FontSize(1))),
+        ("View: Zoom Out", "Ctrl+-", K(C::FontSize(-1))),
+        ("View: Reset Zoom", "Ctrl+0", K(C::FontSizeReset)),
+        ("Find in File", "Ctrl+F", K(C::Find { replace: false })),
+        ("Replace in File", "Ctrl+H", K(C::Find { replace: true })),
+        ("Find in Project", "Ctrl+Shift+F", K(C::ProjectSearch { replace: false })),
+        ("Replace in Project", "Ctrl+Shift+H", K(C::ProjectSearch { replace: true })),
+        ("Go to: Line …", "Ctrl+G", K(C::OpenPalette(":"))),
+        ("Go to: Symbol in File …", "Alt j s", K(C::OpenPalette("@"))),
+        ("Go to: File …", "Ctrl+Q", K(C::OpenPalette(""))),
+        ("Edit: Undo", "Ctrl+Z", K(C::Undo)),
+        ("Edit: Redo", "Ctrl+Y", K(C::Redo)),
+        ("Edit: Select All", "Ctrl+A", K(C::SelectAll)),
+        ("Edit: Select Next Occurrence", "Ctrl+D", K(C::AddNextOccurrence)),
+        ("Edit: Move Line Up", "Alt+↑", K(C::MoveLines(Direction::Up))),
+        ("Edit: Move Line Down", "Alt+↓", K(C::MoveLines(Direction::Down))),
+        ("Edit: Duplicate Line Up", "Alt+Shift+↑", K(C::DuplicateLines(Direction::Up))),
+        ("Edit: Duplicate Line Down", "Alt+Shift+↓", K(C::DuplicateLines(Direction::Down))),
+        ("Edit: Delete Line", "Ctrl+Shift+L", K(C::DeleteLines)),
+        ("Edit: Comment", "Ctrl+K Ctrl+C", K(C::Comment(CommentMode::Add))),
+        ("Edit: Uncomment", "Ctrl+K Ctrl+U", K(C::Comment(CommentMode::Remove))),
+        ("Edit: Toggle Comment", "Ctrl+#", K(C::Comment(CommentMode::Toggle))),
     ]
 }
 
@@ -250,7 +250,7 @@ impl Palette {
     fn match_files(&mut self, q: &str, src: &Sources<'_>) -> Vec<Entry> {
         let Some(root) = src.root else {
             return vec![Entry {
-                label: "Kein Ordner offen – Alt → p → o öffnet einen".into(),
+                label: "No folder open – Alt → p → o opens one".into(),
                 detail: String::new(),
                 action: Action::Run(Cmd::Leader(leader::Action::OpenFolder)),
                 hits: Vec::new(),
@@ -262,12 +262,12 @@ impl Palette {
             self.waiting_for_index = true;
             return open
                 .into_iter()
-                .map(|f| file_entry(f, "offen", Vec::new()))
+                .map(|f| file_entry(f, "open", Vec::new()))
                 .collect();
         };
         if q.is_empty() {
             let mut out: Vec<Entry> =
-                open.iter().map(|f| file_entry(f.clone(), "offen", Vec::new())).collect();
+                open.iter().map(|f| file_entry(f.clone(), "open", Vec::new())).collect();
             out.extend(
                 files
                     .iter()
@@ -284,7 +284,7 @@ impl Palette {
             .map(|(i, _, _)| {
                 let f = files[i].clone();
                 let hits = Self::hits(&mut self.matcher, q, &f);
-                let detail = if open.contains(&f) { "offen" } else { "" };
+                let detail = if open.contains(&f) { "open" } else { "" };
                 file_entry(f, detail, hits)
             })
             .collect()
@@ -314,10 +314,10 @@ impl Palette {
 
     fn match_symbols(&mut self, q: &str, src: &Sources<'_>) -> Vec<Entry> {
         if !src.has_symbols {
-            return vec![hint("Für diese Dateiart gibt es noch keine Symbole", "")];
+            return vec![hint("No symbols for this file type yet", "")];
         }
         if src.symbols.is_empty() {
-            return vec![hint("Keine Symbole in dieser Datei", "")];
+            return vec![hint("No symbols in this file", "")];
         }
         self.matcher.config = Config::DEFAULT;
         let order: Vec<(usize, Vec<u32>)> = if q.is_empty() {
@@ -334,7 +334,7 @@ impl Palette {
                 let s = &src.symbols[i];
                 Entry {
                     label: s.name.clone(),
-                    detail: format!("{} · Zeile {}", s.kind, s.line + 1),
+                    detail: format!("{} · line {}", s.kind, s.line + 1),
                     action: Action::Byte(s.byte),
                     hits,
                 }
@@ -346,7 +346,7 @@ impl Palette {
         let attrs = Attrs::new().family(Family::Name(family));
         let (input_text, input_color) = if self.query.is_empty() {
             (
-                "Datei suchen …   > Befehle   @ Symbole   : Zeile".to_string(),
+                "Search files …   > commands   @ symbols   : line".to_string(),
                 theme.panel_dim,
             )
         } else {
@@ -363,7 +363,7 @@ impl Palette {
         let mut spans: Vec<(String, Rgba)> = Vec::new();
         let rows = self.entries.iter().skip(self.scroll).take(VISIBLE_ROWS);
         if self.entries.is_empty() {
-            let msg = if self.waiting_for_index { "Projekt wird gelesen …" } else { "Keine Treffer" };
+            let msg = if self.waiting_for_index { "Reading project …" } else { "No matches" };
             spans.push((msg.into(), theme.panel_dim));
         }
         for e in rows {
@@ -458,12 +458,12 @@ fn line_entries(q: &str, line_count: usize) -> Vec<Entry> {
         Some(l) if l >= 1 => {
             let l = l.min(line_count.max(1));
             let label = match col {
-                Some(c) => format!("Gehe zu Zeile {l}, Spalte {c}"),
-                None => format!("Gehe zu Zeile {l}"),
+                Some(c) => format!("Go to line {l}, column {c}"),
+                None => format!("Go to line {l}"),
             };
-            vec![Entry { label, detail: format!("von {line_count}"), action: Action::Line(l, col), hits: Vec::new() }]
+            vec![Entry { label, detail: format!("of {line_count}"), action: Action::Line(l, col), hits: Vec::new() }]
         }
-        _ => vec![hint(&format!("Zeilennummer eingeben (1–{line_count}), optional :Spalte"), "")],
+        _ => vec![hint(&format!("Type a line number (1–{line_count}), optionally :column"), "")],
     }
 }
 
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn command_mode_finds_commands() {
         let mut p = palette();
-        p.reset(">speich unter");
+        p.reset(">save as");
         p.update(&sources(&[]));
         assert_eq!(p.selected_action(), Action::Run(Cmd::Key(Command::SaveAs)));
     }

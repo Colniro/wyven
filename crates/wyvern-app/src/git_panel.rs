@@ -159,12 +159,12 @@ impl GitPanel {
 
     pub fn commit(&mut self) {
         let msg = self.message.trim().to_string();
-        self.busy = Some("Commit …".into());
+        self.busy = Some("Committing …".into());
         self.spawn(move |r| GitResult::Committed(r.commit_all(&msg)));
     }
 
     pub fn sync(&mut self) {
-        self.busy = Some("Synchronisiere …".into());
+        self.busy = Some("Syncing …".into());
         self.spawn(|r| GitResult::Synced(r.sync()));
     }
 
@@ -173,7 +173,7 @@ impl GitPanel {
     }
 
     pub fn switch(&mut self, branch: String, create: bool) {
-        self.busy = Some(format!("Wechsle zu „{branch}“ …"));
+        self.busy = Some(format!("Switching to “{branch}” …"));
         self.spawn(move |r| {
             let res = if create { r.create_branch(&branch) } else { r.switch(&branch) };
             GitResult::Switched(res.map(|_| branch))
@@ -185,7 +185,7 @@ impl GitPanel {
         self.spawn(move |r| {
             let res = match r.relative(&file) {
                 Some(rel) => r.blame_line(&rel, line),
-                None => Err("Datei liegt nicht im Git-Repository".into()),
+                None => Err("File is not in the git repository".into()),
             };
             GitResult::Blame(res, x, y)
         });
@@ -294,31 +294,31 @@ impl GitPanel {
         match (&self.repo, &self.status) {
             (None, _) => {
                 top.push(("GIT\n".into(), theme.panel_dim));
-                top.push(("Kein Git-Repository in diesem Ordner.\n".into(), theme.panel_text));
-                top.push(("Im Terminal: git init\n".into(), theme.panel_dim));
+                top.push(("No git repository in this folder.\n".into(), theme.panel_text));
+                top.push(("In the terminal: git init\n".into(), theme.panel_dim));
             }
             (Some(_), status) => {
                 let (branch, sync) = match status {
                     Some(s) if s.has_upstream => (s.branch.clone(), format!("   ↑{} ↓{}", s.ahead, s.behind)),
-                    Some(s) => (s.branch.clone(), "   (nicht veröffentlicht)".into()),
+                    Some(s) => (s.branch.clone(), "   (not published)".into()),
                     None => ("…".into(), String::new()),
                 };
                 top.push(("GIT  ·  ".into(), theme.panel_dim));
                 top.push((format!("⎇ {branch}"), theme.accent));
                 top.push((format!("{sync}\n"), theme.panel_dim));
                 let (msg, color) = if self.message.is_empty() {
-                    ("Commit-Nachricht …".to_string(), theme.panel_dim)
+                    ("Commit message …".to_string(), theme.panel_dim)
                 } else {
                     (self.message.clone(), if focused { theme.tab_text_active } else { theme.panel_text })
                 };
                 top.push((format!("{msg}\n"), color));
                 let hint = match &self.busy {
                     Some(b) => b.clone(),
-                    None => "Strg+Enter: alles committen  ·  Alt → g → s: Sync".into(),
+                    None => "Ctrl+Enter: commit all  ·  Alt → g → s: sync".into(),
                 };
                 top.push((format!("{hint}\n"), if self.busy.is_some() { theme.accent } else { theme.panel_dim }));
                 let n = self.change_count();
-                top.push((format!("Änderungen ({n})\n"), theme.panel_dim));
+                top.push((format!("Changes ({n})\n"), theme.panel_dim));
             }
         }
         self.top.set_rich_text(

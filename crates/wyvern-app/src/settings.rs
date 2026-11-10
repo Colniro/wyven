@@ -11,45 +11,45 @@ use serde::Deserialize;
 use crate::config::config_dir;
 
 /// Written on first start. Every option is listed with its default value.
-pub const TEMPLATE: &str = r#"# Wyvern-Einstellungen
-# Speichern (Strg+S) in Wyvern wendet sie sofort an. Alt → , öffnet diese Datei.
+pub const TEMPLATE: &str = r#"# Wyvern settings
+# Saving (Ctrl+S) in Wyvern applies them right away. Alt → , opens this file.
 
-# Farbschema: "dunkel" oder "hell" (auch im Suchfeld: Strg+Q, dann >Theme)
-theme = "dunkel"
+# Color theme: "dark" or "light" (also in the search field: Ctrl+Q, then >Theme)
+theme = "dark"
 
 [font]
-# Schriftart für Code und Oberfläche. Leer = automatisch
+# Font for code and interface. Empty = automatic
 # (Cascadia Mono, Cascadia Code, JetBrains Mono, Consolas, …)
 family = ""
-# Schriftgröße in Punkt (Strg++ / Strg+- ändert sie nur bis zum Neustart)
+# Font size in points (Ctrl++ / Ctrl+- only change it until restart)
 size = 14
-# Zeilenhöhe als Vielfaches der Schriftgröße
+# Line height as a multiple of the font size
 line_height = 1.5
 
 [editor]
-# Breite eines Tabs in Spalten
+# Width of a tab in columns
 tab_width = 4
-# Einrückung, wenn eine Datei noch keine hat: "leerzeichen" oder "tabs"
-indent = "leerzeichen"
-# Vorschläge beim Tippen automatisch zeigen (Strg+Leertaste geht immer)
+# Indentation for files that have none yet: "spaces" or "tabs"
+indent = "spaces"
+# Show suggestions automatically while typing (Ctrl+Space always works)
 auto_complete = true
-# Info anzeigen, wenn die Maus kurz über einem Namen stillsteht
+# Show info when the mouse rests on a name for a moment
 hover = true
 
 [ui]
-# Größe der Oberflächenschrift (Explorer, Tabs, Statusleiste) relativ zur Code-Schrift
+# Size of the interface font (explorer, tabs, status bar) relative to the code font
 font_scale = 0.93
-# Breite des Explorers in Zeichen
+# Width of the explorer in characters
 explorer_width = 30
 
 [terminal]
-# Shell für das Terminal (Alt → t). Leer = automatisch (PowerShell 7, sonst Windows PowerShell).
-# Beispiele: "cmd.exe", "pwsh.exe", 'C:\Program Files\Git\bin\bash.exe'
-# (Pfade mit \ in einfachen Anführungszeichen schreiben)
+# Shell for the terminal (Alt → t). Empty = automatic (PowerShell 7, else Windows PowerShell).
+# Examples: "cmd.exe", "pwsh.exe", 'C:\Program Files\Git\bin\bash.exe'
+# (write paths with \ in single quotes)
 shell = ""
-# Startargumente der Shell, z. B. ["-NoLogo"]
+# Shell start arguments, e.g. ["-NoLogo"]
 args = []
-# Höhe des Terminals in Prozent des Fensters
+# Height of the terminal in percent of the window
 height = 35
 "#;
 
@@ -104,7 +104,7 @@ pub struct UiSettings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            theme: "dunkel".into(),
+            theme: "dark".into(),
             font: FontSettings::default(),
             editor: EditorSettings::default(),
             ui: UiSettings::default(),
@@ -121,7 +121,7 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "leerzeichen".into(), auto_complete: true, hover: true }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, hover: true }
     }
 }
 
@@ -185,7 +185,7 @@ pub fn load() -> Result<Settings, String> {
 
 /// Changes the `theme = "…"` line in the settings file, keeping everything else as it is.
 pub fn store_theme(name: &str) -> Result<(), String> {
-    let path = ensure_file().ok_or("kein Konfigurationsordner")?;
+    let path = ensure_file().ok_or("no config folder")?;
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let new = replace_theme_line(&text, name);
     std::fs::write(&path, new).map_err(|e| e.to_string())

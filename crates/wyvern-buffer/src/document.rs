@@ -103,7 +103,7 @@ impl Document {
     pub fn open(path: &Path) -> io::Result<Self> {
         let bytes = std::fs::read(path)?;
         let text = String::from_utf8(bytes).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Datei ist kein gültiges UTF-8")
+            io::Error::new(io::ErrorKind::InvalidData, "file is not valid UTF-8")
         })?;
         let bom = text.starts_with('\u{feff}');
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
@@ -118,7 +118,7 @@ impl Document {
         let path = self
             .path
             .clone()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Dokument hat keinen Pfad"))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "document has no path"))?;
         let mut out = String::with_capacity(self.rope.len_bytes() + self.rope.len_lines() + 3);
         if self.bom {
             out.push('\u{feff}');

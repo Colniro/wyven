@@ -41,7 +41,8 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 - **Dateien, die sich auf der Festplatte ändern** (Branch-Wechsel, Pull, Claude Code, Formatter), werden automatisch neu geladen, solange sie im Editor keine ungespeicherten Änderungen haben.
 
 - **Einstellungen** in `settings.toml` (`%APPDATA%\Wyvern\settings.toml`, öffnen mit `Alt → ,`): Theme, Schriftart/-größe, Zeilenhöhe, Tab-Breite, Einrückung, Autovervollständigung und Info-Tooltip an/aus, Oberflächenschrift und Explorer-Breite. Die Datei wird beim ersten Start mit allen Optionen und deutschen Erklärungen angelegt. Speichern in Wyvern wendet sie sofort an. Tippfehler bei Optionsnamen werden in der Statusleiste gemeldet, die alten Einstellungen bleiben dann aktiv.
-- **Themes** „Wyvern Dunkel“ und „Wyvern Hell“: umschalten mit `Alt → v → t` oder im Suchfeld `>Theme`. Die Wahl wird in `settings.toml` gespeichert.
+- **Themes** „Wyvern Dark“ und „Wyvern Light“: umschalten mit `Alt → v → t` oder im Suchfeld `>Theme`. Die Wahl wird in `settings.toml` gespeichert.
+- **Oberfläche auf Englisch**: Leader-Menü, Befehle im Suchfeld (`File: Save`, `Git: Commit All` …), Spickzettel, Panels, Statusmeldungen und die Vorlage der `settings.toml`. Tasten heißen `Ctrl`, `PgUp` usw. In `settings.toml` gelten `theme = "dark"`/`"light"` und `indent = "spaces"`/`"tabs"`, die alten Werte `dunkel`/`hell`/`leerzeichen` funktionieren weiter.
 - **Spickzettel** mit allen Kürzeln: `Alt → h`. Er wird aus denselben Listen erzeugt wie Suchfeld und Leader-Menü und ist deshalb immer aktuell.
 
 - **C# mit Roslyn** (derselbe Server wie im C# Dev Kit von VS Code):
@@ -71,7 +72,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - `Alt → p → o`: Ordner öffnen
   - `Alt → p → r`: zuletzt geöffnete Projekte
   - `Alt → p → e`: in den Explorer springen
-  - `Alt → f → n / o / s / w`: neue Datei, Datei öffnen, speichern unter, alle schließen
+  - `Alt → f → n / o / s / c`: new file, open file, save as, close all
 
   Alle anderen Einträge sagen, in welcher Phase sie kommen.
 

@@ -130,7 +130,7 @@ const CSHARP_TAGS: &str = r#"
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
     pub name: String,
-    /// German display name of the kind, e.g. "Methode".
+    /// Display name of the kind, e.g. "method".
     pub kind: &'static str,
     /// Byte offset of the name.
     pub byte: usize,
@@ -139,20 +139,20 @@ pub struct Symbol {
 
 fn kind_label(kind: &str) -> &'static str {
     match kind {
-        "class" => "Klasse",
-        "struct" => "Struct",
-        "record" => "Record",
-        "interface" => "Interface",
-        "enum" => "Enum",
-        "method" => "Methode",
-        "constructor" => "Konstruktor",
-        "property" => "Eigenschaft",
-        "field" => "Feld",
-        "function" => "Funktion",
-        "macro" => "Makro",
-        "constant" => "Konstante",
-        "module" | "namespace" => "Namespace",
-        _ => "Symbol",
+        "class" => "class",
+        "struct" => "struct",
+        "record" => "record",
+        "interface" => "interface",
+        "enum" => "enum",
+        "method" => "method",
+        "constructor" => "constructor",
+        "property" => "property",
+        "field" => "field",
+        "function" => "function",
+        "macro" => "macro",
+        "constant" => "constant",
+        "module" | "namespace" => "namespace",
+        _ => "symbol",
     }
 }
 
@@ -520,14 +520,14 @@ enum E { One }
         let found: Vec<(String, &str)> =
             syntax.symbols(&rope).into_iter().map(|s| (s.name, s.kind)).collect();
         let expect = [
-            ("N", "Namespace"),
-            ("R", "Record"),
-            ("A", "Klasse"),
-            ("_f", "Feld"),
-            ("A", "Konstruktor"),
-            ("P", "Eigenschaft"),
-            ("M", "Methode"),
-            ("E", "Enum"),
+            ("N", "namespace"),
+            ("R", "record"),
+            ("A", "class"),
+            ("_f", "field"),
+            ("A", "constructor"),
+            ("P", "property"),
+            ("M", "method"),
+            ("E", "enum"),
         ];
         let expect: Vec<(String, &str)> = expect.iter().map(|(n, k)| (n.to_string(), *k)).collect();
         assert_eq!(found, expect);

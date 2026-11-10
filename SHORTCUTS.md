@@ -85,6 +85,8 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 
 ## Leader-Menü (`Alt`, dann …)
 
+Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englischen Befehle, Wyvern zeigt die Beschriftungen ebenfalls auf Englisch.
+
 | Taste | Gruppe | Folgetasten |
 |---|---|---|
 | `e` | **e**xplorer | Explorer ein/aus |
@@ -94,7 +96,7 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 | `d` | **d**ebug | `d` Panel · `b` alle Breakpoints · `w` Watch hinzufügen · `a` an Prozess anhängen (z. B. Godot) |
 | `j` | **j**ump | `d` Definition · `i` Implementierung · `r` Referenzen · `s` Symbol in Datei · `l` Zeile |
 | `c` | **c**ode | `r` umbenennen · `f` formatieren · `a` Quick Actions · `o` Usings ordnen · `e` nächster Fehler |
-| `f` | **f**ile | `n` neu · `o` öffnen · `s` speichern unter · `r` umbenennen · `w` alle schließen |
+| `f` | **f**ile | `n` new file · `o` open file · `s` save as · `r` rename · `c` close all |
 | `p` | **p**roject | `o` Ordner öffnen · `r` zuletzt geöffnet (Projekt-Wechsler) · `a` Ordner zum Workspace hinzufügen |
 | `w` | **w**indow | `v` rechts teilen · `h` unten teilen · `←↑→↓` Fokus wechseln · `c` Teilung schließen |
 | `v` | **v**iew | `m` Minimap · `s` Sticky Scroll · `i` Inlay Hints · `w` Zeilenumbruch · `z` Zen-Modus |

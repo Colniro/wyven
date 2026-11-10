@@ -121,7 +121,7 @@ impl TerminalPanel {
         let (cols, rows) = self.grid_size();
         let cell = (self.font.cell_w.round() as u16, self.font.line_h.round() as u16);
         let t = Terminal::spawn(&self.shell, &self.args, &self.cwd, cols, rows, cell, wake)
-            .map_err(|e| format!("Terminal „{}“ startet nicht: {e}", self.shell))?;
+            .map_err(|e| format!("Terminal “{}” does not start: {e}", self.shell))?;
         self.term = Some(t);
         self.dirty = true;
         Ok(())
@@ -226,11 +226,11 @@ impl TerminalPanel {
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, focused: bool) {
         let attrs = Attrs::new().family(Family::Name(&self.family));
         let title = match &self.term {
-            Some(t) if t.exited => "TERMINAL  ·  Prozess beendet – Enter startet neu".to_string(),
+            Some(t) if t.exited => "TERMINAL  ·  process exited – Enter restarts it".to_string(),
             Some(t) if !t.title.is_empty() => format!("TERMINAL  ·  {}", t.title),
             _ => format!("TERMINAL  ·  {}", self.shell),
         };
-        let hint = if focused { "   (Alt → t schließt · Strg+Shift+C/V kopiert/fügt ein)" } else { "" };
+        let hint = if focused { "   (Alt → t closes · Ctrl+Shift+C/V copy/paste)" } else { "" };
         self.header.set_text(&format!("{title}{hint}"), &attrs, Shaping::Advanced, None);
         self.header.shape_until_scroll(fs, false);
         if !self.dirty {
