@@ -28,6 +28,9 @@ pub struct Theme {
     pub popup_bg: Rgba,
     pub popup_border: Rgba,
     pub popup_key: Rgba,
+    pub error: Rgba,
+    pub warning: Rgba,
+    pub info: Rgba,
 }
 
 impl Theme {
@@ -57,6 +60,9 @@ impl Theme {
             popup_bg: Rgba::rgb(0x1C, 0x1F, 0x26),
             popup_border: Rgba::rgb(0x34, 0x3A, 0x46),
             popup_key: Rgba::rgb(0xE0, 0xB4, 0x6C),
+            error: Rgba::rgb(0xF1, 0x4C, 0x4C),
+            warning: Rgba::rgb(0xCC, 0xA7, 0x00),
+            info: Rgba::rgb(0x3F, 0x9C, 0xD6),
         }
     }
 

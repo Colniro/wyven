@@ -7,12 +7,14 @@
 //! Start: `wyvern <ordner>` opens a project, `wyvern <datei>` opens the file and its folder.
 //! Without an argument the most recently used project opens.
 
+mod completion;
 mod config;
 mod editor;
 mod explorer;
 mod index;
 mod keymap;
 mod leader;
+mod lsp;
 mod metrics;
 mod palette;
 mod popup;
@@ -25,7 +27,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
@@ -53,6 +55,13 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const MESSAGE_TIME: Duration = Duration::from_secs(4);
 const LEADER_POPUP_DELAY: Duration = Duration::from_millis(300);
 const CONFIRM_TIME: Duration = Duration::from_secs(3);
+const HOVER_DELAY: Duration = Duration::from_millis(600);
+
+/// Wakes the event loop from other threads (language server messages).
+#[derive(Debug, Clone, Copy)]
+enum UserEvent {
+    Lsp,
+}
 
 /// Startup profiling: logs elapsed time and RAM after each startup stage.
 fn log_stage(stage: &str, started: Instant) {
@@ -63,15 +72,19 @@ fn log_stage(stage: &str, started: Instant) {
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let path = std::env::args_os().nth(1).map(PathBuf::from);
-    let event_loop = EventLoop::new().expect("failed to create event loop");
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App { path, state: None };
+    let proxy = event_loop.create_proxy();
+    let mut app = App { path, state: None, proxy };
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
 struct App {
     path: Option<PathBuf>,
     state: Option<State>,
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +157,14 @@ struct State {
     /// A destructive action waiting for confirmation by repeating it (close dirty tab/window).
     armed: Option<(&'static str, usize, Instant)>,
 
+    proxy: EventLoopProxy<UserEvent>,
+    lsp: Option<lsp::LanguageServer>,
+    lsp_failed: bool,
+    completion: Option<completion::Completion>,
+    tooltip: Option<completion::Tooltip>,
+    /// Where and since when the mouse rests (for hover info).
+    hover_rest: Option<(Instant, f32, f32)>,
+
     latency: InputLatency,
     started: Instant,
     first_frame: Option<Duration>,
@@ -151,7 +172,7 @@ struct State {
     title: String,
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
             return;
@@ -187,7 +208,7 @@ impl ApplicationHandler for App {
             pollster::block_on(Renderer::new(window.clone(), event_loop.owned_display_handle()));
         log_stage("renderer", started);
 
-        let mut state = State::new(window, renderer, started);
+        let mut state = State::new(window, renderer, started, self.proxy.clone());
         match self.path.take() {
             Some(p) if p.is_dir() => state.open_folder(&p),
             Some(p) => {
@@ -214,6 +235,9 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 if state.confirm_close_window() {
+                    if let Some(server) = &mut state.lsp {
+                        server.shutdown();
+                    }
                     event_loop.exit();
                 }
             }
@@ -233,8 +257,15 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => state.modifiers = m.state(),
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => state.key_event(&event),
             WindowEvent::CursorMoved { position, .. } => {
-                state.mouse.x = position.x as f32;
-                state.mouse.y = position.y as f32;
+                let (x, y) = (position.x as f32, position.y as f32);
+                if let Some(t) = &state.tooltip
+                    && ((t.x - x).abs() > 12.0 || (t.y - y).abs() > 12.0) {
+                        state.tooltip = None;
+                        state.window.request_redraw();
+                    }
+                state.mouse.x = x;
+                state.mouse.y = y;
+                state.hover_rest = (!state.mouse.dragging).then(|| (Instant::now(), x, y));
                 if state.mouse.dragging {
                     let ed = state.editor_mut();
                     let pos = ed.hit_test(position.x as f32, position.y as f32);
@@ -252,6 +283,12 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: UserEvent) {
+        if let Some(state) = &mut self.state {
+            state.lsp_poll();
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Sleep until the next status refresh or until the leader popup is due.
         let Some(state) = &mut self.state else { return };
@@ -264,6 +301,9 @@ impl ApplicationHandler for App {
             state.window.request_redraw();
         }
         let mut wake = state.next_stats;
+        if let Some(t) = state.lsp_tick(now) {
+            wake = wake.min(t);
+        }
         if matches!(state.overlay, Overlay::Palette) && state.palette.waiting_for_index {
             if state.index.files().is_some() {
                 state.refresh_palette();
@@ -300,7 +340,12 @@ fn file_name(path: &Path) -> String {
 }
 
 impl State {
-    fn new(window: Arc<Window>, mut renderer: Renderer, started: Instant) -> Self {
+    fn new(
+        window: Arc<Window>,
+        mut renderer: Renderer,
+        started: Instant,
+        proxy: EventLoopProxy<UserEvent>,
+    ) -> Self {
         let scale = window.scale_factor() as f32;
         let fs = renderer.font_system();
         let family = pick_monospace_family(fs).unwrap_or_else(|| "monospace".into());
@@ -351,6 +396,12 @@ impl State {
             status_right,
             message: None,
             armed: None,
+            proxy,
+            lsp: None,
+            lsp_failed: false,
+            completion: None,
+            tooltip: None,
+            hover_rest: None,
             latency: InputLatency::default(),
             started,
             first_frame: None,
@@ -493,6 +544,8 @@ impl State {
             ex.reveal(path);
         }
         self.focus = Focus::Editor;
+        self.completion = None;
+        self.lsp_open_all();
     }
 
     fn activate(&mut self, index: usize) {
@@ -528,7 +581,11 @@ impl State {
         let tab = self.tabs.remove(index);
         if let Some(p) = tab.doc.path() {
             self.closed.push(p.to_path_buf());
+            if let Some(server) = &mut self.lsp {
+                server.close(p);
+            }
         }
+        self.completion = None;
         self.mru.retain(|&i| i != index);
         for i in &mut self.mru {
             if *i > index {
@@ -593,10 +650,13 @@ impl State {
             self.save_as();
             return;
         }
-        let ed = self.editor_mut();
+        let ed = &mut self.tabs[self.active];
         match ed.doc.save() {
             Ok(()) => {
                 let name = ed.file_name();
+                if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
+                    server.saved(path);
+                }
                 self.show(format!("{name} gespeichert"));
             }
             Err(e) => self.show(format!("Speichern fehlgeschlagen: {e}")),
@@ -623,6 +683,7 @@ impl State {
         match self.editor_mut().save_as(path.clone()) {
             Ok(()) => {
                 self.show(format!("{} gespeichert", file_name(&path)));
+                self.lsp_open_all();
                 if let Some(ex) = &mut self.explorer {
                     ex.refresh();
                     ex.reveal(&path);
@@ -720,6 +781,11 @@ impl State {
         }
 
         let mods = self.modifiers;
+        self.tooltip = None;
+        if self.focus == Focus::Editor && !mods.control_key() && !mods.alt_key()
+            && self.completion_key(&key) {
+                return;
+            }
         if self.focus == Focus::Explorer && !mods.control_key() && !mods.alt_key()
             && self.explorer_key(&key) {
                 return;
@@ -730,8 +796,12 @@ impl State {
             .handle(event, mods)
             .or_else(|| Keymap::text(event, mods).map(Command::Insert));
         if self.keymap.chord_pending() {
-            self.show("Strg+K … (C = auskommentieren, U = Kommentar entfernen, D = formatieren)");
+            self.show("Strg+K … (C = auskommentieren, U = Kommentar entfernen, D = formatieren, I = Info)");
             return;
+        }
+        // The chord hint has done its job once the second key arrived.
+        if self.message.as_ref().is_some_and(|(m, _)| m.starts_with("Strg+K …")) {
+            self.message = None;
         }
         if let Some(cmd) = cmd {
             if !matches!(cmd, Command::CycleTabs { .. }) {
@@ -790,6 +860,301 @@ impl State {
             self.open_path(&path);
         }
         true
+    }
+
+    // ----- language server -----
+
+    /// Starts the C# server when the first C# file is open, and tells it about open files.
+    fn lsp_open_all(&mut self) {
+        let wants = self.tabs.iter().any(|t| t.is_csharp() && t.doc.path().is_some());
+        if !wants {
+            return;
+        }
+        if self.lsp.is_none() && !self.lsp_failed {
+            let root = self
+                .project_root()
+                .map(Path::to_path_buf)
+                .or_else(|| self.editor().doc.path().and_then(Path::parent).map(Path::to_path_buf));
+            if let Some(root) = root {
+                let proxy = self.proxy.clone();
+                match lsp::LanguageServer::start_csharp(&root, move || {
+                    let _ = proxy.send_event(UserEvent::Lsp);
+                }) {
+                    Ok(server) => self.lsp = Some(server),
+                    Err(e) => {
+                        self.lsp_failed = true;
+                        self.show(e);
+                    }
+                }
+            }
+        }
+        let Some(server) = &mut self.lsp else { return };
+        for t in &self.tabs {
+            if let (true, Some(path)) = (t.is_csharp(), t.doc.path())
+                && !server.is_open(path) {
+                    server.open(path, t.doc.text().to_string(), t.doc.version());
+                }
+        }
+    }
+
+    /// Sends the active document right away (before asking the server something about it).
+    fn lsp_sync_active(&mut self) -> bool {
+        let ed = &self.tabs[self.active];
+        let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) else { return false };
+        if !server.is_open(path) {
+            return false;
+        }
+        server.sync(path, ed.doc.text(), ed.doc.version());
+        true
+    }
+
+    fn lsp_after_edit(&mut self) {
+        let ed = &self.tabs[self.active];
+        if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
+            server.changed(path, ed.doc.version());
+        }
+    }
+
+    fn lsp_ready(&self) -> bool {
+        self.lsp.as_ref().is_some_and(|s| s.status == lsp::Status::Ready)
+    }
+
+    /// Opens, filters or closes the completion list after a command.
+    fn update_completion(&mut self, typed: Option<&str>, trigger: Option<Option<char>>) {
+        let ed = &self.tabs[self.active];
+        if !ed.is_csharp() || ed.doc.path().is_none() || ed.doc.selection().len() > 1 {
+            self.completion = None;
+            return;
+        }
+        let rope = ed.doc.text();
+        let head = ed.doc.selection().primary().head;
+        if let Some(c) = &mut self.completion {
+            let same_doc = ed.doc.path() == Some(c.path.as_path());
+            let same_line = same_doc
+                && c.anchor <= head
+                && rope.char_to_line(c.anchor) == rope.char_to_line(head);
+            let prefix: String = if same_line { rope.slice(c.anchor..head).to_string() } else { String::new() };
+            let word = prefix.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
+            if same_line && word {
+                c.filter(&prefix);
+                if c.is_empty() {
+                    self.completion = None;
+                }
+                return;
+            }
+            self.completion = None;
+        }
+        let trigger = match (trigger, typed) {
+            (Some(t), _) => Some(t),
+            (None, Some(".")) => Some(Some('.')),
+            (None, Some(t)) => {
+                let mut chars = t.chars();
+                let ident = matches!((chars.next(), chars.next()), (Some(ch), None) if ch.is_alphabetic() || ch == '_');
+                (ident && ed.word_start() + 1 == head).then_some(None)
+            }
+            _ => None,
+        };
+        let Some(trigger) = trigger else { return };
+        if !self.lsp_ready() {
+            if typed.is_none() {
+                self.show("Der C#-Server lädt noch das Projekt …");
+            }
+            return;
+        }
+        let anchor = self.editor().word_start();
+        self.lsp_sync_active();
+        let ed = &self.tabs[self.active];
+        if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
+            server.completion(path, ed.doc.text(), head, anchor, trigger);
+        }
+    }
+
+    fn accept_completion(&mut self) {
+        let Some(c) = self.completion.take() else { return };
+        let Some(insert) = c.selected_insert() else { return };
+        let ed = self.editor_mut();
+        let head = ed.doc.selection().primary().head;
+        ed.doc.replace_range(c.anchor, head, &insert);
+        ed.after_edit();
+        ed.ensure_cursor_visible();
+        self.lsp_after_edit();
+    }
+
+    /// Keys while the completion list is open. Returns true if the key was used.
+    fn completion_key(&mut self, key: &Key) -> bool {
+        let Some(c) = &mut self.completion else { return false };
+        match key {
+            Key::Named(NamedKey::ArrowUp) => c.move_selection(-1),
+            Key::Named(NamedKey::ArrowDown) => c.move_selection(1),
+            Key::Named(NamedKey::PageUp) => c.move_selection(-9),
+            Key::Named(NamedKey::PageDown) => c.move_selection(9),
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => self.accept_completion(),
+            Key::Named(NamedKey::Escape) => self.completion = None,
+            _ => return false,
+        }
+        true
+    }
+
+    fn request_definition(&mut self, pos: usize) {
+        if !self.tabs[self.active].is_csharp() {
+            self.show("Gehe zu Definition gibt es bisher nur für C#.");
+            return;
+        }
+        if !self.lsp_ready() {
+            self.show("Der C#-Server lädt noch das Projekt …");
+            return;
+        }
+        self.lsp_sync_active();
+        let ed = &self.tabs[self.active];
+        if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
+            server.definition(path, ed.doc.text(), pos);
+        }
+    }
+
+    fn request_hover(&mut self, pos: usize, x: f32, y: f32) {
+        if !self.tabs[self.active].is_csharp() || !self.lsp_ready() {
+            return;
+        }
+        self.lsp_sync_active();
+        let ed = &self.tabs[self.active];
+        if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
+            server.hover(path, ed.doc.text(), pos, x, y);
+        }
+    }
+
+    fn request_format(&mut self) {
+        if !self.tabs[self.active].is_csharp() {
+            self.show("Formatieren gibt es bisher nur für C#.");
+            return;
+        }
+        if !self.lsp_ready() {
+            self.show("Der C#-Server lädt noch das Projekt …");
+            return;
+        }
+        self.lsp_sync_active();
+        let ed = &self.tabs[self.active];
+        let spaces = ed.doc.indent_unit != "\t";
+        if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
+            server.format(path, ed.doc.version(), ed.doc.tab_width, spaces);
+        }
+    }
+
+    /// Handles everything the language server sent.
+    fn lsp_poll(&mut self) {
+        let Some(server) = &mut self.lsp else { return };
+        let events = server.poll();
+        for event in events {
+            match event {
+                lsp::Event::Status => self.lsp_open_all(),
+                lsp::Event::Message(m) => self.show(m),
+                lsp::Event::Diagnostics(path) => self.apply_diagnostics(&path),
+                lsp::Event::Completion { path, anchor, items } => {
+                    let ed = &self.tabs[self.active];
+                    let head = ed.doc.selection().primary().head;
+                    let rope = ed.doc.text();
+                    let valid = ed.doc.path() == Some(path.as_path())
+                        && anchor <= head
+                        && rope.char_to_line(anchor) == rope.char_to_line(head);
+                    if valid && !items.is_empty() {
+                        let prefix = rope.slice(anchor..head).to_string();
+                        let fs = self.renderer.font_system();
+                        let mut c = completion::Completion::new(fs, self.ui_font, path, anchor, items);
+                        c.filter(&prefix);
+                        self.completion = (!c.is_empty()).then_some(c);
+                    }
+                }
+                lsp::Event::Definition { path, start } => {
+                    self.open_path(&path);
+                    let ed = self.editor_mut();
+                    if ed.doc.path() == Some(path.as_path()) {
+                        let pos = wyvern_lsp::from_lsp(ed.doc.text(), &start);
+                        ed.jump_to(pos);
+                    }
+                }
+                lsp::Event::DefinitionNotFound => self.show("Keine Definition gefunden"),
+                lsp::Event::Hover { text, x, y } => {
+                    let fs = self.renderer.font_system();
+                    self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &text, x, y));
+                }
+                lsp::Event::Format { path, version, edits } => {
+                    let Some(i) = self.tabs.iter().position(|t| t.doc.path() == Some(path.as_path())) else { continue };
+                    let ed = &mut self.tabs[i];
+                    if ed.doc.version() != version {
+                        continue; // text changed meanwhile; formatting would be wrong
+                    }
+                    let rope = ed.doc.text();
+                    let changes = edits
+                        .iter()
+                        .map(|(s, e, text)| wyvern_buffer::Change {
+                            start: wyvern_lsp::from_lsp(rope, s),
+                            end: wyvern_lsp::from_lsp(rope, e),
+                            text: text.replace("\r\n", "\n"),
+                        })
+                        .collect::<Vec<_>>();
+                    let n = changes.len();
+                    ed.doc.apply_changes(changes);
+                    ed.after_edit();
+                    if let Some(server) = &mut self.lsp {
+                        server.changed(&path, self.tabs[i].doc.version());
+                    }
+                    self.show(if n == 0 { "Schon formatiert".to_string() } else { "Formatiert".to_string() });
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// Converts the server's problem list for a file into ranges in its tab.
+    fn apply_diagnostics(&mut self, path: &Path) {
+        let Some(server) = &self.lsp else { return };
+        let list = server.diagnostics.get(path).cloned().unwrap_or_default();
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.doc.path() == Some(path)) {
+            let rope = t.doc.text();
+            t.diagnostics = list
+                .iter()
+                .filter(|d| d.severity <= 3)
+                .map(|d| editor::DiagSpan {
+                    start: wyvern_lsp::from_lsp(rope, &d.start),
+                    end: wyvern_lsp::from_lsp(rope, &d.end),
+                    severity: d.severity,
+                    message: if d.code.is_empty() { d.message.clone() } else { format!("{}: {}", d.code, d.message) },
+                })
+                .collect();
+        }
+    }
+
+    /// Periodic work for the language server: send pending changes, ask for diagnostics,
+    /// show hover info when the mouse rests. Returns when to wake up next.
+    fn lsp_tick(&mut self, now: Instant) -> Option<Instant> {
+        let mut wake = None;
+        if let Some(server) = &mut self.lsp {
+            for path in server.due_syncs(now) {
+                if let Some(t) = self.tabs.iter().find(|t| t.doc.path() == Some(path.as_path())) {
+                    server.sync(&path, t.doc.text(), t.doc.version());
+                }
+            }
+            wake = server.tick(now);
+        }
+        if let Some((since, x, y)) = self.hover_rest {
+            let due = since + HOVER_DELAY;
+            if now >= due {
+                self.hover_rest = None;
+                if self.tooltip.is_none() && self.editor().contains(x, y) && matches!(self.overlay, Overlay::None) {
+                    let pos = self.editor().hit_test(x, y);
+                    let rope = self.editor().doc.text();
+                    let on_word = pos < rope.len_chars() && {
+                        let c = rope.char(pos);
+                        c.is_alphanumeric() || c == '_'
+                    };
+                    if on_word {
+                        self.request_hover(pos, x, y);
+                    }
+                }
+            } else {
+                wake = Some(wake.map_or(due, |w: Instant| w.min(due)));
+            }
+        }
+        wake
     }
 
     // ----- search field -----
@@ -940,6 +1305,10 @@ impl State {
 
     fn run(&mut self, cmd: Command) {
         let mut follow_cursor = true;
+        let typed = if let Command::Insert(t) = &cmd { Some(t.clone()) } else { None };
+        let keeps_completion =
+            matches!(cmd, Command::Insert(_) | Command::Backspace | Command::TriggerCompletion);
+        let mut trigger = None;
         let ed = &mut self.tabs[self.active];
         match cmd {
             Command::Move(m, extend) => {
@@ -1057,12 +1426,35 @@ impl State {
                 self.show(msg);
                 follow_cursor = false;
             }
+            Command::TriggerCompletion => trigger = Some(None),
+            Command::GotoDefinition => {
+                follow_cursor = false;
+                let pos = self.editor().doc.selection().primary().head;
+                self.request_definition(pos);
+            }
+            Command::Format => {
+                follow_cursor = false;
+                self.request_format();
+            }
+            Command::QuickInfo => {
+                follow_cursor = false;
+                let ed = self.editor();
+                let pos = ed.doc.selection().primary().head;
+                let (x, y) = ed.screen_pos(pos);
+                let y = y + ed.line_height();
+                self.request_hover(pos, x, y);
+            }
         }
         let ed = self.editor_mut();
         ed.after_edit();
         if follow_cursor {
             ed.ensure_cursor_visible();
         }
+        self.lsp_after_edit();
+        if !keeps_completion {
+            self.completion = None;
+        }
+        self.update_completion(typed.as_deref(), trigger);
     }
 
     fn set_clipboard(&mut self, (text, line_mode): (String, bool)) {
@@ -1097,6 +1489,8 @@ impl State {
             return;
         }
         self.alt_alone = false;
+        self.tooltip = None;
+        self.completion = None;
         if matches!(self.overlay, Overlay::Palette) && button == MouseButton::Left
             && let Some(action) = self.palette.action_at(self.mouse.x, self.mouse.y) {
                 self.accept_palette(action);
@@ -1150,6 +1544,11 @@ impl State {
             .is_some_and(|(t, p)| now.duration_since(t) < DOUBLE_CLICK && p == pos);
         self.mouse.last_click = Some((now, pos));
         let (alt, shift) = (self.modifiers.alt_key(), self.modifiers.shift_key());
+        if self.modifiers.control_key() {
+            self.tabs[self.active].doc.set_cursor(pos);
+            self.request_definition(pos);
+            return;
+        }
         let doc = &mut self.tabs[self.active].doc;
         if alt {
             doc.toggle_cursor(pos);
@@ -1246,15 +1645,24 @@ impl State {
         if let Some((msg, _)) = &self.message {
             left.push_str("   ·   ");
             left.push_str(msg);
+        } else if let Some(d) = ed.diagnostic_at_cursor() {
+            left.push_str("   ·   ");
+            left.push_str(&d.message);
         }
+        let errors = ed.diagnostics.iter().filter(|d| d.severity == 1).count();
+        let warnings = ed.diagnostics.iter().filter(|d| d.severity == 2).count();
+        let problems = if errors + warnings > 0 { format!("✖ {errors}  ⚠ {warnings}  ·  ") } else { String::new() };
+        let language = match (&self.lsp, ed.is_csharp()) {
+            (Some(server), true) => server.status_text(),
+            _ => ed.language_name().to_string(),
+        };
         let ending = match ed.doc.line_ending() {
             wyvern_buffer::LineEnding::Lf => "LF",
             wyvern_buffer::LineEnding::CrLf => "CRLF",
         };
         let ram = metrics::ram_mb().map_or("–".into(), |mb| format!("{mb:.0} MB"));
         let right = format!(
-            "{}  ·  {ending}  ·  RAM {ram}  ·  Taste→Bild {} (Ø {})",
-            ed.language_name(),
+            "{problems}{language}  ·  {ending}  ·  RAM {ram}  ·  Taste→Bild {} (Ø {})",
             metrics::ms(self.latency.last()),
             metrics::ms(self.latency.average()),
         );
@@ -1299,6 +1707,10 @@ impl State {
             let cells = Palette::width_cells(w as f32, self.ui_font);
             let fs = self.renderer.font_system();
             self.palette.prepare(fs, &self.theme, &self.family, cells);
+        }
+        if let Some(c) = &mut self.completion {
+            let fs = self.renderer.font_system();
+            c.prepare(fs, &self.theme, &self.family);
         }
         let active_path = self.editor().doc.path().map(Path::to_path_buf);
         {
@@ -1369,6 +1781,16 @@ impl State {
 
         if popup_visible {
             self.popup.draw(theme, self.ui_font, s.w, s.y, &mut overlay, &mut overlay_text);
+        }
+        let window = (s.w, s.y + s.h);
+        if let Some(c) = &self.completion {
+            let ed = &self.tabs[self.active];
+            let (x, y) = ed.screen_pos(c.anchor);
+            let lh = ed.line_height();
+            c.draw(theme, self.ui_font, x - self.ui_font.cell_w * 0.75, y + lh, y, window, scale, &mut overlay, &mut overlay_text);
+        }
+        if let Some(t) = &self.tooltip {
+            t.draw(theme, self.ui_font, window, scale, &mut overlay, &mut overlay_text);
         }
         if matches!(self.overlay, Overlay::Palette) {
             let top = l.tabs.y + l.tabs.h * 0.5;

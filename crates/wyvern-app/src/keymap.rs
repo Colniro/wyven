@@ -43,6 +43,11 @@ pub enum Command {
     ReopenClosed,
     /// Opens the search field with a mode prefix ("" files, ">" commands, "@" symbols, ":" line).
     OpenPalette(&'static str),
+    TriggerCompletion,
+    GotoDefinition,
+    Format,
+    /// Strg+K Strg+I: information about the symbol under the cursor.
+    QuickInfo,
     Scroll(isize),
     FontSize(i32),
     FontSizeReset,
@@ -90,7 +95,8 @@ impl Keymap {
                 return match (c.as_str(), ctrl) {
                     ("c", _) => Some(Command::Comment(CommentMode::Add)),
                     ("u", _) => Some(Command::Comment(CommentMode::Remove)),
-                    ("d", _) => Some(Command::NotYet("Formatieren kommt mit dem C#-LSP")),
+                    ("d", _) => Some(Command::Format),
+                    ("i", _) => Some(Command::QuickInfo),
                     _ => None,
                 };
             }
@@ -135,8 +141,9 @@ impl Keymap {
                 NamedKey::F5 | NamedKey::F9 | NamedKey::F10 | NamedKey::F11 => {
                     NotYet("Debuggen kommt in Phase 3")
                 }
-                NamedKey::F12 => NotYet("Gehe zu Definition kommt mit dem C#-LSP"),
-                NamedKey::F2 => NotYet("Umbenennen kommt mit dem C#-LSP"),
+                NamedKey::F12 => GotoDefinition,
+                NamedKey::F2 => NotYet("Umbenennen kommt im nächsten Schritt"),
+                NamedKey::Space if ctrl => TriggerCompletion,
                 _ => return None,
             },
             Key::Character(c) if ctrl && !alt => match (c.as_str(), shift) {
@@ -166,8 +173,8 @@ impl Keymap {
                 ("p", true) => OpenPalette(">"),
                 ("g", false) => OpenPalette(":"),
                 ("f", _) | ("h", false) => NotYet("Suchen und Ersetzen kommt in Phase 2"),
-                ("space", _) | (" ", _) => NotYet("Autovervollständigung kommt mit dem C#-LSP"),
-                ("." , false) => NotYet("Quick Actions kommen mit dem C#-LSP"),
+                (" ", _) => TriggerCompletion,
+                (".", false) => NotYet("Quick Actions kommen im nächsten Schritt"),
                 _ => return None,
             },
             _ => return None,

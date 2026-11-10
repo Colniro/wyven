@@ -38,8 +38,19 @@ struct CacheKey {
     gutter_cells: usize,
 }
 
+/// A problem reported by the language server, as a char range in the current text.
+#[derive(Debug, Clone)]
+pub struct DiagSpan {
+    pub start: usize,
+    pub end: usize,
+    /// 1 error, 2 warning, 3 info.
+    pub severity: u8,
+    pub message: String,
+}
+
 pub struct EditorView {
     pub doc: Document,
+    pub diagnostics: Vec<DiagSpan>,
     syntax: Option<Syntax>,
     pub scroll_line: usize,
     pub scroll_x: f32,
@@ -67,6 +78,7 @@ impl EditorView {
         }
         Self {
             doc,
+            diagnostics: Vec::new(),
             syntax,
             scroll_line: 0,
             scroll_x: 0.0,
@@ -114,6 +126,48 @@ impl EditorView {
         self.doc.take_edits();
         self.cache = None;
         Ok(())
+    }
+
+    pub fn is_csharp(&self) -> bool {
+        self.language_name() == "C#"
+    }
+
+    /// Window position (left, top) of a char position, and the line height.
+    pub fn screen_pos(&self, pos: usize) -> (f32, f32) {
+        let rope = self.doc.text();
+        let line = rope.char_to_line(pos.min(rope.len_chars()));
+        let col = char_to_display_col(rope.line(line), pos - rope.line_to_char(line), self.doc.tab_width);
+        let x = self.text_x() - self.scroll_x + col as f32 * self.font.cell_w;
+        let y = self.area.y + (line as f32 - self.scroll_line as f32) * self.font.line_h;
+        (x, y)
+    }
+
+    pub fn line_height(&self) -> f32 {
+        self.font.line_h
+    }
+
+    /// The most severe problem touching the primary cursor.
+    pub fn diagnostic_at_cursor(&self) -> Option<&DiagSpan> {
+        let head = self.doc.selection().primary().head;
+        self.diagnostics
+            .iter()
+            .filter(|d| d.start <= head && head <= d.end.max(d.start + 1))
+            .min_by_key(|d| d.severity)
+    }
+
+    /// Start of the identifier the cursor is in or right after (for completion).
+    pub fn word_start(&self) -> usize {
+        let rope = self.doc.text();
+        let mut i = self.doc.selection().primary().head;
+        while i > 0 {
+            let c = rope.char(i - 1);
+            if c.is_alphanumeric() || c == '_' {
+                i -= 1;
+            } else {
+                break;
+            }
+        }
+        i
     }
 
     pub fn symbols(&self) -> Vec<wyvern_syntax::Symbol> {
@@ -407,6 +461,43 @@ impl EditorView {
             }
             if let Some((x, w)) = clip(text_x + col as f32 * cw - cursor_w / 2.0, cursor_w) {
                 over.push(Quad { x, y: line_y(line), w, h: lh, color: theme.cursor });
+            }
+        }
+
+        // Squiggles under problems: a thin zigzag made of short steps.
+        let thick = scale.round().max(1.0);
+        let step = (2.0 * scale).round().max(2.0);
+        for d in &self.diagnostics {
+            let color = match d.severity {
+                1 => theme.error,
+                2 => theme.warning,
+                _ => theme.info,
+            };
+            let (l0, c0) = col_of(d.start);
+            let (l1, c1) = col_of(d.end.max(d.start + 1).min(rope.len_chars()));
+            for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
+                let s = if line == l0 { c0 } else { 0 };
+                let e = if line == l1 {
+                    c1.max(s + 1)
+                } else {
+                    char_to_display_col(rope.line(line), line_len_chars(rope, line), tab)
+                };
+                let base = line_y(line) + lh - 2.0 * step;
+                let x0 = text_x + s as f32 * cw;
+                let x1 = text_x + e as f32 * cw;
+                let mut x = x0;
+                let mut up = false;
+                while x < x1 {
+                    let w = step.min(x1 - x);
+                    if let Some((cx, cw2)) = clip(x, w) {
+                        let y = if up { base } else { base + step - thick };
+                        over.push(Quad { x: cx, y, w: cw2, h: thick, color });
+                        // Vertical connector so it reads as a wave.
+                        over.push(Quad { x: cx, y: base, w: thick, h: step, color });
+                    }
+                    x += step;
+                    up = !up;
+                }
             }
         }
 

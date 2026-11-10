@@ -23,3 +23,4 @@ pollster.workspace = true
 memory-stats.workspace = true
 log.workspace = true
 env_logger.workspace = true
+wyvern-lsp.workspace = true

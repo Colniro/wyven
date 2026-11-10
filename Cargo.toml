@@ -12,6 +12,9 @@ rust-version = "1.90"
 wyvern-render = { path = "crates/wyvern-render" }
 wyvern-buffer = { path = "crates/wyvern-buffer" }
 wyvern-syntax = { path = "crates/wyvern-syntax" }
+wyvern-lsp = { path = "crates/wyvern-lsp" }
+serde_json = "1"
+url = "2.5"
 
 ropey = "1.6"
 unicode-width = "0.2"

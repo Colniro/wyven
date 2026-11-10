@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1, dritter Teil.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn und hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md).
-Noch fehlen in Phase 1: der C#-Language-Server und Einstellungen/Themes.
+**Stand: Phase 1, vierter Teil.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Noch fehlen in Phase 1: Umbenennen (F2), Quick Actions (`Strg+.`) und Einstellungen/Themes.
 
 ## Starten
 
@@ -17,6 +17,16 @@ Mit einem Ordner öffnet sich dieser als Projekt, mit einer Datei die Datei samt
 Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 
 ## Was schon geht
+
+- **C# mit Roslyn** (derselbe Server wie im C# Dev Kit von VS Code):
+  - Fehler und Warnungen als Wellenlinien. Die Meldung erscheint in der Statusleiste, sobald der Cursor auf der Stelle steht, rechts stehen die Zähler `✖ / ⚠`.
+  - Autovervollständigung beim Tippen und nach `.`, oder mit `Strg+Leertaste`. `Enter`/`Tab` übernimmt, `Esc` schließt.
+  - `F12` oder `Strg+Klick`: Gehe zu Definition
+  - Info zum Symbol: Maus kurz still halten oder `Strg+K, Strg+I`
+  - Formatieren: `Strg+K, Strg+D`
+
+  Der Server startet automatisch, sobald eine `.cs`-Datei offen ist. Das erste Laden eines Projekts dauert einige Sekunden (inkl. `dotnet restore`), die Statusleiste zeigt den Fortschritt.
+  Woher der Server kommt, in dieser Reihenfolge: Umgebungsvariable `WYVERN_CSHARP_SERVER`, dann der Roslyn-Server aus der **C#-Extension von VS Code**, dann `csharp-ls` im PATH. Er braucht das .NET SDK.
 
 - **Suchfeld** `Strg+Q`, ein Feld für alles:
   - ohne Präfix: Dateien im Projekt, unscharf (`prgcs` findet `Program.cs`). Beachtet `.gitignore`.
@@ -51,7 +61,8 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 |---|---|
 | `crates/wyvern-app` | Startpunkt (`wyvern.exe`), Fenster, Tastenbelegung, Editor-Ansicht, Statusleiste |
 | `crates/wyvern-buffer` | Textpuffer (Rope), Multi-Cursor, Transaktionen, Undo/Redo, Laden/Speichern |
-| `crates/wyvern-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting |
+| `crates/wyvern-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting, Symbole |
+| `crates/wyvern-lsp` | Language-Server-Client: JSON-RPC über stdio, UTF-16-Positionen |
 | `crates/wyvern-render` | GPU-Rendering (wgpu): Rechtecke und Text (glyphon / cosmic-text) |
 
 Tests: `cargo test --workspace`

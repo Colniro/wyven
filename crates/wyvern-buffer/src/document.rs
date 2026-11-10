@@ -55,6 +55,8 @@ pub struct Document {
     history: History,
     path: Option<PathBuf>,
     line_ending: LineEnding,
+    /// The file started with a UTF-8 byte order mark (Visual Studio writes one); kept on save.
+    bom: bool,
     pub tab_width: usize,
     pub indent_unit: String,
     version: u64,
@@ -84,6 +86,7 @@ impl Document {
             history: History::default(),
             path: None,
             line_ending,
+            bom: false,
             tab_width: 4,
             indent_unit,
             version: 0,
@@ -97,9 +100,11 @@ impl Document {
         let text = String::from_utf8(bytes).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "Datei ist kein gültiges UTF-8")
         })?;
+        let bom = text.starts_with('\u{feff}');
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         let mut doc = Self::from_str(text);
         doc.path = Some(path.to_path_buf());
+        doc.bom = bom;
         Ok(doc)
     }
 
@@ -109,7 +114,10 @@ impl Document {
             .path
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Dokument hat keinen Pfad"))?;
-        let mut out = String::with_capacity(self.rope.len_bytes() + self.rope.len_lines());
+        let mut out = String::with_capacity(self.rope.len_bytes() + self.rope.len_lines() + 3);
+        if self.bom {
+            out.push('\u{feff}');
+        }
         for chunk in self.rope.chunks() {
             match self.line_ending {
                 LineEnding::Lf => out.push_str(chunk),
@@ -214,6 +222,33 @@ impl Document {
         }
         let new_sel = Selection::new(ranges, self.selection.primary_index());
         self.apply(Transaction::new(changes), new_sel, kind, breaks_group);
+    }
+
+    /// Applies changes from outside (formatting, rename from a language server) as one undo
+    /// step. Overlapping changes are dropped; cursors move with the text.
+    pub fn apply_changes(&mut self, mut changes: Vec<Change>) {
+        let len = self.rope.len_chars();
+        changes.retain(|c| c.start <= c.end && c.end <= len);
+        changes.sort_by_key(|c| (c.start, c.end));
+        let mut kept: Vec<Change> = Vec::with_capacity(changes.len());
+        for c in changes {
+            if kept.last().is_none_or(|last| last.end <= c.start) {
+                kept.push(c);
+            }
+        }
+        let tx = Transaction::new(kept);
+        let sel = tx.map_selection(&self.selection);
+        self.apply(tx, sel, EditKind::Other, true);
+    }
+
+    /// Selects `start..end` and replaces it with `text` (accepting a completion).
+    pub fn replace_range(&mut self, start: usize, end: usize, text: &str) {
+        let n = text.chars().count();
+        let end = end.min(self.rope.len_chars());
+        let start = start.min(end);
+        let tx = Transaction::new(vec![Change { start, end, text: text.to_string() }]);
+        let sel = Selection::point(start + n);
+        self.apply(tx, sel, EditKind::Other, true);
     }
 
     pub fn undo(&mut self) -> bool {
@@ -939,6 +974,31 @@ mod tests {
         d.set_cursor(0);
         d.paste(&text, line_mode);
         assert_eq!(d.text().to_string(), "b\na\nb\n");
+    }
+
+    #[test]
+    fn external_changes_keep_cursor_on_its_text() {
+        let mut d = doc("int  x=1;\nfoo();", &[(11, 11)]);
+        d.apply_changes(vec![
+            Change { start: 3, end: 5, text: " ".into() },
+            Change { start: 6, end: 7, text: " = ".into() },
+        ]);
+        assert_eq!(d.text().to_string(), "int x = 1;\nfoo();");
+        assert_eq!(heads(&d), vec![12]);
+        d.undo();
+        assert_eq!(d.text().to_string(), "int  x=1;\nfoo();");
+    }
+
+    #[test]
+    fn byte_order_mark_is_kept() {
+        let dir = std::env::temp_dir().join("wyvern-buffer-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bom.cs");
+        std::fs::write(&path, "\u{feff}class A {}\r\n").unwrap();
+        let mut d = Document::open(&path).unwrap();
+        assert_eq!(d.text().to_string(), "class A {}\n");
+        d.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap()[..3], [0xEF, 0xBB, 0xBF]);
     }
 
     #[test]
