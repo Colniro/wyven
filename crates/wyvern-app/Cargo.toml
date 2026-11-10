@@ -1,0 +1,19 @@
+[package]
+name = "wyvern-app"
+description = "The Wyvern code editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "wyvern"
+path = "src/main.rs"
+
+[dependencies]
+wyvern-render.workspace = true
+winit.workspace = true
+pollster.workspace = true
+memory-stats.workspace = true
+log.workspace = true
+env_logger.workspace = true

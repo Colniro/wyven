@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.90"
+
+[workspace.dependencies]
+wyvern-render = { path = "crates/wyvern-render" }
+
+wgpu = "30"
+glyphon = "0.12"
+winit = "0.30.13"
+pollster = "0.4"
+memory-stats = "1.2"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# Fast debug builds while keeping dependencies optimized (GPU and text code is slow unoptimized).
+[profile.dev.package."*"]
+opt-level = 2
