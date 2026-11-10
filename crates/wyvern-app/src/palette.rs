@@ -72,6 +72,7 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Projekt: Zuletzt geöffnet", "Alt p r", Ld(L::RecentProjects)),
         ("Projekt: Explorer fokussieren", "Alt p e", Ld(L::FocusExplorer)),
         ("Ansicht: Explorer ein/aus", "Alt e", Ld(L::ToggleExplorer)),
+        ("Ansicht: Terminal öffnen/schließen", "Alt t", Ld(L::ToggleTerminal)),
         ("Theme: Wyvern Dunkel", "", Ld(L::SetTheme("dunkel"))),
         ("Theme: Wyvern Hell", "", Ld(L::SetTheme("hell"))),
         ("Theme: hell/dunkel umschalten", "Alt v t", Ld(L::ToggleTheme)),

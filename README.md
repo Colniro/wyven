@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 fertig.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Als Nächstes kommt Phase 2: Terminal, Git, Suchen/Ersetzen, Minimap und Sticky Scroll (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1 fertig, Phase 2 läuft (Terminal fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Noch offen in Phase 2: Suchen/Ersetzen, Git, Minimap, Sticky Scroll und Code-Faltung (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -17,6 +17,11 @@ Mit einem Ordner öffnet sich dieser als Projekt, mit einer Datei die Datei samt
 Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 
 ## Was schon geht
+
+- **Terminal** unter dem Editor: `Alt → t` öffnet es (beim ersten Mal startet die Shell im Projektordner), springt hinein oder schließt es. Start direkt mit Terminal: `wyvern <Ordner> --terminal`.
+  - Alle Tasten gehen an die Shell, auch `Esc`, `Strg+C` und `Strg+V`. So laufen auch Programme wie Claude Code oder `dotnet watch` darin. `Alt` antippen öffnet weiterhin das Leader-Menü.
+  - Kopieren/Einfügen: `Strg+Shift+C` / `Strg+Shift+V`, Auswahl mit der Maus. Mausrad scrollt zurück (bis 5000 Zeilen).
+  - Volle Farben (256 und True Color), Shell und Höhe in `settings.toml` unter `[terminal]`. Standard: PowerShell 7, sonst Windows PowerShell.
 
 - **Einstellungen** in `settings.toml` (`%APPDATA%\Wyvern\settings.toml`, öffnen mit `Alt → ,`): Theme, Schriftart/-größe, Zeilenhöhe, Tab-Breite, Einrückung, Autovervollständigung und Info-Tooltip an/aus, Oberflächenschrift und Explorer-Breite. Die Datei wird beim ersten Start mit allen Optionen und deutschen Erklärungen angelegt. Speichern in Wyvern wendet sie sofort an. Tippfehler bei Optionsnamen werden in der Statusleiste gemeldet, die alten Einstellungen bleiben dann aktiv.
 - **Themes** „Wyvern Dunkel“ und „Wyvern Hell“: umschalten mit `Alt → v → t` oder im Suchfeld `>Theme`. Die Wahl wird in `settings.toml` gespeichert.
@@ -69,6 +74,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 | `crates/wyvern-app` | Startpunkt (`wyvern.exe`), Fenster, Tastenbelegung, Editor-Ansicht, Statusleiste |
 | `crates/wyvern-buffer` | Textpuffer (Rope), Multi-Cursor, Transaktionen, Undo/Redo, Laden/Speichern |
 | `crates/wyvern-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting, Symbole |
+| `crates/wyvern-terminal` | Terminal: Shell in ConPTY, Emulation mit `alacritty_terminal`, Tasten-Kodierung |
 | `crates/wyvern-lsp` | Language-Server-Client: JSON-RPC über stdio, UTF-16-Positionen |
 | `crates/wyvern-render` | GPU-Rendering (wgpu): Rechtecke und Text (glyphon / cosmic-text) |
 

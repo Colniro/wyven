@@ -161,6 +161,33 @@ impl Theme {
         }
     }
 
+    /// Colors for the integrated terminal.
+    pub fn terminal_palette(&self) -> wyvern_terminal::Palette {
+        let rgb = |c: Rgba| [c.0, c.1, c.2];
+        let hex = |v: u32| [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+        let ansi = if self.name == "hell" {
+            // VS Code light terminal colors.
+            [
+                0x000000, 0xCD3131, 0x107C10, 0x949800, 0x0451A5, 0xBC05BC, 0x0598BC, 0x555555,
+                0x666666, 0xCD3131, 0x14CE14, 0xB5BA00, 0x0451A5, 0xBC05BC, 0x0598BC, 0xA5A5A5,
+            ]
+        } else {
+            // "Campbell", the Windows Terminal default.
+            [
+                0x0C0C0C, 0xC50F1F, 0x13A10E, 0xC19C00, 0x0037DA, 0x881798, 0x3A96DD, 0xCCCCCC,
+                0x767676, 0xE74856, 0x16C60C, 0xF9F1A5, 0x3B78FF, 0xB4009E, 0x61D6D6, 0xF2F2F2,
+            ]
+        };
+        let sel = self.selection;
+        wyvern_terminal::Palette {
+            foreground: rgb(self.text),
+            background: rgb(self.panel_bg),
+            cursor: rgb(self.cursor),
+            selection: [sel.0, sel.1, sel.2],
+            ansi: ansi.map(hex),
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         THEMES.iter().find(|(n, _)| *n == self.name).map_or(self.name, |(_, d)| d)
     }

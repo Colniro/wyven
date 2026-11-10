@@ -24,6 +24,8 @@ pub enum Action {
     /// Switches to a theme by its settings name ("dunkel", "hell") and stores it.
     SetTheme(&'static str),
     ToggleTheme,
+    /// Opens/focuses/closes the terminal panel.
+    ToggleTerminal,
 }
 
 pub struct Item {
@@ -41,7 +43,7 @@ use Action::*;
 
 const ROOT: &[Item] = &[
     item('e', "Explorer ein/aus", ToggleExplorer),
-    item('t', "Terminal", Later("Das Terminal kommt in Phase 2")),
+    item('t', "Terminal", ToggleTerminal),
     item('s', "Suche", Later("Die Suche kommt in Phase 2")),
     item('g', "git …", Group("g")),
     item('d', "debug …", Group("d")),

@@ -41,6 +41,16 @@ hover = true
 font_scale = 0.93
 # Breite des Explorers in Zeichen
 explorer_width = 30
+
+[terminal]
+# Shell für das Terminal (Alt → t). Leer = automatisch (PowerShell 7, sonst Windows PowerShell).
+# Beispiele: "cmd.exe", "pwsh.exe", 'C:\Program Files\Git\bin\bash.exe'
+# (Pfade mit \ in einfachen Anführungszeichen schreiben)
+shell = ""
+# Startargumente der Shell, z. B. ["-NoLogo"]
+args = []
+# Höhe des Terminals in Prozent des Fensters
+height = 35
 "#;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -50,6 +60,21 @@ pub struct Settings {
     pub font: FontSettings,
     pub editor: EditorSettings,
     pub ui: UiSettings,
+    pub terminal: TerminalSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalSettings {
+    pub shell: String,
+    pub args: Vec<String>,
+    pub height: f32,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self { shell: String::new(), args: Vec::new(), height: 35.0 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -83,6 +108,7 @@ impl Default for Settings {
             font: FontSettings::default(),
             editor: EditorSettings::default(),
             ui: UiSettings::default(),
+            terminal: TerminalSettings::default(),
         }
     }
 }
@@ -114,6 +140,7 @@ impl Settings {
         s.editor.tab_width = s.editor.tab_width.clamp(1, 16);
         s.ui.font_scale = s.ui.font_scale.clamp(0.6, 1.5);
         s.ui.explorer_width = s.ui.explorer_width.clamp(12.0, 80.0);
+        s.terminal.height = s.terminal.height.clamp(15.0, 85.0);
         Ok(s)
     }
 
@@ -206,6 +233,12 @@ mod tests {
         assert_eq!(s.editor.tab_width, 4);
         let err = Settings::parse("[font]\nsitze = 16\n").unwrap_err();
         assert!(err.contains("sitze"), "{err}");
+    }
+
+    #[test]
+    fn windows_shell_path_example_is_valid_toml() {
+        let s = Settings::parse("[terminal]\nshell = 'C:\\Program Files\\Git\\bin\\bash.exe'\n").unwrap();
+        assert_eq!(s.terminal.shell, r"C:\Program Files\Git\bin\bash.exe");
     }
 
     #[test]

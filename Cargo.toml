@@ -13,9 +13,11 @@ wyvern-render = { path = "crates/wyvern-render" }
 wyvern-buffer = { path = "crates/wyvern-buffer" }
 wyvern-syntax = { path = "crates/wyvern-syntax" }
 wyvern-lsp = { path = "crates/wyvern-lsp" }
+wyvern-terminal = { path = "crates/wyvern-terminal" }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1.2"
+alacritty_terminal = "0.26"
 url = "2.5"
 
 ropey = "1.6"

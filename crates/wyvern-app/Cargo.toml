@@ -26,3 +26,4 @@ env_logger.workspace = true
 wyvern-lsp.workspace = true
 serde.workspace = true
 toml.workspace = true
+wyvern-terminal.workspace = true

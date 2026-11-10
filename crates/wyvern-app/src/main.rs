@@ -21,6 +21,7 @@ mod metrics;
 mod palette;
 mod popup;
 mod settings;
+mod terminal;
 mod theme;
 
 use std::path::{Path, PathBuf};
@@ -60,6 +61,7 @@ const HOVER_DELAY: Duration = Duration::from_millis(600);
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
     Lsp,
+    Terminal,
 }
 
 /// Startup profiling: logs elapsed time and RAM after each startup stage.
@@ -70,18 +72,28 @@ fn log_stage(stage: &str, started: Instant) {
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let path = std::env::args_os().nth(1).map(PathBuf::from);
+    // wyvern [Ordner oder Datei] [--terminal]
+    let mut path = None;
+    let mut open_terminal = false;
+    for arg in std::env::args_os().skip(1) {
+        if arg == "--terminal" {
+            open_terminal = true;
+        } else if path.is_none() {
+            path = Some(PathBuf::from(arg));
+        }
+    }
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
-    let mut app = App { path, state: None, proxy };
+    let mut app = App { path, open_terminal, state: None, proxy };
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
 struct App {
     path: Option<PathBuf>,
+    open_terminal: bool,
     state: Option<State>,
     proxy: EventLoopProxy<UserEvent>,
 }
@@ -90,6 +102,7 @@ struct App {
 enum Focus {
     Editor,
     Explorer,
+    Terminal,
 }
 
 enum Overlay {
@@ -116,6 +129,7 @@ struct Layout {
     explorer: Option<Rect>,
     tabs: Rect,
     editor: Rect,
+    terminal: Option<Rect>,
     status: Rect,
 }
 
@@ -170,6 +184,8 @@ struct State {
 
     settings: settings::Settings,
     settings_mtime: Option<std::time::SystemTime>,
+    terminal: terminal::TerminalPanel,
+    terminal_visible: bool,
 
     latency: InputLatency,
     started: Instant,
@@ -231,6 +247,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         log_stage("state", started);
+        if self.open_terminal {
+            state.toggle_terminal();
+        }
         // Hidden windows get no redraw events, so draw the first frame now; it shows the window.
         state.redraw();
         self.state = Some(state);
@@ -275,6 +294,14 @@ impl ApplicationHandler<UserEvent> for App {
                 state.mouse.x = x;
                 state.mouse.y = y;
                 state.hover_rest = (!state.mouse.dragging).then(|| (Instant::now(), x, y));
+                if state.terminal.selecting {
+                    let (row, col) = state.terminal.cell_at(x, y);
+                    if let Some(t) = &state.terminal.term {
+                        t.select_to(row, col);
+                    }
+                    state.terminal.dirty = true;
+                    state.window.request_redraw();
+                }
                 if state.mouse.dragging {
                     let ed = state.editor_mut();
                     let pos = ed.hit_test(position.x as f32, position.y as f32);
@@ -292,9 +319,12 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: UserEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         if let Some(state) = &mut self.state {
-            state.lsp_poll();
+            match event {
+                UserEvent::Lsp => state.lsp_poll(),
+                UserEvent::Terminal => state.terminal_poll(),
+            }
         }
     }
 
@@ -392,6 +422,7 @@ impl State {
         let (status_left, status_right, tab_bar) = (line_buffer(), line_buffer(), line_buffer());
         let popup = Popup::new(fs, ui_font);
         let palette = Palette::new(fs, ui_font);
+        let terminal_panel = terminal::TerminalPanel::new(fs, font, ui_font, family.clone());
 
         let mut state = Self {
             window,
@@ -428,6 +459,8 @@ impl State {
             armed: None,
             settings,
             settings_mtime: settings::modified(),
+            terminal: terminal_panel,
+            terminal_visible: false,
             proxy,
             lsp: None,
             lsp_failed: false,
@@ -470,12 +503,23 @@ impl State {
             0.0
         };
         let body_h = h - status_h;
+        let terminal_h = if self.terminal_visible {
+            (body_h * self.settings.terminal.height / 100.0).round().max(self.font.line_h * 4.0)
+        } else {
+            0.0
+        };
+        let editor_h = body_h - tabs_h - terminal_h;
         self.layout = Layout {
             explorer: (explorer_w > 0.0).then_some(Rect { x: 0.0, y: 0.0, w: explorer_w, h: body_h }),
             tabs: Rect { x: explorer_w, y: 0.0, w: w - explorer_w, h: tabs_h },
-            editor: Rect { x: explorer_w, y: tabs_h, w: w - explorer_w, h: body_h - tabs_h },
+            editor: Rect { x: explorer_w, y: tabs_h, w: w - explorer_w, h: editor_h },
+            terminal: (terminal_h > 0.0)
+                .then_some(Rect { x: explorer_w, y: tabs_h + editor_h, w: w - explorer_w, h: terminal_h }),
             status: Rect { x: 0.0, y: body_h, w, h: status_h },
         };
+        if let Some(r) = self.layout.terminal {
+            self.terminal.set_area(r);
+        }
         let area = self.layout.editor;
         for t in &mut self.tabs {
             t.set_area(area);
@@ -503,6 +547,7 @@ impl State {
         }
         self.popup.set_font(ui);
         self.palette.set_font(ui);
+        self.terminal.set_font(font, ui);
         let m = Metrics::new(ui.size, ui.line_h);
         for b in [&mut self.status_left, &mut self.status_right, &mut self.tab_bar] {
             b.set_metrics(m);
@@ -835,6 +880,10 @@ impl State {
 
         let mods = self.modifiers;
         self.tooltip = None;
+        if self.focus == Focus::Terminal && self.terminal_visible {
+            self.terminal_key(event);
+            return;
+        }
         if self.focus == Focus::Editor && !mods.control_key() && !mods.alt_key()
             && self.completion_key(&key) {
                 return;
@@ -1479,6 +1528,7 @@ impl State {
         self.settings = new;
         if let Some(theme) = Theme::by_name(&self.settings.theme) {
             self.theme = theme;
+            self.terminal.dirty = true;
         } else {
             self.show(format!("Unbekanntes Theme „{}“ (dunkel oder hell)", self.settings.theme));
         }
@@ -1505,6 +1555,7 @@ impl State {
     /// Switches the theme now and writes it to settings.toml.
     fn set_theme(&mut self, name: &str) {
         let Some(theme) = Theme::by_name(name) else { return };
+        self.terminal.dirty = true;
         let display = theme.display_name();
         self.theme = theme;
         self.settings.theme = name.to_string();
@@ -1520,6 +1571,76 @@ impl State {
         if let Some(ex) = &mut self.explorer {
             ex.invalidate();
         }
+        self.window.request_redraw();
+    }
+
+    // ----- terminal -----
+
+    /// Alt → t: opens the terminal (starting the shell the first time), focuses it, or closes it.
+    fn toggle_terminal(&mut self) {
+        if self.terminal_visible && self.focus == Focus::Terminal {
+            self.terminal_visible = false;
+            self.focus = Focus::Editor;
+            self.relayout();
+            return;
+        }
+        self.terminal_visible = true;
+        self.focus = Focus::Terminal;
+        self.relayout();
+        if self.terminal.term.is_none() {
+            self.start_terminal();
+        }
+    }
+
+    fn start_terminal(&mut self) {
+        let cwd = self
+            .project_root()
+            .map(Path::to_path_buf)
+            .or_else(|| self.editor().doc.path().and_then(Path::parent).map(Path::to_path_buf))
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(std::env::temp_dir);
+        let t = &self.settings.terminal;
+        self.terminal.configure(&t.shell, &t.args, &cwd);
+        let proxy = self.proxy.clone();
+        if let Err(e) = self.terminal.start(move || {
+            let _ = proxy.send_event(UserEvent::Terminal);
+        }) {
+            self.show(e);
+        }
+        self.window.request_redraw();
+    }
+
+    fn terminal_key(&mut self, event: &KeyEvent) {
+        match self.terminal.key(event, self.modifiers) {
+            terminal::KeyResult::Handled => {}
+            terminal::KeyResult::Copy(text) => {
+                self.set_clipboard((text, false));
+                if let Some(t) = &self.terminal.term {
+                    t.clear_selection();
+                }
+                self.show("Kopiert");
+            }
+            terminal::KeyResult::Paste => {
+                if let Some((text, _)) = self.get_clipboard()
+                    && let Some(t) = &self.terminal.term {
+                        t.paste(&text);
+                    }
+            }
+            terminal::KeyResult::Restart => self.start_terminal(),
+        }
+        self.terminal.dirty = true;
+    }
+
+    fn terminal_poll(&mut self) {
+        let Some(t) = &mut self.terminal.term else { return };
+        for event in t.poll() {
+            match event {
+                wyvern_terminal::TermEvent::Wakeup | wyvern_terminal::TermEvent::Title(_) => {}
+                wyvern_terminal::TermEvent::Copy(text) => self.set_clipboard((text, false)),
+                wyvern_terminal::TermEvent::Exited => self.show("Terminal beendet – Enter startet neu"),
+            }
+        }
+        self.terminal.dirty = true;
         self.window.request_redraw();
     }
 
@@ -1689,6 +1810,7 @@ impl State {
                 self.focus = Focus::Editor;
             }
             SetTheme(name) => self.set_theme(name),
+            ToggleTerminal => self.toggle_terminal(),
             ToggleTheme => {
                 let next = if self.theme.name == "dunkel" { "hell" } else { "dunkel" };
                 self.set_theme(next);
@@ -1891,6 +2013,16 @@ impl State {
     fn mouse_button(&mut self, button: MouseButton, pressed: bool) {
         if !pressed {
             self.mouse.dragging = false;
+            if self.terminal.selecting {
+                self.terminal.selecting = false;
+                // A click without dragging selects nothing.
+                if let Some(t) = &self.terminal.term
+                    && t.selection_text().is_none_or(|s| s.trim().is_empty()) {
+                        t.clear_selection();
+                        self.terminal.dirty = true;
+                        self.window.request_redraw();
+                    }
+            }
             return;
         }
         self.alt_alone = false;
@@ -1926,6 +2058,18 @@ impl State {
             return;
         }
 
+        if self.terminal_visible && self.terminal.contains(x, y) {
+            self.focus = Focus::Terminal;
+            if button == MouseButton::Left {
+                let (row, col) = self.terminal.cell_at(x, y);
+                if let Some(t) = &self.terminal.term {
+                    t.select_start(row, col);
+                }
+                self.terminal.selecting = true;
+                self.terminal.dirty = true;
+            }
+            return;
+        }
         if let Some(ex) = &mut self.explorer
             && self.explorer_visible && ex.contains(x, y) {
                 self.focus = Focus::Explorer;
@@ -1977,6 +2121,14 @@ impl State {
             }
         };
         let (x, y) = (self.mouse.x, self.mouse.y);
+        if self.terminal_visible && self.terminal.contains(x, y) {
+            if let Some(t) = &self.terminal.term {
+                t.scroll(dy.round() as i32);
+            }
+            self.terminal.dirty = true;
+            self.window.request_redraw();
+            return;
+        }
         if let Some(ex) = &mut self.explorer
             && self.explorer_visible && ex.contains(x, y) {
                 ex.scroll_by(-dy.round() as isize);
@@ -2046,6 +2198,9 @@ impl State {
         }
         if self.focus == Focus::Explorer {
             left.push_str("   ·   Explorer (Esc = zurück zum Editor)");
+        }
+        if self.focus == Focus::Terminal && self.terminal_visible {
+            left = "Terminal".to_string();
         }
         if let Some((msg, _)) = &self.message {
             left.push_str("   ·   ");
@@ -2124,6 +2279,11 @@ impl State {
             }
             _ => {}
         }
+        if self.terminal_visible {
+            let focused = self.focus == Focus::Terminal;
+            let fs = self.renderer.font_system();
+            self.terminal.prepare(fs, &self.theme, focused);
+        }
         let active_path = self.editor().doc.path().map(Path::to_path_buf);
         {
             let theme = &self.theme;
@@ -2168,6 +2328,10 @@ impl State {
         });
 
         self.tabs[self.active].draw(theme, scale, &mut under, &mut over, &mut text);
+        if self.terminal_visible {
+            let focused = self.focus == Focus::Terminal;
+            self.terminal.draw(theme, focused, scale, &mut under, &mut over, &mut text);
+        }
 
         // Status bar.
         let s = l.status;

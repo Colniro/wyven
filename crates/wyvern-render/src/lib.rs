@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 mod quad;
 
-pub use glyphon::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Wrap};
+pub use glyphon::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight, Wrap};
 pub use quad::{Quad, Rgba};
 use quad::QuadPipeline;
 use glyphon::{
