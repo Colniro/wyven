@@ -106,6 +106,47 @@ struct MiniKey {
 /// One block: row below `first`, start column, length in columns, color.
 type MiniRun = (usize, usize, usize, Rgba);
 
+/// At most this many scope headers stick at the top.
+const STICKY_MAX: usize = 5;
+
+/// Kinds of definitions that stick at the top (types and members with a body).
+const STICKY_KINDS: &[&str] =
+    &["namespace", "class", "struct", "record", "interface", "enum", "impl", "method", "constructor", "property", "function"];
+
+/// A definition spanning several lines: first line (the one with the name) and last line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scope {
+    pub line: usize,
+    pub end: usize,
+}
+
+/// The scope headers to show for `top` (first visible line): outer first, at most `max`.
+/// A header sticks once its own line has scrolled under the sticky area, and only while the
+/// line right below the sticky area is still inside the scope.
+pub fn sticky_for(scopes: &[Scope], top: usize, max: usize) -> Vec<Scope> {
+    let chain = |probe: usize| -> Vec<Scope> {
+        let mut c: Vec<Scope> = scopes.iter().copied().filter(|s| s.line < probe && probe <= s.end).collect();
+        c.sort_by_key(|s| (s.line, std::cmp::Reverse(s.end)));
+        c
+    };
+    // The largest row count n whose first code line (top + n) still lies in n scopes, where
+    // header row i only covers a line after its own (so a header never hides itself).
+    for n in (1..=max).rev() {
+        let c = chain(top + n);
+        if c.len() < n {
+            continue;
+        }
+        // Deeper than allowed: the innermost headers win; otherwise the outer ones (an inner
+        // scope that ends right below the headers is left out).
+        let skip = c.len().saturating_sub(max);
+        let pick: Vec<Scope> = c.into_iter().skip(skip).take(n).collect();
+        if pick.iter().enumerate().all(|(i, s)| s.line < top + i) {
+            return pick;
+        }
+    }
+    Vec::new()
+}
+
 /// A problem reported by the language server, as a char range in the current text.
 #[derive(Debug, Clone)]
 pub struct DiagSpan {
@@ -154,6 +195,15 @@ pub struct EditorView {
     /// Display scale, for the minimap's pixel sizes.
     pub scale: f32,
     mini_cache: Option<(MiniKey, Vec<MiniRun>)>,
+    /// Sticky scroll on/off (`[editor] sticky_scroll`, Alt → v → s).
+    pub sticky_scroll: bool,
+    scopes: Vec<Scope>,
+    scopes_version: Option<u64>,
+    /// Scope headers currently stuck at the top.
+    sticky: Vec<Scope>,
+    sticky_key: Option<(u64, Vec<Scope>, &'static str, usize)>,
+    sticky_text: Buffer,
+    sticky_gutter: Buffer,
 }
 
 impl EditorView {
@@ -171,7 +221,9 @@ impl EditorView {
         let metrics = Metrics::new(font.size, font.line_h);
         let mut text_buf = Buffer::new(fs, metrics);
         let mut gutter_buf = Buffer::new(fs, metrics);
-        for b in [&mut text_buf, &mut gutter_buf] {
+        let mut sticky_text = Buffer::new(fs, metrics);
+        let mut sticky_gutter = Buffer::new(fs, metrics);
+        for b in [&mut text_buf, &mut gutter_buf, &mut sticky_text, &mut sticky_gutter] {
             b.set_wrap(Wrap::None);
             b.set_monospace_width(Some(font.cell_w));
         }
@@ -202,6 +254,13 @@ impl EditorView {
             minimap_hover: false,
             scale: 1.0,
             mini_cache: None,
+            sticky_scroll: false,
+            scopes: Vec::new(),
+            scopes_version: None,
+            sticky: Vec::new(),
+            sticky_key: None,
+            sticky_text,
+            sticky_gutter,
         };
         view.refresh_disk_mtime();
         view
@@ -241,7 +300,7 @@ impl EditorView {
         self.doc.take_edits();
         self.diagnostics.clear();
         self.git_marks_version = None;
-        self.cache = None;
+        self.invalidate();
         true
     }
 
@@ -266,6 +325,8 @@ impl EditorView {
     pub fn invalidate(&mut self) {
         self.cache = None;
         self.mini_cache = None;
+        self.sticky_key = None;
+        self.scopes_version = None;
     }
 
     pub fn language_name(&self) -> &'static str {
@@ -387,12 +448,13 @@ impl EditorView {
     pub fn set_font(&mut self, fs: &mut FontSystem, font: FontMetrics) {
         self.font = font;
         let metrics = Metrics::new(font.size, font.line_h);
-        for b in [&mut self.text_buf, &mut self.gutter_buf] {
+        for b in [&mut self.text_buf, &mut self.gutter_buf, &mut self.sticky_text, &mut self.sticky_gutter] {
             b.set_metrics(metrics);
             b.set_monospace_width(Some(font.cell_w));
         }
         let _ = fs;
         self.cache = None;
+        self.sticky_key = None;
     }
 
     /// Visible line count (the last one may be cut off).
@@ -462,6 +524,30 @@ impl EditorView {
         })
     }
 
+    /// Height of the sticky header area in pixels.
+    fn sticky_h(&self) -> f32 {
+        self.sticky.len() as f32 * self.font.line_h
+    }
+
+    /// Click on a sticky header: scrolls that declaration to the top and puts the cursor on it.
+    /// Returns false if (x, y) is not on a sticky header.
+    pub fn sticky_click(&mut self, x: f32, y: f32) -> bool {
+        let a = self.area;
+        if self.sticky.is_empty() || x < a.x || x >= self.text_right() || y < a.y || y >= a.y + self.sticky_h() {
+            return false;
+        }
+        let row = ((y - a.y) / self.font.line_h) as usize;
+        let Some(scope) = self.sticky.get(row).copied() else { return false };
+        let rope = self.doc.text();
+        let start = rope.line_to_char(scope.line);
+        let indent = rope.line(scope.line).chars().take_while(|c| *c == ' ' || *c == '\t').count();
+        self.doc.set_cursor(start + indent);
+        // Parents of the scope stay sticky above it.
+        let parents = self.sticky[..row].len();
+        self.scroll_line = scope.line.saturating_sub(parents);
+        true
+    }
+
     pub fn minimap_contains(&self, x: f32, y: f32) -> bool {
         self.mini_geom().is_some_and(|g| {
             let r = g.rect;
@@ -527,8 +613,10 @@ impl EditorView {
         let line = rope.char_to_line(head);
         let rows = self.full_rows();
         let margin = 2.min(rows / 3);
-        if line < self.scroll_line + margin {
-            self.scroll_line = line.saturating_sub(margin);
+        // Lines under the sticky headers are hidden, so keep the cursor below them.
+        let top_margin = (margin + self.sticky.len()).min(rows / 2);
+        if line < self.scroll_line + top_margin {
+            self.scroll_line = line.saturating_sub(top_margin);
         } else if line + margin >= self.scroll_line + rows {
             self.scroll_line = line + margin + 1 - rows;
         }
@@ -575,6 +663,7 @@ impl EditorView {
             self.git_marks_version = None;
         }
         self.prepare_minimap(theme);
+        self.prepare_sticky(fs, theme);
         let rope = self.doc.text();
         let digits = rope.len_lines().max(1).to_string().len().max(3);
         self.gutter_cells = digits;
@@ -761,10 +850,11 @@ impl EditorView {
             }
         }
 
+        let sticky_bottom = a.y + self.sticky_h();
         let cursor_w = (2.0 * scale).round().max(1.0);
         for r in self.doc.selection().ranges() {
             let (line, col) = col_of(r.head);
-            if !(first..last).contains(&line) {
+            if !(first..last).contains(&line) || line_y(line) < sticky_bottom {
                 continue;
             }
             if let Some((x, w)) = clip(text_x + col as f32 * cw - cursor_w / 2.0, cursor_w) {
@@ -790,6 +880,9 @@ impl EditorView {
                 } else {
                     char_to_display_col(rope.line(line), line_len_chars(rope, line), tab)
                 };
+                if line_y(line) < sticky_bottom {
+                    continue;
+                }
                 let base = line_y(line) + lh - 2.0 * step;
                 let x0 = text_x + s as f32 * cw;
                 let x1 = text_x + e as f32 * cw;
@@ -845,21 +938,129 @@ impl EditorView {
         }
 
         let bottom = (a.y + a.h) as i32;
+        let code_top = sticky_bottom as i32;
         text.push(TextBlock {
             buffer: &self.gutter_buf,
             x: a.x + cw,
             y: a.y,
             color: theme.gutter_text,
-            clip: Some([a.x as i32, a.y as i32, text_left as i32, bottom]),
+            clip: Some([a.x as i32, code_top, text_left as i32, bottom]),
         });
         text.push(TextBlock {
             buffer: &self.text_buf,
             x: text_x,
             y: a.y,
             color: theme.text,
-            clip: Some([text_left as i32, a.y as i32, text_right as i32, bottom]),
+            clip: Some([text_left as i32, code_top, text_right as i32, bottom]),
         });
+        if !self.sticky.is_empty() {
+            // Covers selections and highlights of the lines underneath.
+            let h = self.sticky_h();
+            under.push(Quad { x: a.x, y: a.y, w: text_right - a.x, h, color: theme.background });
+            let shadow = (2.0 * scale).round().max(1.0);
+            under.push(Quad { x: a.x, y: a.y + h, w: text_right - a.x, h: shadow, color: theme.divider });
+            text.push(TextBlock {
+                buffer: &self.sticky_gutter,
+                x: a.x + cw,
+                y: a.y,
+                color: theme.gutter_text,
+                clip: Some([a.x as i32, a.y as i32, text_left as i32, code_top]),
+            });
+            text.push(TextBlock {
+                buffer: &self.sticky_text,
+                x: text_x,
+                y: a.y,
+                color: theme.text,
+                clip: Some([text_left as i32, a.y as i32, text_right as i32, code_top]),
+            });
+        }
         self.draw_minimap(theme, under, over);
+    }
+
+    fn prepare_sticky(&mut self, fs: &mut FontSystem, theme: &Theme) {
+        if !self.sticky_scroll || self.syntax.is_none() {
+            self.sticky.clear();
+            return;
+        }
+        if self.scopes_version != Some(self.doc.version()) {
+            self.scopes = self
+                .symbols()
+                .into_iter()
+                .filter(|s| s.end_line > s.line && STICKY_KINDS.contains(&s.kind))
+                .map(|s| Scope { line: s.line, end: s.end_line })
+                .collect();
+            self.scopes_version = Some(self.doc.version());
+        }
+        // Never cover more than a third of the editor.
+        let max = STICKY_MAX.min(self.full_rows() / 3);
+        self.sticky = sticky_for(&self.scopes, self.scroll_line, max);
+        if self.sticky.is_empty() {
+            return;
+        }
+        let digits = self.doc.text().len_lines().max(1).to_string().len().max(3);
+        let key = (self.doc.version(), self.sticky.clone(), theme.name, digits);
+        if self.sticky_key.as_ref() == Some(&key) {
+            return;
+        }
+        let rope = self.doc.text();
+        let tab = self.doc.tab_width;
+        let mut runs: Vec<(String, Rgba)> = Vec::new();
+        let mut gutter: Vec<(String, Rgba)> = Vec::new();
+        for scope in &self.sticky {
+            let line = scope.line;
+            let start_byte = rope.line_to_byte(line);
+            let end_byte = rope.line_to_byte((line + 1).min(rope.len_lines()));
+            let spans = match &self.syntax {
+                Some(syn) => flatten(&syn.highlights(rope, start_byte..end_byte), start_byte..end_byte),
+                None => Vec::new(),
+            };
+            let mut byte = start_byte;
+            let mut col = 0;
+            let mut span_i = 0;
+            for ch in rope.line(line).chars() {
+                if ch == '\n' || ch == '\r' {
+                    break;
+                }
+                while span_i < spans.len() && spans[span_i].end <= byte {
+                    span_i += 1;
+                }
+                let color = spans
+                    .get(span_i)
+                    .filter(|sp| sp.start <= byte)
+                    .map_or(theme.text, |sp| theme.highlight(sp.highlight));
+                let piece = if ch == '\t' {
+                    let n = tab - col % tab;
+                    col += n;
+                    " ".repeat(n)
+                } else {
+                    col += 1;
+                    ch.to_string()
+                };
+                match runs.last_mut() {
+                    Some((t, c)) if *c == color => t.push_str(&piece),
+                    _ => runs.push((piece, color)),
+                }
+                byte += ch.len_utf8();
+            }
+            runs.push(("\n".into(), theme.text));
+            gutter.push((format!("{:>digits$}\n", line + 1), theme.gutter_text));
+        }
+        let base = Attrs::new().family(Family::Name(&self.family));
+        self.sticky_text.set_rich_text(
+            runs.iter().map(|(t, c)| (t.as_str(), base.clone().color(c.to_glyphon()))),
+            &base,
+            Shaping::Advanced,
+            None,
+        );
+        self.sticky_text.shape_until_scroll(fs, false);
+        self.sticky_gutter.set_rich_text(
+            gutter.iter().map(|(t, c)| (t.as_str(), base.clone().color(c.to_glyphon()))),
+            &base,
+            Shaping::Basic,
+            None,
+        );
+        self.sticky_gutter.shape_until_scroll(fs, false);
+        self.sticky_key = Some(key);
     }
 
     /// Recomputes the colored blocks of the minimap if text, scroll position or theme changed.
@@ -1008,5 +1209,30 @@ impl EditorView {
         // Cursor line.
         let cur = rope.char_to_line(self.doc.selection().primary().head);
         over.push(Quad { x: sx, y: y_of(cur), w: sw, h: sc.round().max(1.0), color: theme.cursor.with_alpha(0xC0) });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sticky_for, Scope};
+
+    fn sc(line: usize, end: usize) -> Scope {
+        Scope { line, end }
+    }
+
+    #[test]
+    fn sticky_headers_follow_the_scroll_position() {
+        // namespace 0..100, class 2..90, method 5..20, method 30..40
+        let scopes = [sc(0, 100), sc(2, 90), sc(5, 20), sc(30, 40)];
+        assert_eq!(sticky_for(&scopes, 0, 5), vec![]);
+        assert_eq!(sticky_for(&scopes, 1, 5), vec![sc(0, 100)]);
+        assert_eq!(sticky_for(&scopes, 3, 5), vec![sc(0, 100), sc(2, 90)]);
+        assert_eq!(sticky_for(&scopes, 10, 5), vec![sc(0, 100), sc(2, 90), sc(5, 20)]);
+        // Between the methods only namespace and class stick.
+        assert_eq!(sticky_for(&scopes, 22, 5), vec![sc(0, 100), sc(2, 90)]);
+        // Limit: the innermost headers win.
+        assert_eq!(sticky_for(&scopes, 10, 2), vec![sc(2, 90), sc(5, 20)]);
+        // The method's last line comes up under the headers: it is no longer sticky.
+        assert_eq!(sticky_for(&scopes, 18, 5), vec![sc(0, 100), sc(2, 90)]);
     }
 }

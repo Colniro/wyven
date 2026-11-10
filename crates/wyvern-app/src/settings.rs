@@ -38,6 +38,9 @@ hover = true
 # Minimap on the right: "blocks" (shape of the code), "bar" (narrow marker bar) or "off".
 # Alt → v → m switches and saves it here.
 minimap = "blocks"
+# Keep the headers of the current namespace, class and method at the top while scrolling
+# (Alt → v → s switches and saves it here)
+sticky_scroll = true
 
 [ui]
 # Size of the interface font (explorer, tabs, status bar) relative to the code font
@@ -96,6 +99,7 @@ pub struct EditorSettings {
     pub auto_complete: bool,
     pub hover: bool,
     pub minimap: String,
+    pub sticky_scroll: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -125,7 +129,7 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, hover: true, minimap: "blocks".into() }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, hover: true, minimap: "blocks".into(), sticky_scroll: true }
     }
 }
 

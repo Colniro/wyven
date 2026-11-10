@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 fertig, Phase 2 läuft (Terminal, Suchen/Ersetzen, Git und Minimap fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Noch offen in Phase 2: Sticky Scroll und Code-Faltung (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1 fertig, Phase 2 läuft (Terminal, Suchen/Ersetzen, Git, Minimap und Sticky Scroll fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Noch offen in Phase 2: Code-Faltung (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -45,6 +45,8 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 - **Minimap** rechts statt Scrollbalken: zeigt die Form des Codes als farbige Blöcke und einen Kasten für den sichtbaren Bereich (heller, wenn die Maus darüber ist). Ganz rechts liegt ein schmaler Streifen mit Markierungen für die ganze Datei: Git-Änderungen, Suchtreffer, Fehler/Warnungen und die Cursorzeile.
   - Klick springt an die Stelle, Ziehen des Kastens scrollt. Bei langen Dateien scrollt die Minimap mit.
   - `Alt → v → m` schaltet um: Blöcke → schmale Markierungsleiste → aus. Die Wahl steht in `settings.toml` unter `[editor] minimap`.
+- **Sticky Scroll**: Beim Scrollen bleiben die Kopfzeilen von Namespace, Klasse/Struct/`impl` und Methode/Property oben stehen (höchstens 5, nie mehr als ein Drittel des Editors). Klick auf eine Kopfzeile springt zur Deklaration. `Alt → v → s` schaltet es an/aus (`[editor] sticky_scroll` in `settings.toml`).
+- **Startoptionen**: `wyvern <Datei> --goto=120` springt zu Zeile 120; `--terminal`, `--git` und `--diff` öffnen gleich Terminal, Git-Panel bzw. Diff der Datei.
 - **Oberfläche auf Englisch**: Leader-Menü, Befehle im Suchfeld (`File: Save`, `Git: Commit All` …), Spickzettel, Panels, Statusmeldungen und die Vorlage der `settings.toml`. Tasten heißen `Ctrl`, `PgUp` usw. In `settings.toml` gelten `theme = "dark"`/`"light"` und `indent = "spaces"`/`"tabs"`, die alten Werte `dunkel`/`hell`/`leerzeichen` funktionieren weiter.
 - **Spickzettel** mit allen Kürzeln: `Alt → h`. Er wird aus denselben Listen erzeugt wie Suchfeld und Leader-Menü und ist deshalb immer aktuell.
 

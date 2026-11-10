@@ -135,6 +135,8 @@ pub struct Symbol {
     /// Byte offset of the name.
     pub byte: usize,
     pub line: usize,
+    /// Last line of the whole definition (body included).
+    pub end_line: usize,
 }
 
 fn kind_label(kind: &str) -> &'static str {
@@ -150,6 +152,7 @@ fn kind_label(kind: &str) -> &'static str {
         "field" => "field",
         "function" => "function",
         "macro" => "macro",
+        "impl" => "impl",
         "constant" => "constant",
         "module" | "namespace" => "namespace",
         _ => "symbol",
@@ -257,7 +260,9 @@ fn definitions() -> Vec<Def> {
             extensions: &["rs"],
             language: || tree_sitter_rust::LANGUAGE.into(),
             query: || tree_sitter_rust::HIGHLIGHTS_QUERY.into(),
-            tags: Some(|| tree_sitter_rust::TAGS_QUERY.into()),
+            // impl blocks are no definitions in the grammar's query; they matter for the outline.
+            tags: Some(|| format!("{}
+(impl_item type: (_) @name) @definition.impl", tree_sitter_rust::TAGS_QUERY)),
             line_comment: Some("//"),
         },
     ]
@@ -394,12 +399,14 @@ impl Syntax {
         while let Some(m) = matches.next() {
             let mut name = None;
             let mut kind = None;
+            let mut end_line = 0;
             for cap in m.captures() {
                 let cap_name = names[cap.index as usize];
                 if cap_name == "name" {
                     name = Some(cap.node);
                 } else if let Some(k) = cap_name.strip_prefix("definition.") {
                     kind = Some(k);
+                    end_line = cap.node.end_position().row;
                 }
             }
             if let (Some(node), Some(kind)) = (name, kind) {
@@ -412,6 +419,7 @@ impl Syntax {
                     kind: kind_label(kind),
                     byte,
                     line: node.start_position().row,
+                    end_line: end_line.max(node.start_position().row),
                 });
             }
         }

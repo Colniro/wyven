@@ -28,6 +28,7 @@ pub enum Action {
     ToggleTerminal,
     /// Minimap: blocks → bar → off.
     CycleMinimap,
+    ToggleStickyScroll,
     Git(GitCmd),
 }
 
@@ -130,7 +131,7 @@ const WINDOW: &[Item] = &[
 
 const VIEW: &[Item] = &[
     item('m', "minimap: blocks / bar / off", CycleMinimap),
-    item('s', "sticky scroll", Later("Sticky scroll comes in phase 2")),
+    item('s', "sticky scroll on/off", ToggleStickyScroll),
     item('i', "inlay hints", Later("Inlay hints come in phase 3")),
     item('w', "word wrap", Later("Word wrap comes in phase 2")),
     item('z', "zen mode", Later("Zen mode comes in phase 4")),

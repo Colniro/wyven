@@ -78,9 +78,10 @@ fn log_stage(stage: &str, started: Instant) {
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // wyvern [Ordner oder Datei] [--terminal] [--git] [--diff]
+    // wyvern [folder or file] [--terminal] [--git] [--diff] [--goto=LINE]
     let mut path = None;
     let (mut open_terminal, mut open_git, mut open_diff) = (false, false, false);
+    let mut goto_line: Option<usize> = None;
     for arg in std::env::args_os().skip(1) {
         if arg == "--terminal" {
             open_terminal = true;
@@ -88,6 +89,8 @@ fn main() {
             open_git = true;
         } else if arg == "--diff" {
             open_diff = true;
+        } else if let Some(n) = arg.to_str().and_then(|a| a.strip_prefix("--goto=")) {
+            goto_line = n.parse().ok();
         } else if path.is_none() {
             path = Some(PathBuf::from(arg));
         }
@@ -97,7 +100,7 @@ fn main() {
         .expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
-    let mut app = App { path, open_terminal, open_git, open_diff, state: None, proxy };
+    let mut app = App { path, open_terminal, open_git, open_diff, goto_line, state: None, proxy };
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
@@ -106,6 +109,7 @@ struct App {
     open_terminal: bool,
     open_git: bool,
     open_diff: bool,
+    goto_line: Option<usize>,
     state: Option<State>,
     proxy: EventLoopProxy<UserEvent>,
 }
@@ -287,6 +291,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if self.open_git {
             state.git_command(leader::GitCmd::Panel);
+        }
+        if let Some(line) = self.goto_line {
+            state.editor_mut().jump_to_line(line, None);
         }
         if self.open_diff {
             state.git_command(leader::GitCmd::Diff);
@@ -1642,6 +1649,7 @@ impl State {
     fn configure_view(&self, view: &mut EditorView) {
         view.doc.tab_width = self.settings.editor.tab_width;
         view.minimap = editor::MinimapMode::parse(&self.settings.editor.minimap);
+        view.sticky_scroll = self.settings.editor.sticky_scroll;
         view.scale = self.renderer.scale_factor();
         if !view.doc.indent_detected() {
             view.doc.indent_unit = self.settings.indent_unit();
@@ -2501,6 +2509,25 @@ impl State {
             }
             Git(cmd) => self.git_command(cmd),
             CycleMinimap => self.cycle_minimap(),
+            ToggleStickyScroll => self.toggle_sticky_scroll(),
+        }
+    }
+
+    /// Alt → v → s: sticky scroll on/off, saved in settings.toml.
+    fn toggle_sticky_scroll(&mut self) {
+        let on = !self.settings.editor.sticky_scroll;
+        self.settings.editor.sticky_scroll = on;
+        for t in &mut self.tabs {
+            t.sticky_scroll = on;
+            t.invalidate();
+        }
+        let label = if on { "Sticky scroll: on" } else { "Sticky scroll: off" };
+        match settings::store_value(Some("editor"), "sticky_scroll", if on { "true" } else { "false" }) {
+            Ok(()) => {
+                self.settings_mtime = settings::modified();
+                self.show(label);
+            }
+            Err(e) => self.show(format!("{label} (not saved: {e})")),
         }
     }
 
@@ -2847,6 +2874,11 @@ impl State {
             return;
         }
         if button != MouseButton::Left || !self.editor().contains(x, y) {
+            return;
+        }
+        if self.diff.is_none() && self.editor_mut().sticky_click(x, y) {
+            self.focus = Focus::Editor;
+            self.find.focused = false;
             return;
         }
         self.focus = Focus::Editor;
