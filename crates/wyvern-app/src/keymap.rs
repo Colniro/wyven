@@ -9,6 +9,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use wyvern_buffer::{CommentMode, Direction, Movement};
 
+use crate::debug::DebugCmd;
 use crate::editor::FoldCmd;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,8 +65,7 @@ pub enum Command {
     FontSizeReset,
     /// Ctrl+M chords: code folding.
     Fold(FoldCmd),
-    /// Recognized but not built yet; the message says which phase brings it.
-    NotYet(&'static str),
+    Debug(DebugCmd),
 }
 
 /// Keeps state between key presses: `Ctrl+K` and `Ctrl+M` chords.
@@ -155,9 +155,13 @@ impl Keymap {
                 NamedKey::Tab if shift => Outdent,
                 NamedKey::Tab => Indent,
                 NamedKey::Escape => Collapse,
-                NamedKey::F5 | NamedKey::F9 | NamedKey::F10 | NamedKey::F11 => {
-                    NotYet("Debugging comes in phase 3")
-                }
+                NamedKey::F5 if shift => Debug(DebugCmd::Stop),
+                NamedKey::F5 if ctrl => Debug(DebugCmd::RunWithoutDebugging),
+                NamedKey::F5 => Debug(DebugCmd::StartOrContinue),
+                NamedKey::F9 => Debug(DebugCmd::ToggleBreakpoint),
+                NamedKey::F10 => Debug(DebugCmd::StepOver),
+                NamedKey::F11 if shift => Debug(DebugCmd::StepOut),
+                NamedKey::F11 => Debug(DebugCmd::StepInto),
                 NamedKey::F12 => GotoDefinition,
                 NamedKey::F2 => Rename,
                 NamedKey::F8 => NextProblem,

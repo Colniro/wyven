@@ -13,6 +13,7 @@ wyvern-render = { path = "crates/wyvern-render" }
 wyvern-buffer = { path = "crates/wyvern-buffer" }
 wyvern-syntax = { path = "crates/wyvern-syntax" }
 wyvern-lsp = { path = "crates/wyvern-lsp" }
+wyvern-dap = { path = "crates/wyvern-dap" }
 wyvern-terminal = { path = "crates/wyvern-terminal" }
 wyvern-search = { path = "crates/wyvern-search" }
 wyvern-git = { path = "crates/wyvern-git" }

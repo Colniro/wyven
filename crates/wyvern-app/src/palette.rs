@@ -59,6 +59,7 @@ pub struct Sources<'a> {
 pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
     use leader::Action as L;
     use leader::GitCmd as G;
+    use crate::debug::DebugCmd;
     use crate::editor::FoldCmd;
     use Cmd::{Key as K, Leader as Ld};
     use Command as C;
@@ -77,6 +78,16 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("View: Toggle Terminal", "Alt t", Ld(L::ToggleTerminal)),
         ("View: Minimap Blocks / Bar / Off", "Alt v m", Ld(L::CycleMinimap)),
         ("View: Toggle Sticky Scroll", "Alt v s", Ld(L::ToggleStickyScroll)),
+        ("Debug: Start / Continue", "F5", K(C::Debug(DebugCmd::StartOrContinue))),
+        ("Debug: Stop", "Shift+F5", K(C::Debug(DebugCmd::Stop))),
+        ("Debug: Run Without Debugging", "Ctrl+F5", K(C::Debug(DebugCmd::RunWithoutDebugging))),
+        ("Debug: Step Over", "F10", K(C::Debug(DebugCmd::StepOver))),
+        ("Debug: Step Into", "F11", K(C::Debug(DebugCmd::StepInto))),
+        ("Debug: Step Out", "Shift+F11", K(C::Debug(DebugCmd::StepOut))),
+        ("Debug: Toggle Breakpoint", "F9", K(C::Debug(DebugCmd::ToggleBreakpoint))),
+        ("Debug: Show Panel", "Alt d d", K(C::Debug(DebugCmd::ShowPanel))),
+        ("Debug: Add Watch …", "Alt d w", K(C::Debug(DebugCmd::AddWatch))),
+        ("Debug: Attach to Process …", "Alt d a", K(C::Debug(DebugCmd::Attach))),
         ("Fold: Toggle Fold at Cursor", "Ctrl+M Ctrl+M", K(C::Fold(FoldCmd::Toggle))),
         ("Fold: Fold All / Unfold All", "Ctrl+M Ctrl+L", K(C::Fold(FoldCmd::ToggleAll))),
         ("Fold: Fold to Definitions", "Ctrl+M Ctrl+O", K(C::Fold(FoldCmd::Definitions))),

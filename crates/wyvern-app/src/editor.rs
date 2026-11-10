@@ -38,6 +38,7 @@ struct CacheKey {
     gutter_cells: usize,
     fold_gen: u64,
     gutter_hover: bool,
+    marks_gen: u64,
 }
 
 /// How the minimap on the right is shown (`[editor] minimap` in settings.toml, Alt → v → m).
@@ -277,6 +278,13 @@ pub struct EditorView {
     /// The mouse is over the gutter: fold arrows are shown.
     pub gutter_hover: bool,
     fold_buf: Buffer,
+    /// Breakpoint lines (0-based, sorted).
+    breakpoints: Vec<usize>,
+    /// Line where the debugger is paused.
+    debug_line: Option<usize>,
+    /// Bumped when breakpoints or the debug line change.
+    marks_gen: u64,
+    mark_buf: Buffer,
 }
 
 impl EditorView {
@@ -297,7 +305,8 @@ impl EditorView {
         let mut sticky_text = Buffer::new(fs, metrics);
         let mut sticky_gutter = Buffer::new(fs, metrics);
         let mut fold_buf = Buffer::new(fs, metrics);
-        for b in [&mut text_buf, &mut gutter_buf, &mut sticky_text, &mut sticky_gutter, &mut fold_buf] {
+        let mut mark_buf = Buffer::new(fs, metrics);
+        for b in [&mut text_buf, &mut gutter_buf, &mut sticky_text, &mut sticky_gutter, &mut fold_buf, &mut mark_buf] {
             b.set_wrap(Wrap::None);
             b.set_monospace_width(Some(font.cell_w));
         }
@@ -342,6 +351,10 @@ impl EditorView {
             fold_gen: 0,
             gutter_hover: false,
             fold_buf,
+            breakpoints: Vec::new(),
+            debug_line: None,
+            marks_gen: 0,
+            mark_buf,
         };
         view.refresh_disk_mtime();
         view
@@ -538,7 +551,7 @@ impl EditorView {
     pub fn set_font(&mut self, fs: &mut FontSystem, font: FontMetrics) {
         self.font = font;
         let metrics = Metrics::new(font.size, font.line_h);
-        for b in [&mut self.text_buf, &mut self.gutter_buf, &mut self.sticky_text, &mut self.sticky_gutter, &mut self.fold_buf] {
+        for b in [&mut self.text_buf, &mut self.gutter_buf, &mut self.sticky_text, &mut self.sticky_gutter, &mut self.fold_buf, &mut self.mark_buf] {
             b.set_metrics(metrics);
             b.set_monospace_width(Some(font.cell_w));
         }
@@ -679,6 +692,7 @@ impl EditorView {
     pub fn after_edit(&mut self) {
         let edits = self.doc.take_edits();
         self.shift_folds(&edits);
+        self.shift_breakpoints(&edits);
         if let Some(syntax) = &mut self.syntax {
             syntax.update(self.doc.text(), &edits);
         }
@@ -758,6 +772,76 @@ impl EditorView {
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.area.x && x < self.area.x + self.area.w && y >= self.area.y
             && y < self.area.y + self.area.h
+    }
+
+    // ----- breakpoints and the debugger's line -----
+
+    pub fn breakpoints(&self) -> &[usize] {
+        &self.breakpoints
+    }
+
+    pub fn set_breakpoints(&mut self, mut lines: Vec<usize>) {
+        lines.sort_unstable();
+        lines.dedup();
+        if lines != self.breakpoints {
+            self.breakpoints = lines;
+            self.marks_gen += 1;
+        }
+    }
+
+    /// F9 / click: adds or removes a breakpoint on `line`.
+    pub fn toggle_breakpoint(&mut self, line: usize) {
+        let mut lines = self.breakpoints.clone();
+        match lines.binary_search(&line) {
+            Ok(i) => {
+                lines.remove(i);
+            }
+            Err(i) => lines.insert(i, line),
+        }
+        self.set_breakpoints(lines);
+    }
+
+    pub fn set_debug_line(&mut self, line: Option<usize>) {
+        if line != self.debug_line {
+            self.debug_line = line;
+            self.marks_gen += 1;
+        }
+    }
+
+    /// Lines below an edit move along; a breakpoint on a deleted line stays on the line
+    /// where the deletion started.
+    fn shift_breakpoints(&mut self, edits: &[TextEdit]) {
+        if self.breakpoints.is_empty() {
+            return;
+        }
+        let mut lines = self.breakpoints.clone();
+        for e in edits {
+            let (sr, or, nr) = (e.start_point.0, e.old_end_point.0, e.new_end_point.0);
+            let delta = nr as isize - or as isize;
+            // Text inserted at the very start of a line pushes that line down.
+            let pushed = |l: usize| l == sr && sr == or && e.start_point.1 == 0 && nr > or;
+            for l in &mut lines {
+                if *l > or || pushed(*l) {
+                    *l = (*l as isize + delta) as usize;
+                } else if *l > sr {
+                    // The line was (partly) deleted: the breakpoint stays where the deletion began.
+                    *l = sr;
+                }
+            }
+        }
+        self.set_breakpoints(lines);
+    }
+
+    /// The line whose number was clicked (for toggling a breakpoint), if (x, y) is on a
+    /// line number.
+    pub fn line_number_at(&self, x: f32, y: f32) -> Option<usize> {
+        let a = self.area;
+        let number_right = a.x + (self.gutter_cells as f32 + 1.0) * self.font.cell_w;
+        if x < a.x || x >= number_right || y < a.y + self.sticky_h() || y >= a.y + a.h {
+            return None;
+        }
+        let row = ((y - a.y) / self.font.line_h) as usize;
+        self.visible_from(self.scroll_line, row + 1).get(row).copied()
     }
 
     // ----- folding -----
@@ -1025,7 +1109,11 @@ impl EditorView {
         }
         let row = ((y - a.y) / self.font.line_h) as usize;
         let Some(&line) = self.visible_from(self.scroll_line, row + 1).get(row) else { return false };
-        let in_gutter = x < a.x + self.gutter_w();
+        let arrow_left = a.x + (self.gutter_cells as f32 + 1.0) * self.font.cell_w;
+        let in_gutter = x >= arrow_left && x < a.x + self.gutter_w();
+        if x < arrow_left {
+            return false;
+        }
         if self.is_folded_start(line) {
             if !in_gutter {
                 // Only the marker itself opens the fold.
@@ -1079,6 +1167,7 @@ impl EditorView {
             gutter_cells: digits,
             fold_gen: self.fold_gen,
             gutter_hover: self.gutter_hover,
+            marks_gen: self.marks_gen,
         };
         if self.cache.as_ref() == Some(&key) {
             return;
@@ -1153,7 +1242,16 @@ impl EditorView {
 
         let mut gutter: Vec<(String, Rgba)> = Vec::new();
         let mut arrows = String::new();
+        let mut marks: Vec<(String, Rgba)> = Vec::new();
         for &line in &lines {
+            let mark = if self.debug_line == Some(line) {
+                ("\u{27a4}\n", theme.accent)
+            } else if self.breakpoints.binary_search(&line).is_ok() {
+                ("\u{25cf}\n", theme.error)
+            } else {
+                ("\n", theme.text)
+            };
+            marks.push((mark.0.to_string(), mark.1));
             if self.is_folded_start(line) {
                 arrows.push('▸');
             } else if self.gutter_hover && self.fold_ranges.binary_search_by_key(&line, |r| r.0).is_ok() {
@@ -1178,6 +1276,13 @@ impl EditorView {
         self.gutter_buf.shape_until_scroll(fs, false);
         self.fold_buf.set_text(&arrows, &base.clone().color(theme.gutter_text.to_glyphon()), Shaping::Advanced, None);
         self.fold_buf.shape_until_scroll(fs, false);
+        self.mark_buf.set_rich_text(
+            marks.iter().map(|(t, c)| (t.as_str(), base.clone().color(c.to_glyphon()))),
+            &base,
+            Shaping::Advanced,
+            None,
+        );
+        self.mark_buf.shape_until_scroll(fs, false);
         self.cache = Some(key);
     }
 
@@ -1229,6 +1334,20 @@ impl EditorView {
                 h: lh,
                 color: theme.current_line,
             });
+        }
+
+        // The debugger's line, and a faint tint on breakpoint lines.
+        for (row, &line) in lines.iter().enumerate() {
+            let color = if self.debug_line == Some(line) {
+                Some(theme.debug_line)
+            } else if self.breakpoints.binary_search(&line).is_ok() {
+                Some(theme.error.with_alpha(0x22))
+            } else {
+                None
+            };
+            if let Some(color) = color {
+                under.push(Quad { x: text_left, y: row_y(row), w: text_right - text_left, h: lh, color });
+            }
         }
 
         // Find matches: only those on visible lines.
@@ -1384,6 +1503,13 @@ impl EditorView {
             x: a.x + cw,
             y: a.y,
             color: theme.gutter_text,
+            clip: Some([a.x as i32, code_top, text_left as i32, bottom]),
+        });
+        text.push(TextBlock {
+            buffer: &self.mark_buf,
+            x: a.x + 0.1 * cw,
+            y: a.y,
+            color: theme.error,
             clip: Some([a.x as i32, code_top, text_left as i32, bottom]),
         });
         text.push(TextBlock {
@@ -1746,6 +1872,33 @@ mod tests {
         v.doc.apply_changes(vec![wyvern_buffer::Change { start: at, end: at + 1, text: "w".into() }]);
         v.after_edit();
         assert_eq!(v.screen_lines().len(), 13);
+    }
+
+    #[test]
+    fn breakpoints_follow_edits() {
+        let mut v = view(CS);
+        v.toggle_breakpoint(4);
+        v.toggle_breakpoint(9);
+        // A new line at the top moves both down.
+        v.doc.set_cursor(0);
+        v.doc.insert("// c
+");
+        v.after_edit();
+        assert_eq!(v.breakpoints(), &[5, 10]);
+        // Enter at the start of the breakpoint line pushes it down too.
+        v.doc.set_cursor(v.doc.text().line_to_char(5));
+        v.doc.insert("
+");
+        v.after_edit();
+        assert_eq!(v.breakpoints(), &[6, 11]);
+        // Deleting the line above it moves it up.
+        let (s, e) = (v.doc.text().line_to_char(5), v.doc.text().line_to_char(6));
+        v.doc.apply_changes(vec![wyvern_buffer::Change { start: s, end: e, text: String::new() }]);
+        v.after_edit();
+        assert_eq!(v.breakpoints(), &[5, 10]);
+        // Toggle removes.
+        v.toggle_breakpoint(5);
+        assert_eq!(v.breakpoints(), &[10]);
     }
 
     #[test]

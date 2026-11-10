@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 und Phase 2 fertig.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Als Nächstes kommt Phase 3 (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1 und 2 fertig, Phase 3 läuft (Debugger fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Noch offen in Phase 3: Inlay Hints, CodeLens, Markdown-Vorschau, KI-Vorschläge, Claude-Code-Brücke, Web-Sprachen (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -40,7 +40,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - **Blame auf Abruf** (`Alt → g → l`): Autor, Alter und Commit-Nachricht der Cursorzeile als Tooltip.
 - **Dateien, die sich auf der Festplatte ändern** (Branch-Wechsel, Pull, Claude Code, Formatter), werden automatisch neu geladen, solange sie im Editor keine ungespeicherten Änderungen haben.
 
-- **Einstellungen** in `settings.toml` (`%APPDATA%\Wyvern\settings.toml`, öffnen mit `Alt → ,`): Theme, Schriftart/-größe, Zeilenhöhe, Tab-Breite, Einrückung, Autovervollständigung und Info-Tooltip an/aus, Oberflächenschrift und Explorer-Breite. Die Datei wird beim ersten Start mit allen Optionen und deutschen Erklärungen angelegt. Speichern in Wyvern wendet sie sofort an. Tippfehler bei Optionsnamen werden in der Statusleiste gemeldet, die alten Einstellungen bleiben dann aktiv.
+- **Einstellungen** in `settings.toml` (`%APPDATA%\Wyvern\settings.toml`, öffnen mit `Alt → ,`): Theme, Schriftart/-größe, Zeilenhöhe, Tab-Breite, Einrückung, Autovervollständigung und Info-Tooltip an/aus, Oberflächenschrift und Explorer-Breite. Die Datei wird beim ersten Start mit allen Optionen und Erklärungen angelegt. Speichern in Wyvern wendet sie sofort an. Tippfehler bei Optionsnamen werden in der Statusleiste gemeldet, die alten Einstellungen bleiben dann aktiv.
 - **Themes** „Wyvern Dark“ und „Wyvern Light“: umschalten mit `Alt → v → t` oder im Suchfeld `>Theme`. Die Wahl wird in `settings.toml` gespeichert.
 - **Minimap** rechts statt Scrollbalken: zeigt die Form des Codes als farbige Blöcke und einen Kasten für den sichtbaren Bereich (heller, wenn die Maus darüber ist). Ganz rechts liegt ein schmaler Streifen mit Markierungen für die ganze Datei: Git-Änderungen, Suchtreffer, Fehler/Warnungen und die Cursorzeile.
   - Klick springt an die Stelle, Ziehen des Kastens scrollt. Bei langen Dateien scrollt die Minimap mit.
@@ -51,6 +51,14 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - Steht `{` allein in der Zeile (C#-Stil), bleibt die Signatur sichtbar. Hinter einer gefalteten Zeile steht ein `…`.
   - Fährt die Maus über den Zeilenrand, erscheinen `▾`-Pfeile; gefaltete Stellen zeigen immer `▸`. Klick auf den Pfeil oder das `…` faltet bzw. öffnet.
   - Der Cursor springt mit den Pfeiltasten über gefaltete Blöcke. Springen Suche, „Gehe zu“ oder Gehe-zu-Definition hinein, öffnet sich der Block. Änderungen darüber verschieben die Faltung, Änderungen darin öffnen sie.
+- **Debugger** für .NET mit [netcoredbg](https://github.com/Samsung/netcoredbg) (MIT; gesucht im `PATH` und in `%APPDATA%\Wyvern\netcoredbg`):
+  - `F5` baut das Projekt (`dotnet build`, vorher werden offene Dateien gespeichert) und startet es im **eigenen Konsolenfenster** mit Debugger; `Console.ReadLine` funktioniert dort. Bei mehreren startbaren Projekten fragt Wyvern einmal. `Ctrl+F5` startet ohne Debugger.
+  - Breakpoints mit `F9` oder Klick auf die Zeilennummer (roter Punkt); sie wandern beim Tippen mit und bleiben beim Schließen der Datei erhalten.
+  - Angehalten: gelb hinterlegte Zeile mit Pfeil, Wyvern kommt nach vorne. `F5` weiter, `F10` Step Over, `F11` Step Into, `Shift+F11` Step Out, `Shift+F5` beenden.
+  - Debug-Panel links (`Alt → d → d`): Variablen (aufklappbar mit `Enter`/`→`), Watch-Ausdrücke (`Alt → d → w`), Aufrufliste (Klick wechselt den Frame) und alle Breakpoints (`Entf` löscht).
+  - Maus kurz auf einem Namen: zeigt seinen Wert (auch `spieler.Position.X`).
+  - `Alt → d → a` hängt sich an einen laufenden `dotnet`- oder Godot-Prozess.
+  - Technik: netcoredbg leitet die Konsole eines selbst gestarteten Programms immer um. Deshalb startet Wyvern das Programm selbst und hängt den Debugger an; ein kleiner Startup-Hook (einmalig nach `%APPDATA%\Wyvern\debughook` gebaut) lässt das Programm so lange warten und hält das Fenster am Ende offen.
 - **Startoptionen**: `wyvern <Datei> --goto=120` springt zu Zeile 120; `--terminal`, `--git` und `--diff` öffnen gleich Terminal, Git-Panel bzw. Diff der Datei.
 - **Oberfläche auf Englisch**: Leader-Menü, Befehle im Suchfeld (`File: Save`, `Git: Commit All` …), Spickzettel, Panels, Statusmeldungen und die Vorlage der `settings.toml`. Tasten heißen `Ctrl`, `PgUp` usw. In `settings.toml` gelten `theme = "dark"`/`"light"` und `indent = "spaces"`/`"tabs"`, die alten Werte `dunkel`/`hell`/`leerzeichen` funktionieren weiter.
 - **Spickzettel** mit allen Kürzeln: `Alt → h`. Er wird aus denselben Listen erzeugt wie Suchfeld und Leader-Menü und ist deshalb immer aktuell.
@@ -103,6 +111,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 | `crates/wyvern-buffer` | Textpuffer (Rope), Multi-Cursor, Transaktionen, Undo/Redo, Laden/Speichern |
 | `crates/wyvern-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting, Symbole |
 | `crates/wyvern-search` | Suchen/Ersetzen: Abfragen (Text, Wort, Groß/Klein, Regex), Projektsuche |
+| `crates/wyvern-dap` | Debug-Adapter-Client (DAP) für netcoredbg |
 | `crates/wyvern-git` | Git über die `git`-Kommandozeile: Status, Commit, Sync, Branches, Blame, Zeilen-Diffs |
 | `crates/wyvern-terminal` | Terminal: Shell in ConPTY, Emulation mit `alacritty_terminal`, Tasten-Kodierung |
 | `crates/wyvern-lsp` | Language-Server-Client: JSON-RPC über stdio, UTF-16-Positionen |

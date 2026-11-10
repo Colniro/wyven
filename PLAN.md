@@ -114,7 +114,7 @@ Cargo-Workspace, Fenster, wgpu-Rendering, Text auf dem Bildschirm, Benchmarks f�
 ~~Integriertes Terminal~~ ✅, ~~Git (Status, Diff nebeneinander, Commit von allem, Sync, Branches, Blame auf Abruf)~~ ✅, ~~globale Suche/Ersetzen~~ ✅, ~~Minimap (Blöcke / Leiste / aus)~~ ✅, ~~Sticky Scroll~~ ✅, ~~Folding~~ ✅ – **Phase 2 fertig**.
 
 **Phase 3 – Profi-Features**
-Debugger (netcoredbg), Inlay Hints, CodeLens, Markdown-Vorschau, KI-Inline-Vorschläge, Claude-Code-Brücke, Web-Sprachen per LSP.
+~~Debugger (netcoredbg)~~ ✅, Inlay Hints, CodeLens, Markdown-Vorschau, KI-Inline-Vorschläge, Claude-Code-Brücke, Web-Sprachen per LSP.
 
 **Phase 4 – Anpassbarkeit**
 Andockbare Panels im VS-2026-Stil, grafische Einstellungsseite, Import von VS-Code-Themes, Multi-Root-Workspaces, WASM-Plugin-System.

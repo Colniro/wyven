@@ -76,7 +76,7 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 |---|---|
 | `F5` | Debuggen starten / fortsetzen |
 | `Shift+F5` | Debuggen beenden |
-| `Strg+F5` | Ohne Debugger starten |
+| `Strg+F5` | Ohne Debugger starten (eigenes Konsolenfenster) |
 | `F9` | Breakpoint umschalten |
 | `F10` / `F11` / `Shift+F11` | Step Over / Step Into / Step Out |
 
@@ -97,7 +97,7 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 | `t` | **t**erminal | Terminal ein/aus |
 | `s` | **s**earch | Suchpanel ein/aus |
 | `g` | **g**it | `g` Panel · `c` alles committen · `s` Sync (pull + push) · `b` Branch wechseln · `n` neuer Branch · `d` Diff der Datei · `l` Blame (Zeile) |
-| `d` | **d**ebug | `d` Panel · `b` alle Breakpoints · `w` Watch hinzufügen · `a` an Prozess anhängen (z. B. Godot) |
+| `d` | **d**ebug | `d` Panel · `r` starten/fortsetzen · `s` beenden · `b` Breakpoint umschalten · `w` Watch hinzufügen · `a` an Prozess anhängen (z. B. Godot) |
 | `j` | **j**ump | `d` Definition · `i` Implementierung · `r` Referenzen · `s` Symbol in Datei · `l` Zeile |
 | `c` | **c**ode | `r` umbenennen · `f` formatieren · `a` Quick Actions · `o` Usings ordnen · `e` nächster Fehler |
 | `f` | **f**ile | `n` new file · `o` open file · `s` save as · `r` rename · `c` close all |

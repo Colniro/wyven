@@ -9,6 +9,7 @@
 
 mod completion;
 mod config;
+mod debug;
 mod diff_view;
 mod editor;
 mod explorer;
@@ -68,6 +69,7 @@ enum UserEvent {
     Terminal,
     Search,
     Git,
+    Debug,
 }
 
 /// Startup profiling: logs elapsed time and RAM after each startup stage.
@@ -121,6 +123,7 @@ enum Focus {
     Terminal,
     Search,
     Git,
+    Debug,
 }
 
 /// What the left sidebar shows.
@@ -129,6 +132,7 @@ enum Sidebar {
     Explorer,
     Search,
     Git,
+    Debug,
 }
 
 enum Overlay {
@@ -144,6 +148,12 @@ enum Overlay {
     Branches(menu::Menu),
     /// Name for a new branch.
     NewBranch(menu::Prompt),
+    /// F5 with several startable projects: which one.
+    DebugProjects(menu::Menu),
+    /// Alt → d → a: process to attach to.
+    Processes(menu::Menu),
+    /// Alt → d → w: expression to watch.
+    Watch(menu::Prompt),
 }
 
 struct Mouse {
@@ -223,6 +233,13 @@ struct State {
     search: search_panel::SearchPanel,
     sidebar: Sidebar,
     git: git_panel::GitPanel,
+    debugger: debug::Debugger,
+    /// Breakpoints of files that are not open (open tabs keep their own).
+    breakpoint_store: debug::Breakpoints,
+    /// The project F5 starts (asked once if there are several).
+    debug_project: Option<PathBuf>,
+    /// The pending F5 / Ctrl+F5 runs without the debugger.
+    run_only: bool,
     /// Side-by-side diff shown instead of the editor.
     diff: Option<diff_view::DiffView>,
 
@@ -308,6 +325,7 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             WindowEvent::CloseRequested => {
                 if state.confirm_close_window() {
+                    state.debugger.stop();
                     if let Some(server) = &mut state.lsp {
                         server.shutdown();
                     }
@@ -393,6 +411,7 @@ impl ApplicationHandler<UserEvent> for App {
                     state.window.request_redraw();
                 }
                 UserEvent::Git => state.git_poll(),
+                UserEvent::Debug => state.debug_poll(),
             }
         }
     }
@@ -469,6 +488,27 @@ fn choose_family(fs: &FontSystem, wanted: &str) -> String {
     pick_monospace_family(fs).unwrap_or_else(|| "monospace".into())
 }
 
+/// The expression under the mouse for debugger hovers: a name with its `.` chain to the
+/// left (`player.Position.X` when pointing at `X`).
+fn expression_at(rope: &wyvern_buffer::Rope, pos: usize) -> Option<String> {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let len = rope.len_chars();
+    if pos >= len || !word(rope.char(pos)) {
+        return None;
+    }
+    let mut end = pos;
+    while end < len && word(rope.char(end)) {
+        end += 1;
+    }
+    let mut start = pos;
+    while start > 0 && (word(rope.char(start - 1)) || rope.char(start - 1) == '.') {
+        start -= 1;
+    }
+    let expr = rope.slice(start..end).to_string();
+    let expr = expr.trim_start_matches('.');
+    (!expr.is_empty()).then(|| expr.to_string())
+}
+
 fn file_name(path: &Path) -> String {
     path.file_name()
         .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
@@ -508,6 +548,11 @@ impl State {
         let find_labels = find::ToggleLabels::new(fs, ui_font, &family, &initial_theme);
         let search = search_panel::SearchPanel::new(fs, ui_font, family.clone());
         let mut git = git_panel::GitPanel::new(fs, ui_font, family.clone());
+        let mut debugger = debug::Debugger::new(fs, ui_font, family.clone());
+        let debug_proxy = proxy.clone();
+        debugger.set_wake(move || {
+            let _ = debug_proxy.send_event(UserEvent::Debug);
+        });
         let git_proxy = proxy.clone();
         git.set_wake(move || {
             let _ = git_proxy.send_event(UserEvent::Git);
@@ -555,6 +600,10 @@ impl State {
             search,
             sidebar: Sidebar::Explorer,
             git,
+            debugger,
+            breakpoint_store: debug::Breakpoints::new(),
+            debug_project: None,
+            run_only: false,
             diff: None,
             proxy,
             lsp: None,
@@ -627,6 +676,7 @@ impl State {
         if let Some(r) = self.layout.explorer {
             self.search.set_area(r);
             self.git.set_area(r);
+            self.debugger.set_area(r);
         }
         if let Some(d) = &mut self.diff {
             d.set_area(area);
@@ -656,6 +706,7 @@ impl State {
         self.find_labels.set_font(ui);
         self.search.set_font(ui);
         self.git.set_font(ui);
+        self.debugger.set_font(ui);
         // The diff view keeps its own fonts; reopening is cheaper than re-measuring it.
         self.diff = None;
         let m = Metrics::new(ui.size, ui.line_h);
@@ -731,6 +782,9 @@ impl State {
             view.set_area(self.layout.editor);
             self.configure_view(&mut view);
             self.git.load_head(path);
+            if let Some(lines) = self.breakpoint_store.get(path) {
+                view.set_breakpoints(lines.clone());
+            }
             if self.tabs[self.active].is_untouched() {
                 self.tabs[self.active] = view;
                 self.activate(self.active);
@@ -783,6 +837,11 @@ impl State {
         }
         let tab = self.tabs.remove(index);
         if let Some(p) = tab.doc.path() {
+            if tab.breakpoints().is_empty() {
+                self.breakpoint_store.remove(p);
+            } else {
+                self.breakpoint_store.insert(p.to_path_buf(), tab.breakpoints().to_vec());
+            }
             self.closed.push(p.to_path_buf());
             if let Some(server) = &mut self.lsp {
                 server.close(p);
@@ -1006,6 +1065,14 @@ impl State {
                 self.new_branch_key(event, &key);
                 return;
             }
+            Overlay::DebugProjects(_) | Overlay::Processes(_) => {
+                self.debug_menu_key(&key);
+                return;
+            }
+            Overlay::Watch(_) => {
+                self.watch_key(event, &key);
+                return;
+            }
             Overlay::None => {}
         }
 
@@ -1021,6 +1088,13 @@ impl State {
         }
         if self.focus == Focus::Git && self.explorer_visible && self.sidebar == Sidebar::Git {
             self.git_key(event);
+            return;
+        }
+        // F-keys (step, continue) work everywhere, also with the debug panel focused.
+        let is_fkey = matches!(key, Key::Named(NamedKey::F5 | NamedKey::F9 | NamedKey::F10 | NamedKey::F11));
+        if self.focus == Focus::Debug && self.explorer_visible && self.sidebar == Sidebar::Debug && !is_fkey {
+            let action = self.debugger.key(event);
+            self.apply_debug_panel_action(action);
             return;
         }
         if self.diff.is_some() && self.focus == Focus::Editor {
@@ -1407,7 +1481,11 @@ impl State {
                         let c = rope.char(pos);
                         c.is_alphanumeric() || c == '_'
                     };
-                    if on_word {
+                    if on_word && self.debugger.phase == debug::Phase::Stopped {
+                        if let Some(expr) = expression_at(rope, pos) {
+                            self.debugger.hover(expr, x, y);
+                        }
+                    } else if on_word {
                         self.request_hover(pos, x, y);
                     }
                 }
@@ -2329,6 +2407,299 @@ impl State {
         }
     }
 
+    // ----- debugging -----
+
+    /// Breakpoints of all files: open tabs plus remembered ones of closed files.
+    fn all_breakpoints(&self) -> debug::Breakpoints {
+        let mut all = self.breakpoint_store.clone();
+        for t in &self.tabs {
+            if let Some(p) = t.doc.path() {
+                if t.breakpoints().is_empty() {
+                    all.remove(p);
+                } else {
+                    all.insert(p.to_path_buf(), t.breakpoints().to_vec());
+                }
+            }
+        }
+        all
+    }
+
+    fn toggle_breakpoint(&mut self, line: usize) {
+        let ed = &mut self.tabs[self.active];
+        let Some(path) = ed.doc.path().map(Path::to_path_buf) else {
+            self.show("Save the file first to set breakpoints.");
+            return;
+        };
+        ed.toggle_breakpoint(line);
+        let lines = ed.breakpoints().to_vec();
+        self.debugger.set_breakpoints(&path, &lines);
+        self.window.request_redraw();
+    }
+
+    fn show_debug_panel(&mut self, focus: bool) {
+        self.sidebar = Sidebar::Debug;
+        self.explorer_visible = true;
+        if focus {
+            self.focus = Focus::Debug;
+        }
+        self.relayout();
+    }
+
+    fn debug_command(&mut self, cmd: debug::DebugCmd) {
+        use debug::{DebugCmd as D, Phase};
+        match cmd {
+            D::StartOrContinue => match self.debugger.phase {
+                Phase::Stopped => self.debugger.continue_(),
+                Phase::Idle => self.start_debugging(false),
+                _ => self.show("The program is already running (Shift+F5 stops it)."),
+            },
+            D::Stop => {
+                if self.debugger.active() {
+                    self.debugger.stop();
+                    self.clear_debug_line();
+                    self.show("Debugging stopped");
+                }
+            }
+            D::RunWithoutDebugging => {
+                if self.debugger.active() {
+                    self.show("A debug session is running (Shift+F5 stops it).");
+                } else {
+                    self.start_debugging(true);
+                }
+            }
+            D::StepOver => self.debugger.step("next"),
+            D::StepInto => self.debugger.step("stepIn"),
+            D::StepOut => self.debugger.step("stepOut"),
+            D::ToggleBreakpoint => {
+                let ed = self.editor();
+                let line = ed.doc.text().char_to_line(ed.doc.selection().primary().head);
+                self.toggle_breakpoint(line);
+            }
+            D::ShowPanel => self.show_debug_panel(true),
+            D::AddWatch => {
+                let prefill = find::FindBar::prefill_from(&self.editor().doc).unwrap_or_default();
+                let fs = self.renderer.font_system();
+                let prompt = menu::Prompt::new(fs, self.ui_font, "Watch expression (Enter adds, Esc)", &prefill);
+                self.overlay = Overlay::Watch(prompt);
+            }
+            D::Attach => {
+                if self.debugger.active() {
+                    self.show("A debug session is already running (Shift+F5 stops it).");
+                    return;
+                }
+                let list = debug::dotnet_processes();
+                if list.is_empty() {
+                    self.show("No running dotnet or Godot process found.");
+                    return;
+                }
+                let items = list
+                    .into_iter()
+                    .map(|(name, pid)| (format!("{name}   (PID {pid})"), wyvern_lsp::Value::from(pid)))
+                    .collect();
+                let fs = self.renderer.font_system();
+                let title = "Attach to process (digit or Enter, Esc)";
+                self.overlay = Overlay::Processes(menu::Menu::new(fs, self.ui_font, title, items));
+            }
+        }
+    }
+
+    /// F5 when nothing runs: picks the project, saves open files and starts the build.
+    fn start_debugging(&mut self, run_only: bool) {
+        let active_path = self.editor().doc.path().map(Path::to_path_buf);
+        let Some(root) = self
+            .project_root()
+            .map(Path::to_path_buf)
+            .or_else(|| active_path.as_deref().and_then(Path::parent).map(Path::to_path_buf))
+        else {
+            self.show("No folder open: Alt → p → o opens one.");
+            return;
+        };
+        self.run_only = run_only;
+        if let Some(p) = self.debug_project.clone()
+            && p.is_file()
+            && p.starts_with(&root)
+        {
+            self.launch_project(p);
+            return;
+        }
+        let projects = debug::runnable_projects(&root, active_path.as_deref());
+        match projects.len() {
+            0 => self.show("No startable .NET project found (a .csproj with OutputType Exe)."),
+            1 => self.launch_project(projects[0].clone()),
+            _ => {
+                let items = projects
+                    .iter()
+                    .map(|p| {
+                        let label = p.strip_prefix(&root).unwrap_or(p).display().to_string();
+                        (label, wyvern_lsp::Value::String(p.display().to_string()))
+                    })
+                    .collect();
+                let fs = self.renderer.font_system();
+                let title = "Which project should F5 start? (digit or Enter, Esc)";
+                self.overlay = Overlay::DebugProjects(menu::Menu::new(fs, self.ui_font, title, items));
+            }
+        }
+    }
+
+    fn launch_project(&mut self, project: PathBuf) {
+        // Like Visual Studio: save everything before building.
+        for t in &mut self.tabs {
+            if t.doc.is_dirty() && t.doc.path().is_some() && t.doc.save().is_ok() {
+                t.refresh_disk_mtime();
+                if let (Some(server), Some(p)) = (&mut self.lsp, t.doc.path()) {
+                    server.saved(p);
+                }
+            }
+        }
+        self.debug_project = Some(project.clone());
+        let name = project.file_stem().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        self.show(format!("Building {name} …"));
+        if self.run_only {
+            self.debugger.run_without_debugging(project);
+            return;
+        }
+        let bps = self.all_breakpoints();
+        self.debugger.start(project, bps);
+        self.show_debug_panel(false);
+    }
+
+    fn debug_menu_key(&mut self, key: &Key) {
+        let (Overlay::DebugProjects(menu) | Overlay::Processes(menu)) = &mut self.overlay else { return };
+        let picked = match key {
+            Key::Named(NamedKey::Escape) => {
+                self.overlay = Overlay::None;
+                return;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.move_selection(-1);
+                None
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                menu.move_selection(1);
+                None
+            }
+            Key::Named(NamedKey::Enter) => menu.selected(),
+            Key::Character(c) => c.chars().next().and_then(|ch| ch.to_digit(10)).and_then(|n| menu.numbered(n as usize)),
+            _ => None,
+        };
+        let Some(picked) = picked else { return };
+        let overlay = std::mem::replace(&mut self.overlay, Overlay::None);
+        match overlay {
+            Overlay::DebugProjects(_) => {
+                if let Some(p) = picked.as_str() {
+                    self.launch_project(PathBuf::from(p));
+                }
+            }
+            Overlay::Processes(_) => {
+                if let Some(pid) = picked.as_u64() {
+                    let bps = self.all_breakpoints();
+                    match self.debugger.attach(pid as u32, bps) {
+                        Ok(()) => {
+                            self.show(format!("Attaching to process {pid} …"));
+                            self.show_debug_panel(false);
+                        }
+                        Err(e) => self.show(e),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn watch_key(&mut self, event: &KeyEvent, key: &Key) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        let Overlay::Watch(prompt) = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::Enter) => {
+                let expr = prompt.text.trim().to_string();
+                self.overlay = Overlay::None;
+                if !expr.is_empty() {
+                    self.debugger.add_watch(expr);
+                    self.show_debug_panel(false);
+                }
+            }
+            Key::Named(NamedKey::Backspace) => prompt.backspace(ctrl),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::End | NamedKey::Home) => prompt.keep(),
+            Key::Character(c) if ctrl && c.as_str() == "v" => {
+                if let Some(t) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok())
+                    && let Overlay::Watch(prompt) = &mut self.overlay
+                {
+                    prompt.type_text(t.lines().next().unwrap_or("").trim());
+                }
+            }
+            _ => {
+                if let Some(t) = Keymap::text(event, mods) {
+                    prompt.type_text(&t);
+                }
+            }
+        }
+    }
+
+    fn apply_debug_panel_action(&mut self, action: debug::PanelAction) {
+        match action {
+            debug::PanelAction::None => {}
+            debug::PanelAction::Close => self.close_sidebar_panel(),
+            debug::PanelAction::Jump(path, line) => {
+                self.open_path(&path);
+                if self.editor().doc.path() == Some(path.as_path()) {
+                    self.editor_mut().jump_to_line(line + 1, None);
+                }
+                self.focus = Focus::Debug;
+            }
+            debug::PanelAction::RemoveBreakpoint(path, line) => {
+                if let Some(i) = self.tab_for(&path) {
+                    let t = &mut self.tabs[i];
+                    t.toggle_breakpoint(line);
+                    let lines = t.breakpoints().to_vec();
+                    self.debugger.set_breakpoints(&path, &lines);
+                } else if let Some(lines) = self.breakpoint_store.get_mut(&path) {
+                    lines.retain(|&l| l != line);
+                    let lines = lines.clone();
+                    if lines.is_empty() {
+                        self.breakpoint_store.remove(&path);
+                    }
+                    self.debugger.set_breakpoints(&path, &lines);
+                }
+            }
+        }
+    }
+
+    fn clear_debug_line(&mut self) {
+        for t in &mut self.tabs {
+            t.set_debug_line(None);
+        }
+    }
+
+    fn debug_poll(&mut self) {
+        for action in self.debugger.poll() {
+            match action {
+                debug::DebugAction::ShowLocation(path, line) => {
+                    self.clear_debug_line();
+                    if path.is_file() {
+                        self.open_path(&path);
+                        if self.editor().doc.path() == Some(path.as_path()) {
+                            let ed = self.editor_mut();
+                            ed.jump_to_line(line + 1, None);
+                            ed.set_debug_line(Some(line));
+                        }
+                    }
+                    // Like Visual Studio: come to the front when the program pauses.
+                    self.window.focus_window();
+                }
+                debug::DebugAction::ClearLocation => self.clear_debug_line(),
+                debug::DebugAction::Message(m) => self.show(m),
+                debug::DebugAction::Hover { text, x, y } => {
+                    let fs = self.renderer.font_system();
+                    self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &text, x, y));
+                }
+                debug::DebugAction::Ended => {}
+            }
+        }
+        self.window.request_redraw();
+    }
+
     fn warn_unsaved_before_switch(&mut self) {
         let dirty = self.tabs.iter().filter(|t| t.doc.is_dirty()).count();
         if dirty > 0 {
@@ -2568,6 +2939,7 @@ impl State {
         let keeps_completion =
             matches!(cmd, Command::Insert(_) | Command::Backspace | Command::TriggerCompletion);
         let mut trigger = None;
+        let bps_before = self.editor().breakpoints().to_vec();
         let ed = &mut self.tabs[self.active];
         match cmd {
             Command::Move(m, extend) => {
@@ -2686,14 +3058,14 @@ impl State {
                 self.apply_font();
                 follow_cursor = false;
             }
+            Command::Debug(c) => {
+                follow_cursor = false;
+                self.debug_command(c);
+            }
             Command::Fold(f) => {
                 if !ed.fold(f) {
                     self.show("Nothing to fold here");
                 }
-            }
-            Command::NotYet(msg) => {
-                self.show(msg);
-                follow_cursor = false;
             }
             Command::TriggerCompletion => trigger = Some(None),
             Command::GotoDefinition => {
@@ -2752,6 +3124,13 @@ impl State {
         ed.after_edit();
         if follow_cursor {
             ed.ensure_cursor_visible();
+        }
+        // Edits move breakpoints; keep a running debug session in sync.
+        if self.debugger.active() && self.editor().breakpoints() != bps_before.as_slice()
+            && let Some(path) = self.editor().doc.path().map(Path::to_path_buf)
+        {
+            let lines = self.editor().breakpoints().to_vec();
+            self.debugger.set_breakpoints(&path, &lines);
         }
         self.lsp_after_edit();
         if !keeps_completion {
@@ -2868,6 +3247,14 @@ impl State {
             }
             return;
         }
+        if self.sidebar == Sidebar::Debug && self.explorer_visible && self.debugger.contains(x, y) {
+            self.focus = Focus::Debug;
+            if button == MouseButton::Left {
+                let action = self.debugger.click(y);
+                self.apply_debug_panel_action(action);
+            }
+            return;
+        }
         if let Some(d) = &self.diff
             && d.contains(x, y) {
                 self.focus = Focus::Editor;
@@ -2897,6 +3284,13 @@ impl State {
         if self.diff.is_none() && (self.editor_mut().sticky_click(x, y) || self.editor_mut().fold_click(x, y)) {
             self.focus = Focus::Editor;
             self.find.focused = false;
+            return;
+        }
+        if self.diff.is_none()
+            && let Some(line) = self.editor().line_number_at(x, y)
+        {
+            self.toggle_breakpoint(line);
+            self.focus = Focus::Editor;
             return;
         }
         self.focus = Focus::Editor;
@@ -2952,6 +3346,11 @@ impl State {
         }
         if self.sidebar == Sidebar::Git && self.explorer_visible && self.git.contains(x, y) {
             self.git.scroll_by(-dy.round() as isize);
+            self.window.request_redraw();
+            return;
+        }
+        if self.sidebar == Sidebar::Debug && self.explorer_visible && self.debugger.contains(x, y) {
+            self.debugger.scroll_by(-dy.round() as isize);
             self.window.request_redraw();
             return;
         }
@@ -3037,6 +3436,9 @@ impl State {
         if let Some(d) = &self.diff {
             left = format!("Diff: {}", d.title);
         }
+        if self.debugger.active() {
+            left = format!("Debug: {}   ·   {left}", self.debugger.status_text());
+        }
         if let Some((msg, _)) = &self.message {
             left.push_str("   ·   ");
             left.push_str(msg);
@@ -3112,7 +3514,10 @@ impl State {
             Overlay::Rename { prompt, .. } | Overlay::NewBranch(prompt) => {
                 prompt.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
-            Overlay::Branches(m) => m.prepare(self.renderer.font_system(), &self.theme, &self.family),
+            Overlay::Branches(m) | Overlay::DebugProjects(m) | Overlay::Processes(m) => {
+                m.prepare(self.renderer.font_system(), &self.theme, &self.family)
+            }
+            Overlay::Watch(prompt) => prompt.prepare(self.renderer.font_system(), &self.theme, &self.family),
             _ => {}
         }
         if self.terminal_visible {
@@ -3140,6 +3545,11 @@ impl State {
             let focused = self.focus == Focus::Git;
             self.git.prepare(self.renderer.font_system(), &self.theme, focused);
         }
+        if self.sidebar == Sidebar::Debug && self.explorer_visible {
+            let focused = self.focus == Focus::Debug;
+            let bps = self.all_breakpoints();
+            self.debugger.prepare(self.renderer.font_system(), &self.theme, focused, &bps);
+        }
         let active = self.active;
         if self.find.open {
             self.find.refresh(active, &self.tabs[active].doc);
@@ -3166,6 +3576,8 @@ impl State {
             self.search.draw(theme, self.focus == Focus::Search, &mut under, &mut text);
         } else if self.explorer_visible && self.sidebar == Sidebar::Git {
             self.git.draw(theme, self.focus == Focus::Git, &mut under, &mut text);
+        } else if self.explorer_visible && self.sidebar == Sidebar::Debug {
+            self.debugger.draw(theme, self.focus == Focus::Debug, &mut under, &mut text);
         } else if let (Some(ex), true) = (&self.explorer, self.explorer_visible) {
             ex.draw(theme, self.focus == Focus::Explorer, &mut under, &mut text);
         }
@@ -3249,11 +3661,11 @@ impl State {
                     prompt.draw(theme, self.ui_font, cx, below, window, scale, &mut overlay, &mut overlay_text)
                 }
                 // Git popups belong to no cursor: show them near the top of the editor.
-                Overlay::Branches(m) => {
+                Overlay::Branches(m) | Overlay::DebugProjects(m) | Overlay::Processes(m) => {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }
-                Overlay::NewBranch(prompt) => {
+                Overlay::NewBranch(prompt) | Overlay::Watch(prompt) => {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     prompt.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }

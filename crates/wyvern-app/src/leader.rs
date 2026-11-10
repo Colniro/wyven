@@ -53,6 +53,7 @@ const fn item(key: char, label: &'static str, action: Action) -> Item {
     Item { key, label, action }
 }
 
+use crate::debug::DebugCmd;
 use crate::editor::FoldCmd;
 use crate::keymap::Command;
 use Action::*;
@@ -101,10 +102,12 @@ const GIT: &[Item] = &[
 ];
 
 const DEBUG: &[Item] = &[
-    item('d', "debug panel", Later("Debugging comes in phase 3")),
-    item('b', "all breakpoints", Later("Debugging comes in phase 3")),
-    item('w', "add watch", Later("Debugging comes in phase 3")),
-    item('a', "attach to process", Later("Debugging comes in phase 3")),
+    item('d', "debug panel", Run(Command::Debug(DebugCmd::ShowPanel))),
+    item('r', "run / continue (F5)", Run(Command::Debug(DebugCmd::StartOrContinue))),
+    item('s', "stop (Shift+F5)", Run(Command::Debug(DebugCmd::Stop))),
+    item('b', "toggle breakpoint (F9)", Run(Command::Debug(DebugCmd::ToggleBreakpoint))),
+    item('w', "add watch", Run(Command::Debug(DebugCmd::AddWatch))),
+    item('a', "attach to process", Run(Command::Debug(DebugCmd::Attach))),
 ];
 
 const JUMP: &[Item] = &[

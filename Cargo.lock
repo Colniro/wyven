@@ -3702,6 +3702,7 @@ dependencies = [
  "toml",
  "winit",
  "wyvern-buffer",
+ "wyvern-dap",
  "wyvern-git",
  "wyvern-lsp",
  "wyvern-render",
@@ -3716,6 +3717,15 @@ version = "0.1.0"
 dependencies = [
  "ropey",
  "unicode-width",
+]
+
+[[package]]
+name = "wyvern-dap"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "serde_json",
 ]
 
 [[package]]

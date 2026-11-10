@@ -1,0 +1,14 @@
+[package]
+name = "wyvern-dap"
+description = "Debug Adapter Protocol client for the Wyvern editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true

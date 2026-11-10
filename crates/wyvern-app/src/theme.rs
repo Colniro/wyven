@@ -59,6 +59,8 @@ pub struct Theme {
     pub diff_removed: Rgba,
     pub diff_added: Rgba,
     pub diff_filler: Rgba,
+    /// Background of the line where the debugger is paused.
+    pub debug_line: Rgba,
     pub syntax: SyntaxColors,
 }
 
@@ -108,6 +110,7 @@ impl Theme {
             diff_removed: Rgba(0xC0, 0x40, 0x40, 0x40),
             diff_added: Rgba(0x40, 0xA0, 0x50, 0x40),
             diff_filler: Rgba(0x00, 0x00, 0x00, 0x40),
+            debug_line: Rgba(0xE8, 0xB0, 0x3A, 0x40),
             // Inspired by Visual Studio's dark theme.
             syntax: SyntaxColors {
                 keyword: Rgba::rgb(0x56, 0x9C, 0xD6),
@@ -162,6 +165,7 @@ impl Theme {
             diff_removed: Rgba(0xFF, 0x80, 0x80, 0x50),
             diff_added: Rgba(0x80, 0xE0, 0x90, 0x60),
             diff_filler: Rgba(0x00, 0x00, 0x00, 0x14),
+            debug_line: Rgba(0xF5, 0xC0, 0x40, 0x70),
             // Inspired by Visual Studio's light theme.
             syntax: SyntaxColors {
                 keyword: Rgba::rgb(0x00, 0x00, 0xFF),
