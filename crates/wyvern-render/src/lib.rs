@@ -258,14 +258,6 @@ impl Renderer {
         }
         self.config.width = width;
         self.config.height = height;
-        // wgpu's OpenGL backend on Windows keeps drawing at the old size after a resize
-        // (seen right after start, when Windows applies the DPI scale). A fresh surface fixes it.
-        if self.gpu_info.backend == "Gl" {
-            match self.instance.create_surface(self.window.clone()) {
-                Ok(surface) => self.surface = surface,
-                Err(e) => log::warn!("recreating GL surface failed: {e}"),
-            }
-        }
         self.surface.configure(&self.device, &self.config);
     }
 

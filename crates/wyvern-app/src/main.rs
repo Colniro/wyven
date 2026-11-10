@@ -10,9 +10,11 @@
 mod config;
 mod editor;
 mod explorer;
+mod index;
 mod keymap;
 mod leader;
 mod metrics;
+mod palette;
 mod popup;
 mod theme;
 
@@ -35,8 +37,10 @@ use wyvern_render::{
 
 use editor::{EditorView, FontMetrics, Rect};
 use explorer::Explorer;
+use index::FileIndex;
 use keymap::{Command, Keymap};
 use metrics::InputLatency;
+use palette::Palette;
 use popup::Popup;
 use theme::Theme;
 
@@ -80,6 +84,7 @@ enum Overlay {
     None,
     Leader { group: &'static str, since: Instant, shown: bool },
     Recent(Vec<PathBuf>),
+    Palette,
 }
 
 struct Mouse {
@@ -124,6 +129,8 @@ struct State {
 
     overlay: Overlay,
     popup: Popup,
+    palette: Palette,
+    index: FileIndex,
     keymap: Keymap,
     modifiers: ModifiersState,
     alt_alone: bool,
@@ -151,18 +158,29 @@ impl ApplicationHandler for App {
         }
         let started = Instant::now();
         // 1200×800, but never larger than 85 % of the screen (title bar and taskbar need room).
+        // Centered on the primary screen: Windows otherwise cascades every new window further
+        // down until the status bar ends up below the screen edge.
         let (mut w, mut h) = (1200.0, 800.0);
+        let mut position = None;
         if let Some(m) = event_loop.primary_monitor() {
-            let size = m.size().to_logical::<f64>(m.scale_factor());
+            let scale = m.scale_factor();
+            let size = m.size().to_logical::<f64>(scale);
+            let origin = m.position().to_logical::<f64>(scale);
             w = f64::min(w, size.width * 0.85);
             h = f64::min(h, size.height * 0.85);
+            position = Some(winit::dpi::LogicalPosition::new(
+                origin.x + (size.width - w) / 2.0,
+                origin.y + (size.height - h) / 2.0 - 20.0,
+            ));
         }
-        // Created hidden and shown after the first frame: no white flash, and Windows' DPI
-        // resize happens before the GPU surface exists.
-        let attrs = Window::default_attributes()
+        // Created hidden and shown after the first frame: no white flash while the GPU starts.
+        let mut attrs = Window::default_attributes()
             .with_title("Wyvern")
             .with_visible(false)
             .with_inner_size(LogicalSize::new(w, h));
+        if let Some(p) = position {
+            attrs = attrs.with_position(p);
+        }
         let window = Arc::new(event_loop.create_window(attrs).expect("failed to create window"));
         log_stage("window", started);
         let renderer =
@@ -208,6 +226,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(true) => {
                 if let Some(ex) = &mut state.explorer {
                     ex.refresh();
+                    state.index.rebuild(ex.root());
                 }
                 state.window.request_redraw();
             }
@@ -245,6 +264,14 @@ impl ApplicationHandler for App {
             state.window.request_redraw();
         }
         let mut wake = state.next_stats;
+        if matches!(state.overlay, Overlay::Palette) && state.palette.waiting_for_index {
+            if state.index.files().is_some() {
+                state.refresh_palette();
+                state.window.request_redraw();
+            } else {
+                wake = wake.min(now + Duration::from_millis(30));
+            }
+        }
         if let Overlay::Leader { since, shown, .. } = &mut state.overlay {
             let due = *since + LEADER_POPUP_DELAY;
             if !*shown {
@@ -289,6 +316,7 @@ impl State {
         };
         let (status_left, status_right, tab_bar) = (line_buffer(), line_buffer(), line_buffer());
         let popup = Popup::new(fs, ui_font);
+        let palette = Palette::new(fs, ui_font);
 
         let mut state = Self {
             window,
@@ -311,6 +339,8 @@ impl State {
             focus: Focus::Editor,
             overlay: Overlay::None,
             popup,
+            palette,
+            index: FileIndex::default(),
             keymap: Keymap::default(),
             modifiers: ModifiersState::empty(),
             alt_alone: false,
@@ -383,6 +413,7 @@ impl State {
             ex.set_font(ui);
         }
         self.popup.set_font(ui);
+        self.palette.set_font(ui);
         let m = Metrics::new(ui.size, ui.line_h);
         for b in [&mut self.status_left, &mut self.status_right, &mut self.tab_bar] {
             b.set_metrics(m);
@@ -417,6 +448,7 @@ impl State {
         self.explorer = Some(ex);
         self.explorer_visible = true;
         config::remember_project(&path);
+        self.index.rebuild(&path);
         self.relayout();
     }
 
@@ -680,6 +712,10 @@ impl State {
                         }
                 return;
             }
+            Overlay::Palette => {
+                self.palette_key(event, &key);
+                return;
+            }
             Overlay::None => {}
         }
 
@@ -756,6 +792,96 @@ impl State {
         true
     }
 
+    // ----- search field -----
+
+    fn open_palette(&mut self, prefix: &'static str) {
+        self.palette.reset(prefix);
+        self.overlay = Overlay::Palette;
+        self.refresh_palette();
+    }
+
+    fn refresh_palette(&mut self) {
+        let open: Vec<PathBuf> = self
+            .mru
+            .iter()
+            .filter_map(|&i| self.tabs.get(i)?.doc.path().map(Path::to_path_buf))
+            .collect();
+        let ed = &self.tabs[self.active];
+        let symbols = if self.palette.query.starts_with('@') { ed.symbols() } else { Vec::new() };
+        let sources = palette::Sources {
+            files: self.index.files(),
+            root: self.explorer.as_ref().map(|e| e.root()),
+            open,
+            has_symbols: ed.language_name() != "Text",
+            symbols,
+            line_count: ed.doc.text().len_lines(),
+        };
+        self.palette.update(&sources);
+    }
+
+    fn palette_key(&mut self, event: &KeyEvent, key: &Key) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Character(c) if ctrl && c.as_str() == "q" => self.overlay = Overlay::None,
+            Key::Named(NamedKey::Enter) => {
+                let action = self.palette.selected_action();
+                self.accept_palette(action);
+            }
+            Key::Named(NamedKey::ArrowUp) => self.palette.move_selection(-1),
+            Key::Named(NamedKey::ArrowDown) => self.palette.move_selection(1),
+            Key::Named(NamedKey::PageUp) => self.palette.move_selection(-10),
+            Key::Named(NamedKey::PageDown) => self.palette.move_selection(10),
+            Key::Named(NamedKey::Backspace) => {
+                if ctrl {
+                    self.palette.query.clear();
+                } else {
+                    self.palette.query.pop();
+                }
+                self.refresh_palette();
+            }
+            Key::Character(c) if ctrl && c.as_str() == "v" => {
+                if let Some((text, _)) = self.get_clipboard() {
+                    let line = text.lines().next().unwrap_or("").to_string();
+                    self.palette.query.push_str(&line);
+                    self.refresh_palette();
+                }
+            }
+            _ => {
+                if let Some(text) = Keymap::text(event, mods) {
+                    self.palette.query.push_str(&text);
+                    self.refresh_palette();
+                }
+            }
+        }
+    }
+
+    fn accept_palette(&mut self, action: palette::Action) {
+        use palette::{Action as A, Cmd};
+        self.overlay = Overlay::None;
+        match action {
+            A::OpenFile(rel) => {
+                if let Some(root) = self.project_root() {
+                    let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                    self.open_path(&path);
+                }
+            }
+            A::Run(Cmd::Key(cmd)) => self.run(cmd),
+            A::Run(Cmd::Leader(action)) => self.leader_action(action),
+            A::Line(line, col) => {
+                self.editor_mut().jump_to_line(line, col);
+                self.focus = Focus::Editor;
+            }
+            A::Byte(byte) => {
+                self.editor_mut().jump_to_byte(byte);
+                self.focus = Focus::Editor;
+            }
+            A::Nothing => {}
+        }
+    }
+
+
     fn leader_key(&mut self, group: &'static str, key: &Key) {
         self.overlay = Overlay::None;
         let c = match key {
@@ -803,6 +929,7 @@ impl State {
                     self.overlay = Overlay::Recent(list);
                 }
             }
+            Palette(prefix) => self.open_palette(prefix),
             OpenFile => self.pick_file(),
             NewFile => self.new_file(),
             SaveAs => self.save_as(),
@@ -903,6 +1030,10 @@ impl State {
                 follow_cursor = false;
                 self.cycle_tabs(back);
             }
+            Command::OpenPalette(prefix) => {
+                follow_cursor = false;
+                self.open_palette(prefix);
+            }
             Command::ReopenClosed => {
                 if let Some(p) = self.closed.pop() {
                     self.open_path(&p);
@@ -966,6 +1097,12 @@ impl State {
             return;
         }
         self.alt_alone = false;
+        if matches!(self.overlay, Overlay::Palette) && button == MouseButton::Left
+            && let Some(action) = self.palette.action_at(self.mouse.x, self.mouse.y) {
+                self.accept_palette(action);
+                self.window.request_redraw();
+                return;
+            }
         if !matches!(self.overlay, Overlay::None) {
             self.overlay = Overlay::None;
             self.window.request_redraw();
@@ -1157,6 +1294,12 @@ impl State {
         self.update_tab_bar();
         self.update_status();
         let popup_visible = self.update_popup();
+        if matches!(self.overlay, Overlay::Palette) {
+            let (w, _) = self.renderer.size();
+            let cells = Palette::width_cells(w as f32, self.ui_font);
+            let fs = self.renderer.font_system();
+            self.palette.prepare(fs, &self.theme, &self.family, cells);
+        }
         let active_path = self.editor().doc.path().map(Path::to_path_buf);
         {
             let theme = &self.theme;
@@ -1226,6 +1369,10 @@ impl State {
 
         if popup_visible {
             self.popup.draw(theme, self.ui_font, s.w, s.y, &mut overlay, &mut overlay_text);
+        }
+        if matches!(self.overlay, Overlay::Palette) {
+            let top = l.tabs.y + l.tabs.h * 0.5;
+            self.palette.draw(theme, self.ui_font, s.w, top, scale, &mut overlay, &mut overlay_text);
         }
 
         let scene = Scene {

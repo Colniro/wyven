@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1, zweiter Teil.** Wyvern öffnet Projektordner mit Explorer und Tabs, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn und hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md).
-Noch fehlen in Phase 1: das Suchfeld (`Strg+Q`), der C#-Language-Server und Einstellungen/Themes.
+**Stand: Phase 1, dritter Teil.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn und hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md).
+Noch fehlen in Phase 1: der C#-Language-Server und Einstellungen/Themes.
 
 ## Starten
 
@@ -17,6 +17,12 @@ Mit einem Ordner öffnet sich dieser als Projekt, mit einer Datei die Datei samt
 Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 
 ## Was schon geht
+
+- **Suchfeld** `Strg+Q`, ein Feld für alles:
+  - ohne Präfix: Dateien im Projekt, unscharf (`prgcs` findet `Program.cs`). Beachtet `.gitignore`.
+  - `>`: Befehle mit ihrem Kürzel (auch direkt mit `Strg+Shift+P`)
+  - `@`: Klassen, Methoden, Eigenschaften … der aktuellen Datei (C#, JS/TS, Rust; auch `Alt → j → s`)
+  - `:`: Gehe zu Zeile, z. B. `:42` oder `:42:7` (auch direkt mit `Strg+G`)
 
 - **Explorer** links: Ordner auf/zu per Klick oder `→`/`←`, Datei öffnen per Klick oder `Enter`. Generierte Ordner (`bin`, `obj`, `.git`, `target`, `node_modules` …) werden ausgeblendet. Der Inhalt wird neu gelesen, wenn das Fenster wieder den Fokus bekommt.
 - **Tabs:** `Strg+Tab` wechselt zur zuletzt benutzten Datei (Strg gedrückt halten und Tab mehrmals drücken geht weiter zurück). `Strg+W` schließt, bei ungespeicherten Änderungen erst nach einer Rückfrage. `Strg+Shift+T` öffnet den zuletzt geschlossenen Tab wieder, mittlere Maustaste schließt einen Tab.

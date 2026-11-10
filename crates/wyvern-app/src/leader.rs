@@ -13,6 +13,8 @@ pub enum Action {
     NewFile,
     SaveAs,
     CloseAll,
+    /// Opens the search field with a mode prefix.
+    Palette(&'static str),
     /// Known, but built in a later phase.
     Later(&'static str),
 }
@@ -83,8 +85,9 @@ const JUMP: &[Item] = &[
     item('d', "Definition", Later("Kommt mit dem C#-Language-Server")),
     item('i', "Implementierung", Later("Kommt mit dem C#-Language-Server")),
     item('r', "Referenzen", Later("Kommt mit dem C#-Language-Server")),
-    item('s', "Symbol in Datei", Later("Kommt mit dem Suchfeld (Strg+Q)")),
-    item('l', "Zeile", Later("Kommt mit dem Suchfeld (Strg+Q)")),
+    item('s', "Symbol in Datei", Palette("@")),
+    item('l', "Zeile", Palette(":")),
+    item('f', "Datei", Palette("")),
 ];
 
 const CODE: &[Item] = &[

@@ -96,6 +96,8 @@ pub struct LanguageConfig {
     language: Language,
     query: Query,
     styles: Vec<Option<Highlight>>,
+    /// Finds definitions (classes, methods, …) for "Gehe zu Symbol".
+    tags: Option<Query>,
     /// Line comment token, e.g. `//`.
     pub line_comment: Option<&'static str>,
 }
@@ -105,7 +107,53 @@ struct Def {
     extensions: &'static [&'static str],
     language: fn() -> Language,
     query: fn() -> String,
+    tags: Option<fn() -> String>,
     line_comment: Option<&'static str>,
+}
+
+/// The C# grammar's own tags query only knows classes, interfaces, methods and namespaces.
+const CSHARP_TAGS: &str = r#"
+(namespace_declaration name: (_) @name) @definition.namespace
+(file_scoped_namespace_declaration name: (_) @name) @definition.namespace
+(class_declaration name: (identifier) @name) @definition.class
+(struct_declaration name: (identifier) @name) @definition.struct
+(record_declaration name: (identifier) @name) @definition.record
+(interface_declaration name: (identifier) @name) @definition.interface
+(enum_declaration name: (identifier) @name) @definition.enum
+(constructor_declaration name: (identifier) @name) @definition.constructor
+(method_declaration name: (identifier) @name) @definition.method
+(property_declaration name: (identifier) @name) @definition.property
+(field_declaration (variable_declaration (variable_declarator name: (identifier) @name))) @definition.field
+"#;
+
+/// A definition in a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbol {
+    pub name: String,
+    /// German display name of the kind, e.g. "Methode".
+    pub kind: &'static str,
+    /// Byte offset of the name.
+    pub byte: usize,
+    pub line: usize,
+}
+
+fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "class" => "Klasse",
+        "struct" => "Struct",
+        "record" => "Record",
+        "interface" => "Interface",
+        "enum" => "Enum",
+        "method" => "Methode",
+        "constructor" => "Konstruktor",
+        "property" => "Eigenschaft",
+        "field" => "Feld",
+        "function" => "Funktion",
+        "macro" => "Makro",
+        "constant" => "Konstante",
+        "module" | "namespace" => "Namespace",
+        _ => "Symbol",
+    }
 }
 
 fn definitions() -> Vec<Def> {
@@ -115,6 +163,7 @@ fn definitions() -> Vec<Def> {
             extensions: &["cs", "csx"],
             language: || tree_sitter_c_sharp::LANGUAGE.into(),
             query: || tree_sitter_c_sharp::HIGHLIGHTS_QUERY.into(),
+            tags: Some(|| CSHARP_TAGS.into()),
             line_comment: Some("//"),
         },
         Def {
@@ -128,6 +177,7 @@ fn definitions() -> Vec<Def> {
                     tree_sitter_javascript::HIGHLIGHT_QUERY
                 )
             },
+            tags: Some(|| tree_sitter_javascript::TAGS_QUERY.into()),
             line_comment: Some("//"),
         },
         Def {
@@ -142,6 +192,8 @@ fn definitions() -> Vec<Def> {
                     tree_sitter_javascript::HIGHLIGHT_QUERY
                 )
             },
+            tags: Some(|| format!("{}
+{}", tree_sitter_typescript::TAGS_QUERY, tree_sitter_javascript::TAGS_QUERY)),
             line_comment: Some("//"),
         },
         Def {
@@ -156,6 +208,8 @@ fn definitions() -> Vec<Def> {
                     tree_sitter_javascript::HIGHLIGHT_QUERY
                 )
             },
+            tags: Some(|| format!("{}
+{}", tree_sitter_typescript::TAGS_QUERY, tree_sitter_javascript::TAGS_QUERY)),
             line_comment: Some("//"),
         },
         Def {
@@ -163,6 +217,7 @@ fn definitions() -> Vec<Def> {
             extensions: &["html", "htm", "xhtml"],
             language: || tree_sitter_html::LANGUAGE.into(),
             query: || tree_sitter_html::HIGHLIGHTS_QUERY.into(),
+            tags: None,
             line_comment: None,
         },
         Def {
@@ -170,6 +225,7 @@ fn definitions() -> Vec<Def> {
             extensions: &["css"],
             language: || tree_sitter_css::LANGUAGE.into(),
             query: || tree_sitter_css::HIGHLIGHTS_QUERY.into(),
+            tags: None,
             line_comment: None,
         },
         Def {
@@ -177,6 +233,7 @@ fn definitions() -> Vec<Def> {
             extensions: &["json", "jsonc", "csproj.user"],
             language: || tree_sitter_json::LANGUAGE.into(),
             query: || tree_sitter_json::HIGHLIGHTS_QUERY.into(),
+            tags: None,
             line_comment: Some("//"),
         },
         Def {
@@ -184,6 +241,7 @@ fn definitions() -> Vec<Def> {
             extensions: &["md", "markdown"],
             language: || tree_sitter_md::LANGUAGE.into(),
             query: || tree_sitter_md::HIGHLIGHT_QUERY_BLOCK.into(),
+            tags: None,
             line_comment: None,
         },
         Def {
@@ -191,6 +249,7 @@ fn definitions() -> Vec<Def> {
             extensions: &["toml"],
             language: || tree_sitter_toml_ng::LANGUAGE.into(),
             query: || tree_sitter_toml_ng::HIGHLIGHTS_QUERY.into(),
+            tags: None,
             line_comment: Some("#"),
         },
         Def {
@@ -198,6 +257,7 @@ fn definitions() -> Vec<Def> {
             extensions: &["rs"],
             language: || tree_sitter_rust::LANGUAGE.into(),
             query: || tree_sitter_rust::HIGHLIGHTS_QUERY.into(),
+            tags: Some(|| tree_sitter_rust::TAGS_QUERY.into()),
             line_comment: Some("//"),
         },
     ]
@@ -217,12 +277,20 @@ fn registry() -> &'static [LanguageConfig] {
                             .iter()
                             .map(|n| Highlight::from_capture(n))
                             .collect();
+                        let tags = d.tags.and_then(|t| match Query::new(&language, &t()) {
+                            Ok(q) => Some(q),
+                            Err(e) => {
+                                log::error!("tags query for {} failed: {e}", d.name);
+                                None
+                            }
+                        });
                         Some(LanguageConfig {
                             name: d.name,
                             extensions: d.extensions,
                             language,
                             query,
                             styles,
+                            tags,
                             line_comment: d.line_comment,
                         })
                     }
@@ -309,6 +377,48 @@ impl Syntax {
         self.reparse(rope);
     }
 
+    /// All definitions in the file, in document order.
+    pub fn symbols(&self, rope: &Rope) -> Vec<Symbol> {
+        let (Some(tree), Some(query)) = (&self.tree, &self.config.tags) else {
+            return Vec::new();
+        };
+        let names = query.capture_names();
+        let mut cursor = QueryCursor::new();
+        let text = |node: Node| {
+            rope.byte_slice(node.start_byte()..node.end_byte())
+                .chunks()
+                .map(str::as_bytes)
+        };
+        let mut matches = cursor.matches(query, tree.root_node(), text);
+        let mut out: Vec<Symbol> = Vec::new();
+        while let Some(m) = matches.next() {
+            let mut name = None;
+            let mut kind = None;
+            for cap in m.captures() {
+                let cap_name = names[cap.index as usize];
+                if cap_name == "name" {
+                    name = Some(cap.node);
+                } else if let Some(k) = cap_name.strip_prefix("definition.") {
+                    kind = Some(k);
+                }
+            }
+            if let (Some(node), Some(kind)) = (name, kind) {
+                let byte = node.start_byte();
+                if out.iter().any(|s| s.byte == byte) {
+                    continue;
+                }
+                out.push(Symbol {
+                    name: rope.byte_slice(byte..node.end_byte()).to_string(),
+                    kind: kind_label(kind),
+                    byte,
+                    line: node.start_position().row,
+                });
+            }
+        }
+        out.sort_by_key(|s| s.byte);
+        out
+    }
+
     /// Highlight spans in `bytes` (usually the visible lines). Inner (more specific) nodes win
     /// over outer ones; for the same node the first matching pattern wins.
     pub fn highlights(&self, rope: &Rope, bytes: std::ops::Range<usize>) -> Vec<Span> {
@@ -382,6 +492,45 @@ mod tests {
         let at = |b: usize| spans.iter().find(|s| s.start <= b && b < s.end).map(|s| s.highlight);
         assert_eq!(at(0), Some(Highlight::Keyword)); // class
         assert_eq!(at(22), Some(Highlight::String)); // "hi"
+    }
+
+    #[test]
+    fn tags_queries_compile_and_find_csharp_members() {
+        for c in registry() {
+            assert!(
+                c.tags.is_some() || !["C#", "JavaScript", "TypeScript", "TSX", "Rust"].contains(&c.name),
+                "tags query missing for {}",
+                c.name
+            );
+        }
+        let config = language_for_path(Path::new("A.cs")).unwrap();
+        let rope = Rope::from_str(
+            "namespace N;
+record R(int X);
+class A {
+  int _f;
+  public A() {}
+  string P { get; set; }
+  void M() {}
+}
+enum E { One }
+",
+        );
+        let syntax = Syntax::new(config, &rope);
+        let found: Vec<(String, &str)> =
+            syntax.symbols(&rope).into_iter().map(|s| (s.name, s.kind)).collect();
+        let expect = [
+            ("N", "Namespace"),
+            ("R", "Record"),
+            ("A", "Klasse"),
+            ("_f", "Feld"),
+            ("A", "Konstruktor"),
+            ("P", "Eigenschaft"),
+            ("M", "Methode"),
+            ("E", "Enum"),
+        ];
+        let expect: Vec<(String, &str)> = expect.iter().map(|(n, k)| (n.to_string(), *k)).collect();
+        assert_eq!(found, expect);
     }
 
     #[test]

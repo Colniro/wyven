@@ -13,7 +13,7 @@ use crate::editor::{FontMetrics, Rect};
 use crate::theme::Theme;
 
 /// Folders that are hidden because they only contain generated files.
-const IGNORED: &[&str] = &[
+pub const IGNORED: &[&str] = &[
     ".git", ".vs", ".vscode", ".idea", ".godot", ".import", "bin", "obj", "target",
     "node_modules", "__pycache__",
 ];

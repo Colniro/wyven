@@ -116,6 +116,36 @@ impl EditorView {
         Ok(())
     }
 
+    pub fn symbols(&self) -> Vec<wyvern_syntax::Symbol> {
+        self.syntax
+            .as_ref()
+            .map_or_else(Vec::new, |s| s.symbols(self.doc.text()))
+    }
+
+    /// Puts the cursor at a char position and scrolls it to about a third of the view.
+    pub fn jump_to(&mut self, pos: usize) {
+        self.doc.set_cursor(pos.min(self.doc.text().len_chars()));
+        let line = self.doc.text().char_to_line(self.doc.selection().primary().head);
+        self.scroll_line = line.saturating_sub(self.full_rows() / 3);
+        self.ensure_cursor_visible();
+    }
+
+    /// 1-based line and optional 1-based column, clamped to the document.
+    pub fn jump_to_line(&mut self, line: usize, col: Option<usize>) {
+        let rope = self.doc.text();
+        let line = line.saturating_sub(1).min(rope.len_lines().saturating_sub(1));
+        let len = line_len_chars(rope, line);
+        let col = col.map_or(0, |c| c.saturating_sub(1)).min(len);
+        let pos = rope.line_to_char(line) + col;
+        self.jump_to(pos);
+    }
+
+    pub fn jump_to_byte(&mut self, byte: usize) {
+        let rope = self.doc.text();
+        let pos = rope.byte_to_char(byte.min(rope.len_bytes()));
+        self.jump_to(pos);
+    }
+
     pub fn set_area(&mut self, area: Rect) {
         self.area = area;
     }

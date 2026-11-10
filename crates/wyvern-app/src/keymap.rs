@@ -41,6 +41,8 @@ pub enum Command {
     /// Strg+Tab (forward) / Strg+Shift+Tab (backward) through recently used tabs.
     CycleTabs { back: bool },
     ReopenClosed,
+    /// Opens the search field with a mode prefix ("" files, ">" commands, "@" symbols, ":" line).
+    OpenPalette(&'static str),
     Scroll(isize),
     FontSize(i32),
     FontSizeReset,
@@ -160,8 +162,10 @@ impl Keymap {
                     self.chord = true;
                     return None;
                 }
-                ("q", false) => NotYet("Das Suchfeld (Strg+Q) kommt im nächsten Schritt"),
-                ("f", _) | ("h", false) | ("g", false) => NotYet("Suchen kommt in Phase 2"),
+                ("q", false) => OpenPalette(""),
+                ("p", true) => OpenPalette(">"),
+                ("g", false) => OpenPalette(":"),
+                ("f", _) | ("h", false) => NotYet("Suchen und Ersetzen kommt in Phase 2"),
                 ("space", _) | (" ", _) => NotYet("Autovervollständigung kommt mit dem C#-LSP"),
                 ("." , false) => NotYet("Quick Actions kommen mit dem C#-LSP"),
                 _ => return None,
