@@ -4,7 +4,7 @@ Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
 **Stand: Phase 1, vierter Teil.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Noch fehlen in Phase 1: Umbenennen (F2), Quick Actions (`Strg+.`) und Einstellungen/Themes.
+Noch fehlen in Phase 1: Einstellungen/Themes.
 
 ## Starten
 
@@ -24,8 +24,11 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - `F12` oder `Strg+Klick`: Gehe zu Definition
   - Info zum Symbol: Maus kurz still halten oder `Strg+K, Strg+I`
   - Formatieren: `Strg+K, Strg+D`
+  - Umbenennen: `F2` am Namen, neuen Namen tippen, `Enter`. Gilt für alle Stellen im Projekt. Betroffene Dateien öffnen sich als ungespeicherte Tabs, damit du alles prüfen und mit `Strg+Z` zurücknehmen kannst.
+  - Quick Actions: `Strg+.` zeigt die Vorschläge von Roslyn (Tippfehler korrigieren, Feld/Methode erzeugen, `using` ergänzen …). Auswahl per Ziffer oder Pfeiltasten + `Enter`.
+  - Nächster Fehler: `F8` (wie in Visual Studio)
 
-  Der Server startet automatisch, sobald eine `.cs`-Datei offen ist. Das erste Laden eines Projekts dauert einige Sekunden (inkl. `dotnet restore`), die Statusleiste zeigt den Fortschritt.
+  Der Server startet automatisch, sobald eine `.cs`-Datei offen ist. Wyvern meldet ihm die `.sln`/`.slnx` im Projektordner an, oder wenn es keine gibt, alle `.csproj` bis drei Ordner tief. Das Laden dauert ein paar Sekunden (beim ersten Mal inkl. `dotnet restore`), die Statusleiste zeigt den Fortschritt. Ohne Projektdatei arbeitet Roslyn im Einzeldatei-Modus.
   Woher der Server kommt, in dieser Reihenfolge: Umgebungsvariable `WYVERN_CSHARP_SERVER`, dann der Roslyn-Server aus der **C#-Extension von VS Code**, dann `csharp-ls` im PATH. Er braucht das .NET SDK.
 
 - **Suchfeld** `Strg+Q`, ein Feld für alles:

@@ -57,6 +57,18 @@ fn main() {
                 println!("        diagnosticProvider: {}", caps["capabilities"]["diagnosticProvider"]);
                 println!("        textDocumentSync: {}", caps["capabilities"]["textDocumentSync"]);
                 client.notify("initialized", json!({}));
+                // PROBE_OPEN_PROJECT=1: ask Roslyn explicitly to load the .csproj files in root.
+                if std::env::var("PROBE_OPEN_PROJECT").is_ok() {
+                    let projects: Vec<String> = std::fs::read_dir(&root)
+                        .unwrap()
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().is_some_and(|x| x == "csproj"))
+                        .map(|p| path_to_uri(&p))
+                        .collect();
+                    println!("        -> project/open {projects:?}");
+                    client.notify("project/open", json!({ "projects": projects }));
+                }
                 client.notify("textDocument/didOpen", json!({
                     "textDocument": { "uri": uri, "languageId": "csharp", "version": 1, "text": text }
                 }));

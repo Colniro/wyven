@@ -13,6 +13,10 @@ use wyvern_lsp::{initialize_params, json, path_to_uri, to_lsp, uri_to_path, Clie
 const SYNC_DELAY: Duration = Duration::from_millis(60);
 /// Errors are asked for after typing pauses this long.
 const DIAGNOSTICS_DELAY: Duration = Duration::from_millis(350);
+/// If the server never says "projects loaded", it counts as ready after this time anyway.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+/// How deep to look for `.csproj` files when there is no solution file.
+const PROJECT_SEARCH_DEPTH: usize = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
@@ -30,6 +34,8 @@ pub struct Diagnostic {
     pub severity: u8,
     pub message: String,
     pub code: String,
+    /// As sent by the server; handed back when asking for quick actions.
+    pub raw: Value,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +55,10 @@ pub enum Event {
     DefinitionNotFound,
     Hover { text: String, x: f32, y: f32 },
     Format { path: PathBuf, version: u64, edits: Vec<(Value, Value, String)> },
+    /// Changes to apply, possibly across several files (rename, quick action).
+    WorkspaceEdit { edit: Value, what: String },
+    /// Quick actions offered at the cursor (raw LSP code actions).
+    CodeActions(Vec<Value>),
     Status,
     Message(String),
 }
@@ -60,6 +70,9 @@ enum Pending {
     Hover { x: f32, y: f32 },
     Format { path: PathBuf, version: u64 },
     Diagnostics { path: PathBuf },
+    Rename { new_name: String },
+    CodeActions,
+    Resolve { title: String },
 }
 
 struct OpenDoc {
@@ -76,7 +89,6 @@ pub fn find_csharp_server() -> Option<(PathBuf, Vec<String>)> {
     let roslyn_args = |log_dir: &Path| {
         vec![
             "--stdio".into(),
-            "--autoLoadProjects".into(),
             "--logLevel".into(),
             "Warning".into(),
             "--extensionLogDirectory".into(),
@@ -138,6 +150,57 @@ pub struct LanguageServer {
     initialized: bool,
     pull_diagnostics: bool,
     progress: HashSet<String>,
+    root: PathBuf,
+    /// When project loading started (for the timeout).
+    loading_since: Option<Instant>,
+}
+
+/// What Roslyn should load: a solution, or else all project files.
+#[derive(Debug, PartialEq)]
+pub enum ToLoad {
+    Solution(PathBuf),
+    Projects(Vec<PathBuf>),
+    None,
+}
+
+/// Looks for `.sln`/`.slnx` in `root`, otherwise `.csproj` files up to a few folders deep
+/// (skipping `bin`, `obj` and other generated folders).
+pub fn find_projects(root: &Path) -> ToLoad {
+    let has_ext = |p: &Path, exts: &[&str]| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
+    };
+    let mut solutions: Vec<PathBuf> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && has_ext(p, &["sln", "slnx"]))
+        .collect();
+    solutions.sort();
+    if let Some(s) = solutions.into_iter().next() {
+        return ToLoad::Solution(s);
+    }
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>, has_ext: &dyn Fn(&Path, &[&str]) -> bool) {
+        let Ok(read) = std::fs::read_dir(dir) else { return };
+        for e in read.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if p.is_dir() {
+                let ignored = crate::explorer::IGNORED.iter().any(|i| i.eq_ignore_ascii_case(&name));
+                if depth > 0 && !ignored && !name.starts_with('.') {
+                    walk(&p, depth - 1, out, has_ext);
+                }
+            } else if has_ext(&p, &["csproj"]) {
+                out.push(p);
+            }
+        }
+    }
+    let mut projects = Vec::new();
+    walk(root, PROJECT_SEARCH_DEPTH, &mut projects, &has_ext);
+    projects.sort();
+    if projects.is_empty() { ToLoad::None } else { ToLoad::Projects(projects) }
 }
 
 impl LanguageServer {
@@ -167,6 +230,8 @@ impl LanguageServer {
             initialized: false,
             pull_diagnostics: false,
             progress: HashSet::new(),
+            root: root.to_path_buf(),
+            loading_since: None,
         };
         let id = server
             .client
@@ -273,6 +338,18 @@ impl LanguageServer {
     /// Asks for diagnostics where typing has paused. Returns the next time to check.
     pub fn tick(&mut self, now: Instant) -> Option<Instant> {
         let mut next: Option<Instant> = None;
+        if let Some(since) = self.loading_since {
+            if now >= since + LOAD_TIMEOUT {
+                log::warn!("C# server did not report loaded projects; continuing anyway");
+                self.loading_since = None;
+                self.status = Status::Ready;
+                for d in self.docs.values_mut() {
+                    d.diagnostics_due = Some(now);
+                }
+            } else {
+                next = Some(since + LOAD_TIMEOUT);
+            }
+        }
         let mut ask = Vec::new();
         for (path, d) in &mut self.docs {
             if let Some(t) = d.dirty_since {
@@ -341,6 +418,33 @@ impl LanguageServer {
         self.pending.insert(id, Pending::Format { path: path.to_path_buf(), version });
     }
 
+    pub fn rename(&mut self, path: &Path, rope: &Rope, pos: usize, new_name: &str) {
+        let mut params = Self::position_params(path, rope, pos);
+        params["newName"] = json!(new_name);
+        let id = self.client.request("textDocument/rename", params);
+        self.pending.insert(id, Pending::Rename { new_name: new_name.to_string() });
+    }
+
+    /// Quick actions for a char range; `diagnostics` are the server's own problem objects there.
+    pub fn code_actions(&mut self, path: &Path, rope: &Rope, start: usize, end: usize, diagnostics: Vec<Value>) {
+        let id = self.client.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "range": { "start": to_lsp(rope, start), "end": to_lsp(rope, end) },
+                "context": { "diagnostics": diagnostics, "triggerKind": 1 }
+            }),
+        );
+        self.pending.insert(id, Pending::CodeActions);
+    }
+
+    /// Asks the server to fill in the changes of a quick action.
+    pub fn resolve_action(&mut self, action: Value) {
+        let title = action["title"].as_str().unwrap_or("").to_string();
+        let id = self.client.request("codeAction/resolve", action);
+        self.pending.insert(id, Pending::Resolve { title });
+    }
+
     pub fn shutdown(&mut self) {
         self.client.shutdown();
     }
@@ -406,7 +510,11 @@ impl LanguageServer {
             }
             // Roslyn: all projects are loaded.
             "workspace/projectInitializationComplete" => {
+                if let Some(since) = self.loading_since {
+                    log::info!("C# projects loaded after {:.1} s", since.elapsed().as_secs_f32());
+                }
                 self.status = Status::Ready;
+                self.loading_since = None;
                 for d in self.docs.values_mut() {
                     d.diagnostics_due = Some(Instant::now());
                 }
@@ -448,9 +556,15 @@ impl LanguageServer {
             Ok(v) => v,
             Err(e) => {
                 log::debug!("C# server error: {e}");
-                if matches!(pending, Pending::Initialize) {
-                    self.status = Status::Failed(e);
-                    events.push(Event::Status);
+                match pending {
+                    Pending::Initialize => {
+                        self.status = Status::Failed(e);
+                        events.push(Event::Status);
+                    }
+                    Pending::Rename { .. } | Pending::Resolve { .. } => {
+                        events.push(Event::Message(format!("Nicht möglich: {e}")));
+                    }
+                    _ => {}
                 }
                 return;
             }
@@ -461,11 +575,30 @@ impl LanguageServer {
                 self.pull_diagnostics = !caps["diagnosticProvider"].is_null();
                 self.client.notify("initialized", json!({}));
                 self.initialized = true;
-                // csharp-ls has no "projects loaded" signal: treat it as ready right away.
-                self.status = if self.client.name() == "csharp" && caps["_vs_onAutoInsertProvider"].is_null() {
+                // Roslyn: load the projects explicitly. Its automatic discovery
+                // (--autoLoadProjects) skips projects that already have a `bin` folder.
+                // csharp-ls loads by itself and has no "projects loaded" signal.
+                let roslyn = !caps["_vs_onAutoInsertProvider"].is_null();
+                self.status = if !roslyn {
                     Status::Ready
                 } else {
-                    Status::Loading(String::new())
+                    match find_projects(&self.root) {
+                        ToLoad::Solution(sln) => {
+                            log::info!("opening solution {}", sln.display());
+                            self.client.notify("solution/open", json!({ "solution": path_to_uri(&sln) }));
+                            self.loading_since = Some(Instant::now());
+                            Status::Loading(String::new())
+                        }
+                        ToLoad::Projects(list) => {
+                            log::info!("opening {} project(s)", list.len());
+                            let uris: Vec<String> = list.iter().map(|p| path_to_uri(p)).collect();
+                            self.client.notify("project/open", json!({ "projects": uris }));
+                            self.loading_since = Some(Instant::now());
+                            Status::Loading(String::new())
+                        }
+                        // Loose .cs files: Roslyn handles them on its own, nothing to wait for.
+                        ToLoad::None => Status::Ready,
+                    }
                 };
                 events.push(Event::Status);
             }
@@ -509,6 +642,33 @@ impl LanguageServer {
                     events.push(Event::Hover { text, x, y });
                 }
             }
+            Pending::Rename { new_name } => {
+                if value.is_null() {
+                    events.push(Event::Message("Hier kann nichts umbenannt werden".into()));
+                } else {
+                    events.push(Event::WorkspaceEdit { edit: value, what: format!("Umbenannt in „{new_name}“") });
+                }
+            }
+            Pending::CodeActions => {
+                let actions: Vec<Value> = value
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            // Bare commands (fix-all and similar) need client support we lack.
+                            .filter(|x| x.get("edit").is_some() || x.get("data").is_some())
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                events.push(Event::CodeActions(actions));
+            }
+            Pending::Resolve { title } => {
+                if value["edit"].is_object() {
+                    events.push(Event::WorkspaceEdit { edit: value["edit"].clone(), what: title });
+                } else {
+                    events.push(Event::Message(format!("„{title}“ liefert keine Änderung")));
+                }
+            }
             Pending::Format { path, version } => {
                 let edits = value
                     .as_array()
@@ -530,6 +690,47 @@ impl LanguageServer {
     }
 }
 
+/// A text change from a WorkspaceEdit, still in LSP positions.
+pub type LspEdit = (Value, Value, String);
+
+/// Splits a WorkspaceEdit into per-file edit lists. File operations (create, rename, delete)
+/// are not supported yet and counted as skipped. Line endings are normalized to `\n`.
+pub fn parse_workspace_edit(edit: &Value) -> (Vec<(PathBuf, Vec<LspEdit>)>, usize) {
+    let mut skipped = 0;
+    let mut raw: Vec<(&str, &[Value])> = Vec::new();
+    if let Some(changes) = edit["documentChanges"].as_array() {
+        for c in changes {
+            match (c["textDocument"]["uri"].as_str(), c["edits"].as_array()) {
+                (Some(uri), Some(edits)) => raw.push((uri, edits)),
+                _ => skipped += 1,
+            }
+        }
+    } else if let Some(changes) = edit["changes"].as_object() {
+        for (uri, edits) in changes {
+            raw.push((uri, edits.as_array().map(Vec::as_slice).unwrap_or(&[])));
+        }
+    }
+    let mut out = Vec::new();
+    for (uri, edits) in raw {
+        let Some(path) = uri_to_path(uri) else {
+            skipped += 1;
+            continue;
+        };
+        let edits = edits
+            .iter()
+            .map(|e| {
+                (
+                    e["range"]["start"].clone(),
+                    e["range"]["end"].clone(),
+                    e["newText"].as_str().unwrap_or("").replace("\r\n", "\n").replace('\r', ""),
+                )
+            })
+            .collect();
+        out.push((path, edits));
+    }
+    (out, skipped)
+}
+
 fn parse_diagnostics(list: &Value) -> Vec<Diagnostic> {
     list.as_array()
         .map(|a| {
@@ -544,6 +745,7 @@ fn parse_diagnostics(list: &Value) -> Vec<Diagnostic> {
                         Value::Number(n) => n.to_string(),
                         _ => String::new(),
                     },
+                    raw: d.clone(),
                 })
                 .collect()
         })
@@ -626,6 +828,77 @@ fn unescape_markdown(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Applies parsed edits to a document the way the app does.
+    fn apply(text: &str, edits: &[LspEdit]) -> String {
+        let mut doc = wyvern_buffer::Document::from_str(text);
+        let rope = doc.text().clone();
+        let changes = edits
+            .iter()
+            .map(|(s, e, t)| wyvern_buffer::Change {
+                start: wyvern_lsp::from_lsp(&rope, s),
+                end: wyvern_lsp::from_lsp(&rope, e),
+                text: t.clone(),
+            })
+            .collect();
+        doc.apply_changes(changes);
+        doc.text().to_string()
+    }
+
+    #[test]
+    fn roslyn_rename_edit_applies() {
+        // Real answer of Roslyn for renaming `Player` to `Spieler` (minimal edits "Play" → "Spiel").
+        let uri = if cfg!(windows) { "file:///C:/p/Program.cs" } else { "file:///p/Program.cs" };
+        let edit = json!({ "documentChanges": [{
+            "edits": [
+                { "newText": "Spiel", "range": { "start": { "line": 1, "character": 13 }, "end": { "line": 1, "character": 17 } } },
+                { "newText": "Spiel", "range": { "start": { "line": 3, "character": 14 }, "end": { "line": 3, "character": 18 } } }
+            ],
+            "textDocument": { "uri": uri, "version": null }
+        }]});
+        let (files, skipped) = parse_workspace_edit(&edit);
+        assert_eq!((files.len(), skipped), (1, 0));
+        let text = "namespace N {\npublic class Player {}\nclass P {\n  var p = new Player();\n}\n";
+        assert_eq!(
+            apply(text, &files[0].1),
+            "namespace N {\npublic class Spieler {}\nclass P {\n  var p = new Spieler();\n}\n"
+        );
+    }
+
+    #[test]
+    fn roslyn_quick_action_newlines_are_normalized() {
+        // "Feld generieren" from Roslyn: inserts "\r\n        private int valu;\r\n\r" at a line end.
+        let edit = json!({ "changes": { "file:///C:/p/A.cs": [{
+            "newText": "\r\n    private int valu;\r\n\r",
+            "range": { "start": { "line": 0, "character": 9 }, "end": { "line": 1, "character": 0 } }
+        }]}});
+        let (files, _) = parse_workspace_edit(&edit);
+        assert_eq!(apply("class A {\n}\n", &files[0].1), "class A {\n    private int valu;\n}\n");
+    }
+
+    #[test]
+    fn file_operations_are_skipped() {
+        let edit = json!({ "documentChanges": [{ "kind": "create", "uri": "file:///C:/p/B.cs" }] });
+        let (files, skipped) = parse_workspace_edit(&edit);
+        assert_eq!((files.len(), skipped), (0, 1));
+    }
+
+    #[test]
+    fn finds_solution_first_then_projects_but_not_in_bin() {
+        let root = std::env::temp_dir().join(format!("wyvern-projects-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/App/bin/Debug")).unwrap();
+        std::fs::write(root.join("src/App/App.csproj"), "<Project />").unwrap();
+        std::fs::write(root.join("src/App/bin/Debug/Copy.csproj"), "<Project />").unwrap();
+        assert_eq!(find_projects(&root), ToLoad::Projects(vec![root.join("src/App/App.csproj")]));
+        std::fs::write(root.join("Game.sln"), "").unwrap();
+        assert_eq!(find_projects(&root), ToLoad::Solution(root.join("Game.sln")));
+        let _ = std::fs::remove_dir_all(&root);
+        let empty = std::env::temp_dir().join(format!("wyvern-noproj-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(find_projects(&empty), ToLoad::None);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
 
     #[test]
     fn hover_markdown_becomes_plain_text() {

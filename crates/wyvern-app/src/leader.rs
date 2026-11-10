@@ -1,7 +1,7 @@
 //! The leader menu: tap `Alt`, then type letters (SHORTCUTS.md, "Leader-Menü").
 
 /// What a leader key does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// Opens a sub-menu.
     Group(&'static str),
@@ -15,6 +15,8 @@ pub enum Action {
     CloseAll,
     /// Opens the search field with a mode prefix.
     Palette(&'static str),
+    /// Runs an editor command (rename, format, …).
+    Run(crate::keymap::Command),
     /// Known, but built in a later phase.
     Later(&'static str),
 }
@@ -29,6 +31,7 @@ const fn item(key: char, label: &'static str, action: Action) -> Item {
     Item { key, label, action }
 }
 
+use crate::keymap::Command;
 use Action::*;
 
 const ROOT: &[Item] = &[
@@ -82,7 +85,7 @@ const DEBUG: &[Item] = &[
 ];
 
 const JUMP: &[Item] = &[
-    item('d', "Definition", Later("Kommt mit dem C#-Language-Server")),
+    item('d', "Definition", Run(Command::GotoDefinition)),
     item('i', "Implementierung", Later("Kommt mit dem C#-Language-Server")),
     item('r', "Referenzen", Later("Kommt mit dem C#-Language-Server")),
     item('s', "Symbol in Datei", Palette("@")),
@@ -91,11 +94,11 @@ const JUMP: &[Item] = &[
 ];
 
 const CODE: &[Item] = &[
-    item('r', "umbenennen", Later("Kommt mit dem C#-Language-Server")),
-    item('f', "formatieren", Later("Kommt mit dem C#-Language-Server")),
-    item('a', "Quick Actions", Later("Kommt mit dem C#-Language-Server")),
-    item('o', "Usings ordnen", Later("Kommt mit dem C#-Language-Server")),
-    item('e', "nächster Fehler", Later("Kommt mit dem C#-Language-Server")),
+    item('r', "umbenennen", Run(Command::Rename)),
+    item('f', "formatieren", Run(Command::Format)),
+    item('a', "Quick Actions", Run(Command::QuickActions)),
+    item('o', "Usings ordnen", Later("Usings ordnen kommt in Phase 3")),
+    item('e', "nächster Fehler", Run(Command::NextProblem)),
 ];
 
 const WINDOW: &[Item] = &[
@@ -155,5 +158,5 @@ pub fn find(group: &str, key: char) -> Option<Action> {
     items(group)
         .iter()
         .find(|i| i.key == key.to_ascii_lowercase())
-        .map(|i| i.action)
+        .map(|i| i.action.clone())
 }

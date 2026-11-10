@@ -46,6 +46,8 @@ pub struct DiagSpan {
     /// 1 error, 2 warning, 3 info.
     pub severity: u8,
     pub message: String,
+    /// The server's own diagnostic object (sent back when asking for quick actions).
+    pub raw: wyvern_lsp::Value,
 }
 
 pub struct EditorView {

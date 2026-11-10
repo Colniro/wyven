@@ -15,6 +15,7 @@ mod index;
 mod keymap;
 mod leader;
 mod lsp;
+mod menu;
 mod metrics;
 mod palette;
 mod popup;
@@ -98,6 +99,10 @@ enum Overlay {
     Leader { group: &'static str, since: Instant, shown: bool },
     Recent(Vec<PathBuf>),
     Palette,
+    /// Quick actions to pick from.
+    Menu(menu::Menu),
+    /// New name for the symbol at `pos`.
+    Rename { prompt: menu::Prompt, pos: usize },
 }
 
 struct Mouse {
@@ -777,6 +782,14 @@ impl State {
                 self.palette_key(event, &key);
                 return;
             }
+            Overlay::Menu(_) => {
+                self.menu_key(&key);
+                return;
+            }
+            Overlay::Rename { .. } => {
+                self.rename_key(event, &key);
+                return;
+            }
             Overlay::None => {}
         }
 
@@ -1072,6 +1085,8 @@ impl State {
                     }
                 }
                 lsp::Event::DefinitionNotFound => self.show("Keine Definition gefunden"),
+                lsp::Event::WorkspaceEdit { edit, what } => self.apply_workspace_edit(&edit, &what),
+                lsp::Event::CodeActions(actions) => self.show_actions("Quick Actions (Ziffer oder Enter, Esc)", actions),
                 lsp::Event::Hover { text, x, y } => {
                     let fs = self.renderer.font_system();
                     self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &text, x, y));
@@ -1117,6 +1132,7 @@ impl State {
                     start: wyvern_lsp::from_lsp(rope, &d.start),
                     end: wyvern_lsp::from_lsp(rope, &d.end),
                     severity: d.severity,
+                    raw: d.raw.clone(),
                     message: if d.code.is_empty() { d.message.clone() } else { format!("{}: {}", d.code, d.message) },
                 })
                 .collect();
@@ -1155,6 +1171,239 @@ impl State {
             }
         }
         wake
+    }
+
+    // ----- rename, quick actions, workspace edits -----
+
+    /// F2: asks for the new name of the symbol under the cursor.
+    fn start_rename(&mut self) {
+        if !self.tabs[self.active].is_csharp() {
+            self.show("Umbenennen gibt es bisher nur für C#.");
+            return;
+        }
+        if !self.lsp_ready() {
+            self.show("Der C#-Server lädt noch das Projekt …");
+            return;
+        }
+        let ed = self.editor();
+        let pos = ed.doc.selection().primary().head;
+        let start = ed.word_start();
+        let rope = ed.doc.text();
+        let mut end = pos;
+        while end < rope.len_chars() && {
+            let c = rope.char(end);
+            c.is_alphanumeric() || c == '_'
+        } {
+            end += 1;
+        }
+        if start == end {
+            self.show("Cursor auf einen Namen setzen, dann F2");
+            return;
+        }
+        let name = rope.slice(start..end).to_string();
+        let fs = self.renderer.font_system();
+        let prompt = menu::Prompt::new(fs, self.ui_font, &format!("„{name}“ umbenennen in … (Enter / Esc)"), &name);
+        self.overlay = Overlay::Rename { prompt, pos: start };
+    }
+
+    fn rename_key(&mut self, event: &KeyEvent, key: &Key) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        let Overlay::Rename { prompt, pos } = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::Enter) => {
+                let (name, pos) = (prompt.text.trim().to_string(), *pos);
+                self.overlay = Overlay::None;
+                let valid = !name.is_empty()
+                    && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '@');
+                if !valid {
+                    self.show("Ungültiger Name");
+                    return;
+                }
+                self.lsp_sync_active();
+                let ed = &self.tabs[self.active];
+                if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
+                    server.rename(path, ed.doc.text(), pos, &name);
+                }
+            }
+            Key::Named(NamedKey::Backspace) => prompt.backspace(ctrl),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::End | NamedKey::Home) => prompt.keep(),
+            Key::Character(c) if ctrl && c.as_str() == "v" => {
+                if let Some(t) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok())
+                    && let Overlay::Rename { prompt, .. } = &mut self.overlay {
+                        prompt.type_text(t.lines().next().unwrap_or("").trim());
+                    }
+            }
+            _ => {
+                if let Some(t) = Keymap::text(event, mods) {
+                    prompt.type_text(&t);
+                }
+            }
+        }
+    }
+
+    /// Strg+.: asks the server what can be done at the cursor or selection.
+    fn request_quick_actions(&mut self) {
+        if !self.tabs[self.active].is_csharp() {
+            self.show("Quick Actions gibt es bisher nur für C#.");
+            return;
+        }
+        if !self.lsp_ready() {
+            self.show("Der C#-Server lädt noch das Projekt …");
+            return;
+        }
+        self.lsp_sync_active();
+        let ed = &self.tabs[self.active];
+        let r = ed.doc.selection().primary();
+        let (start, end) = (r.from(), r.to());
+        let diagnostics: Vec<wyvern_lsp::Value> = ed
+            .diagnostics
+            .iter()
+            .filter(|d| d.start <= end && start <= d.end)
+            .map(|d| d.raw.clone())
+            .collect();
+        if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
+            server.code_actions(path, ed.doc.text(), start, end, diagnostics);
+        }
+    }
+
+    fn show_actions(&mut self, title: &str, actions: Vec<wyvern_lsp::Value>) {
+        if actions.is_empty() {
+            self.show("Hier gibt es keine Quick Actions");
+            return;
+        }
+        let items = actions
+            .into_iter()
+            .map(|a| (a["title"].as_str().unwrap_or("?").to_string(), a))
+            .collect();
+        let fs = self.renderer.font_system();
+        self.overlay = Overlay::Menu(menu::Menu::new(fs, self.ui_font, title, items));
+    }
+
+    /// Runs a picked quick action: nested ones open a sub-list, others are resolved and applied.
+    fn run_action(&mut self, action: wyvern_lsp::Value) {
+        self.overlay = Overlay::None;
+        let nested = action["data"]["NestedCodeActions"].as_array().cloned().unwrap_or_default();
+        if !nested.is_empty() {
+            let title = action["title"].as_str().unwrap_or("").to_string();
+            self.show_actions(&title, nested);
+            return;
+        }
+        if action["edit"].is_object() && action.get("data").is_none() {
+            let what = action["title"].as_str().unwrap_or("Quick Action").to_string();
+            self.apply_workspace_edit(&action["edit"], &what);
+            return;
+        }
+        if let Some(server) = &mut self.lsp {
+            server.resolve_action(action);
+        }
+    }
+
+    fn menu_key(&mut self, key: &Key) {
+        let Overlay::Menu(menu) = &mut self.overlay else { return };
+        let picked = match key {
+            Key::Named(NamedKey::Escape) => {
+                self.overlay = Overlay::None;
+                return;
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.move_selection(-1);
+                None
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                menu.move_selection(1);
+                None
+            }
+            Key::Named(NamedKey::Enter) => menu.selected(),
+            Key::Character(c) => c
+                .chars()
+                .next()
+                .and_then(|ch| ch.to_digit(10))
+                .and_then(|n| menu.numbered(n as usize)),
+            _ => None,
+        };
+        if let Some(action) = picked {
+            self.run_action(action);
+        }
+    }
+
+    /// Opens a file in a tab without switching to it; returns the tab index.
+    fn open_background(&mut self, path: &Path) -> Option<usize> {
+        let doc = Document::open(path).ok()?;
+        let fs = self.renderer.font_system();
+        let mut view = EditorView::new(doc, fs, self.font, self.family.clone());
+        view.set_area(self.layout.editor);
+        self.tabs.push(view);
+        self.mru.push(self.tabs.len() - 1);
+        Some(self.tabs.len() - 1)
+    }
+
+    fn tab_for(&self, path: &Path) -> Option<usize> {
+        let want = path.to_string_lossy().to_lowercase();
+        self.tabs
+            .iter()
+            .position(|t| t.doc.path().is_some_and(|p| p.to_string_lossy().to_lowercase() == want))
+    }
+
+    /// Applies a WorkspaceEdit (rename, quick action) to all files it touches. Files that were
+    /// not open are opened in background tabs and stay unsaved, so everything can be reviewed
+    /// and undone.
+    fn apply_workspace_edit(&mut self, edit: &wyvern_lsp::Value, what: &str) {
+        let (per_file, mut skipped) = lsp::parse_workspace_edit(edit);
+        let (mut files, mut count, mut others) = (0, 0, 0);
+        for (path, edits) in per_file {
+            let Some(i) = self.tab_for(&path).or_else(|| self.open_background(&path)) else {
+                skipped += 1;
+                continue;
+            };
+            let ed = &mut self.tabs[i];
+            let rope = ed.doc.text();
+            let changes: Vec<wyvern_buffer::Change> = edits
+                .iter()
+                .map(|(s, e, text)| wyvern_buffer::Change {
+                    start: wyvern_lsp::from_lsp(rope, s),
+                    end: wyvern_lsp::from_lsp(rope, e),
+                    text: text.clone(),
+                })
+                .collect();
+            count += changes.len();
+            files += 1;
+            if i != self.active {
+                others += 1;
+            }
+            ed.doc.apply_changes(changes);
+            ed.after_edit();
+            let version = ed.doc.version();
+            if let (Some(server), Some(p)) = (&mut self.lsp, self.tabs[i].doc.path()) {
+                server.changed(p, version);
+            }
+        }
+        self.lsp_open_all();
+        let mut msg = if files == 1 && others == 0 {
+            what.to_string()
+        } else {
+            format!("{what}: {count} Stelle(n) in {files} Dateien – Strg+S in jedem Tab speichert")
+        };
+        if skipped > 0 {
+            msg.push_str(&format!(" ({skipped} Teil(e) übersprungen)"));
+        }
+        self.show(msg);
+        self.editor_mut().ensure_cursor_visible();
+    }
+
+    /// F8: jumps to the next problem after the cursor (wraps around).
+    fn next_problem(&mut self) {
+        let ed = self.editor_mut();
+        let head = ed.doc.selection().primary().head;
+        let mut starts: Vec<usize> = ed.diagnostics.iter().filter(|d| d.severity <= 2).map(|d| d.start).collect();
+        starts.sort_unstable();
+        starts.dedup();
+        let next = starts.iter().find(|&&s| s > head).or(starts.first()).copied();
+        match next {
+            Some(pos) => ed.jump_to(pos),
+            None => self.show("Keine Fehler oder Warnungen in dieser Datei"),
+        }
     }
 
     // ----- search field -----
@@ -1295,6 +1544,7 @@ impl State {
                 }
             }
             Palette(prefix) => self.open_palette(prefix),
+            Run(cmd) => self.run(cmd),
             OpenFile => self.pick_file(),
             NewFile => self.new_file(),
             SaveAs => self.save_as(),
@@ -1435,6 +1685,18 @@ impl State {
             Command::Format => {
                 follow_cursor = false;
                 self.request_format();
+            }
+            Command::Rename => {
+                follow_cursor = false;
+                self.start_rename();
+            }
+            Command::QuickActions => {
+                follow_cursor = false;
+                self.request_quick_actions();
+            }
+            Command::NextProblem => {
+                follow_cursor = false;
+                self.next_problem();
             }
             Command::QuickInfo => {
                 follow_cursor = false;
@@ -1712,6 +1974,13 @@ impl State {
             let fs = self.renderer.font_system();
             c.prepare(fs, &self.theme, &self.family);
         }
+        match &mut self.overlay {
+            Overlay::Menu(m) => m.prepare(self.renderer.font_system(), &self.theme, &self.family),
+            Overlay::Rename { prompt, .. } => {
+                prompt.prepare(self.renderer.font_system(), &self.theme, &self.family)
+            }
+            _ => {}
+        }
         let active_path = self.editor().doc.path().map(Path::to_path_buf);
         {
             let theme = &self.theme;
@@ -1791,6 +2060,18 @@ impl State {
         }
         if let Some(t) = &self.tooltip {
             t.draw(theme, self.ui_font, window, scale, &mut overlay, &mut overlay_text);
+        }
+        {
+            let ed = &self.tabs[self.active];
+            let (cx, cy) = ed.screen_pos(ed.doc.selection().primary().head);
+            let below = cy + ed.line_height();
+            match &self.overlay {
+                Overlay::Menu(m) => m.draw(theme, self.ui_font, cx, below, window, scale, &mut overlay, &mut overlay_text),
+                Overlay::Rename { prompt, .. } => {
+                    prompt.draw(theme, self.ui_font, cx, below, window, scale, &mut overlay, &mut overlay_text)
+                }
+                _ => {}
+            }
         }
         if matches!(self.overlay, Overlay::Palette) {
             let top = l.tabs.y + l.tabs.h * 0.5;

@@ -48,6 +48,9 @@ pub enum Command {
     Format,
     /// Strg+K Strg+I: information about the symbol under the cursor.
     QuickInfo,
+    Rename,
+    QuickActions,
+    NextProblem,
     Scroll(isize),
     FontSize(i32),
     FontSizeReset,
@@ -142,7 +145,8 @@ impl Keymap {
                     NotYet("Debuggen kommt in Phase 3")
                 }
                 NamedKey::F12 => GotoDefinition,
-                NamedKey::F2 => NotYet("Umbenennen kommt im nächsten Schritt"),
+                NamedKey::F2 => Rename,
+                NamedKey::F8 => NextProblem,
                 NamedKey::Space if ctrl => TriggerCompletion,
                 _ => return None,
             },
@@ -174,7 +178,7 @@ impl Keymap {
                 ("g", false) => OpenPalette(":"),
                 ("f", _) | ("h", false) => NotYet("Suchen und Ersetzen kommt in Phase 2"),
                 (" ", _) => TriggerCompletion,
-                (".", false) => NotYet("Quick Actions kommen im nächsten Schritt"),
+                (".", false) => QuickActions,
                 _ => return None,
             },
             _ => return None,
