@@ -19,6 +19,11 @@ pub enum Action {
     Run(crate::keymap::Command),
     /// Known, but built in a later phase.
     Later(&'static str),
+    OpenSettings,
+    CheatSheet,
+    /// Switches to a theme by its settings name ("dunkel", "hell") and stores it.
+    SetTheme(&'static str),
+    ToggleTheme,
 }
 
 pub struct Item {
@@ -48,8 +53,8 @@ const ROOT: &[Item] = &[
     item('v', "view …", Group("v")),
     item('a', "ai …", Group("a")),
     item('m', "Markdown-Vorschau", Later("Die Markdown-Vorschau kommt in Phase 3")),
-    item(',', "Einstellungen", Later("Die Einstellungen kommen am Ende von Phase 1")),
-    item('h', "Hilfe: alle Kürzel", Later("Der Spickzettel kommt am Ende von Phase 1; bis dahin: SHORTCUTS.md")),
+    item(',', "Einstellungen", OpenSettings),
+    item('h', "Hilfe: alle Kürzel", CheatSheet),
 ];
 
 const FILE: &[Item] = &[
@@ -113,6 +118,7 @@ const VIEW: &[Item] = &[
     item('i', "Inlay Hints", Later("Inlay Hints kommen in Phase 3")),
     item('w', "Zeilenumbruch", Later("Zeilenumbruch kommt in Phase 2")),
     item('z', "Zen-Modus", Later("Der Zen-Modus kommt in Phase 4")),
+    item('t', "Theme hell/dunkel", ToggleTheme),
 ];
 
 const AI: &[Item] = &[

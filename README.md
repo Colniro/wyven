@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1, vierter Teil.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Noch fehlen in Phase 1: Einstellungen/Themes.
+**Stand: Phase 1 fertig.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Als Nächstes kommt Phase 2: Terminal, Git, Suchen/Ersetzen, Minimap und Sticky Scroll (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -17,6 +17,10 @@ Mit einem Ordner öffnet sich dieser als Projekt, mit einer Datei die Datei samt
 Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 
 ## Was schon geht
+
+- **Einstellungen** in `settings.toml` (`%APPDATA%\Wyvern\settings.toml`, öffnen mit `Alt → ,`): Theme, Schriftart/-größe, Zeilenhöhe, Tab-Breite, Einrückung, Autovervollständigung und Info-Tooltip an/aus, Oberflächenschrift und Explorer-Breite. Die Datei wird beim ersten Start mit allen Optionen und deutschen Erklärungen angelegt. Speichern in Wyvern wendet sie sofort an. Tippfehler bei Optionsnamen werden in der Statusleiste gemeldet, die alten Einstellungen bleiben dann aktiv.
+- **Themes** „Wyvern Dunkel“ und „Wyvern Hell“: umschalten mit `Alt → v → t` oder im Suchfeld `>Theme`. Die Wahl wird in `settings.toml` gespeichert.
+- **Spickzettel** mit allen Kürzeln: `Alt → h`. Er wird aus denselben Listen erzeugt wie Suchfeld und Leader-Menü und ist deshalb immer aktuell.
 
 - **C# mit Roslyn** (derselbe Server wie im C# Dev Kit von VS Code):
   - Fehler und Warnungen als Wellenlinien. Die Meldung erscheint in der Statusleiste, sobald der Cursor auf der Stelle steht, rechts stehen die Zähler `✖ / ⚠`.

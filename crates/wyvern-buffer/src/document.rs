@@ -59,6 +59,8 @@ pub struct Document {
     bom: bool,
     pub tab_width: usize,
     pub indent_unit: String,
+    /// The indentation was taken from the file's content (not a default).
+    indent_detected: bool,
     version: u64,
     saved_version: u64,
     edits: Vec<TextEdit>,
@@ -79,7 +81,9 @@ impl Document {
             LineEnding::Lf
         };
         let normalized = text.replace("\r\n", "\n");
-        let indent_unit = detect_indent(&normalized);
+        let detected = detect_indent(&normalized);
+        let indent_detected = detected.is_some();
+        let indent_unit = detected.unwrap_or_else(|| "    ".into());
         Self {
             rope: Rope::from_str(&normalized),
             selection: Selection::point(0),
@@ -89,6 +93,7 @@ impl Document {
             bom: false,
             tab_width: 4,
             indent_unit,
+            indent_detected,
             version: 0,
             saved_version: 0,
             edits: Vec::new(),
@@ -149,6 +154,10 @@ impl Document {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    pub fn indent_detected(&self) -> bool {
+        self.indent_detected
     }
 
     pub fn line_ending(&self) -> LineEnding {
@@ -841,8 +850,9 @@ fn move_range(rope: &Rope, r: Range, movement: Movement, extend: bool, tab_width
     }
 }
 
-/// Uses tabs if most indented lines start with a tab, otherwise 4 spaces.
-fn detect_indent(text: &str) -> String {
+/// Tabs if most indented lines start with a tab, 4 spaces if most start with spaces, `None`
+/// if the text has no indented lines.
+fn detect_indent(text: &str) -> Option<String> {
     let (mut tabs, mut spaces) = (0, 0);
     for line in text.lines().take(1000) {
         if line.starts_with('\t') {
@@ -851,7 +861,13 @@ fn detect_indent(text: &str) -> String {
             spaces += 1;
         }
     }
-    if tabs > spaces { "\t".into() } else { "    ".into() }
+    if tabs == 0 && spaces == 0 {
+        None
+    } else if tabs > spaces {
+        Some("\t".into())
+    } else {
+        Some("    ".into())
+    }
 }
 
 #[cfg(test)]

@@ -101,7 +101,7 @@ Grundprinzipien:
 **Phase 0 – Grundgerüst**
 Cargo-Workspace, Fenster, wgpu-Rendering, Text auf dem Bildschirm, Benchmarks für RAM und Latenz.
 
-**Phase 1 – MVP (täglich nutzbar)**
+**Phase 1 – MVP (täglich nutzbar)** ✅ fertig
 - Textpuffer mit Undo/Redo und Multi-Cursor
 - Tree-sitter-Highlighting für C#, JS/TS, HTML, CSS, JSON, Markdown, TOML
 - Tabs, Split-Ansichten

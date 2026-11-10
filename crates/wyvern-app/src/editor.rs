@@ -63,6 +63,8 @@ pub struct EditorView {
     text_buf: Buffer,
     gutter_buf: Buffer,
     cache: Option<CacheKey>,
+    /// Tab title for documents without a file (e.g. the shortcut cheat sheet).
+    title: Option<String>,
 }
 
 impl EditorView {
@@ -91,7 +93,30 @@ impl EditorView {
             text_buf,
             gutter_buf,
             cache: None,
+            title: None,
         }
+    }
+
+    /// A document without a file, with its own tab title and highlighting chosen by
+    /// `language_hint` (a file name such as "x.md").
+    pub fn virtual_doc(
+        title: &str,
+        text: &str,
+        language_hint: &str,
+        fs: &mut FontSystem,
+        font: FontMetrics,
+        family: String,
+    ) -> Self {
+        let doc = Document::from_str(text);
+        let mut view = Self::new(doc, fs, font, family);
+        view.syntax = language_for_path(Path::new(language_hint)).map(|cfg| Syntax::new(cfg, view.doc.text()));
+        view.title = Some(title.to_string());
+        view
+    }
+
+    /// Forces a re-render (theme or settings changed).
+    pub fn invalidate(&mut self) {
+        self.cache = None;
     }
 
     pub fn language_name(&self) -> &'static str {
@@ -106,6 +131,9 @@ impl EditorView {
     }
 
     pub fn file_name(&self) -> String {
+        if let Some(t) = &self.title {
+            return t.clone();
+        }
         self.doc
             .path()
             .and_then(Path::file_name)

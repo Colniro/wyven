@@ -56,7 +56,7 @@ pub struct Sources<'a> {
     pub has_symbols: bool,
 }
 
-fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
+pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
     use leader::Action as L;
     use Cmd::{Key as K, Leader as Ld};
     use Command as C;
@@ -72,6 +72,11 @@ fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Projekt: Zuletzt geöffnet", "Alt p r", Ld(L::RecentProjects)),
         ("Projekt: Explorer fokussieren", "Alt p e", Ld(L::FocusExplorer)),
         ("Ansicht: Explorer ein/aus", "Alt e", Ld(L::ToggleExplorer)),
+        ("Theme: Wyvern Dunkel", "", Ld(L::SetTheme("dunkel"))),
+        ("Theme: Wyvern Hell", "", Ld(L::SetTheme("hell"))),
+        ("Theme: hell/dunkel umschalten", "Alt v t", Ld(L::ToggleTheme)),
+        ("Einstellungen öffnen (settings.toml)", "Alt ,", Ld(L::OpenSettings)),
+        ("Hilfe: Alle Tastenkürzel", "Alt h", Ld(L::CheatSheet)),
         ("Ansicht: Schrift größer", "Strg++", K(C::FontSize(1))),
         ("Ansicht: Schrift kleiner", "Strg+-", K(C::FontSize(-1))),
         ("Ansicht: Schriftgröße zurücksetzen", "Strg+0", K(C::FontSizeReset)),

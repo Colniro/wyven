@@ -11,6 +11,7 @@ mod completion;
 mod config;
 mod editor;
 mod explorer;
+mod help;
 mod index;
 mod keymap;
 mod leader;
@@ -19,6 +20,7 @@ mod menu;
 mod metrics;
 mod palette;
 mod popup;
+mod settings;
 mod theme;
 
 use std::path::{Path, PathBuf};
@@ -47,10 +49,6 @@ use palette::Palette;
 use popup::Popup;
 use theme::Theme;
 
-const DEFAULT_FONT_SIZE: f32 = 14.0;
-/// Panels (explorer, tabs, status bar) use a slightly smaller font than the code.
-const UI_FONT_SCALE: f32 = 0.93;
-const EXPLORER_CELLS: f32 = 30.0;
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const MESSAGE_TIME: Duration = Duration::from_secs(4);
@@ -170,6 +168,9 @@ struct State {
     /// Where and since when the mouse rests (for hover info).
     hover_rest: Option<(Instant, f32, f32)>,
 
+    settings: settings::Settings,
+    settings_mtime: Option<std::time::SystemTime>,
+
     latency: InputLatency,
     started: Instant,
     first_frame: Option<Duration>,
@@ -253,6 +254,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ScaleFactorChanged { .. } => state.apply_font(),
             WindowEvent::Focused(true) => {
+                if settings::modified() != state.settings_mtime {
+                    state.reload_settings();
+                }
                 if let Some(ex) = &mut state.explorer {
                     ex.refresh();
                     state.index.rebuild(ex.root());
@@ -332,11 +336,27 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-fn font_metrics(fs: &mut FontSystem, family: &str, size: f32) -> FontMetrics {
-    let line_h = (size * 1.5).round();
+fn font_metrics(fs: &mut FontSystem, family: &str, size: f32, line_height: f32) -> FontMetrics {
+    let line_h = (size * line_height).round();
     let attrs = Attrs::new().family(Family::Name(family));
     let cell_w = measure_cell_width(fs, Metrics::new(size, line_h), &attrs);
     FontMetrics { size, line_h, cell_w }
+}
+
+/// The font from the settings if it is installed, otherwise the best installed monospace font.
+fn choose_family(fs: &FontSystem, wanted: &str) -> String {
+    let wanted = wanted.trim();
+    if !wanted.is_empty() {
+        let installed = fs
+            .db()
+            .faces()
+            .any(|f| f.families.iter().any(|(name, _)| name.eq_ignore_ascii_case(wanted)));
+        if installed {
+            return wanted.to_string();
+        }
+        log::warn!("font {wanted} is not installed");
+    }
+    pick_monospace_family(fs).unwrap_or_else(|| "monospace".into())
 }
 
 fn file_name(path: &Path) -> String {
@@ -352,11 +372,16 @@ impl State {
         proxy: EventLoopProxy<UserEvent>,
     ) -> Self {
         let scale = window.scale_factor() as f32;
+        let (settings, settings_error) = match settings::load() {
+            Ok(s) => (s, None),
+            Err(e) => (settings::Settings::default(), Some(e)),
+        };
         let fs = renderer.font_system();
-        let family = pick_monospace_family(fs).unwrap_or_else(|| "monospace".into());
+        let family = choose_family(fs, &settings.font.family);
         log::info!("font: {family}");
-        let font = font_metrics(fs, &family, DEFAULT_FONT_SIZE * scale);
-        let ui_font = font_metrics(fs, &family, DEFAULT_FONT_SIZE * scale * UI_FONT_SCALE);
+        let (size, lh) = (settings.font.size, settings.font.line_height);
+        let font = font_metrics(fs, &family, size * scale, lh);
+        let ui_font = font_metrics(fs, &family, size * scale * settings.ui.font_scale, lh);
         let editor = EditorView::new(Document::default(), fs, font, family.clone());
         let ui_metrics = Metrics::new(ui_font.size, ui_font.line_h);
         let mut line_buffer = || {
@@ -371,9 +396,9 @@ impl State {
         let mut state = Self {
             window,
             renderer,
-            theme: Theme::dark(),
+            theme: Theme::by_name(&settings.theme).unwrap_or_else(Theme::dark),
             family,
-            font_pt: DEFAULT_FONT_SIZE,
+            font_pt: settings.font.size,
             font,
             ui_font,
             layout: Layout::default(),
@@ -401,6 +426,8 @@ impl State {
             status_right,
             message: None,
             armed: None,
+            settings,
+            settings_mtime: settings::modified(),
             proxy,
             lsp: None,
             lsp_failed: false,
@@ -414,6 +441,11 @@ impl State {
             title: String::new(),
         };
         state.relayout();
+        if let Some(e) = settings_error {
+            state.show(format!("settings.toml: {e}"));
+        }
+        let first = std::mem::take(&mut state.tabs);
+        state.tabs = first.into_iter().map(|mut t| { state.configure_view(&mut t); t }).collect();
         state
     }
 
@@ -433,7 +465,7 @@ impl State {
         let status_h = (self.ui_font.line_h * 1.25).round();
         let tabs_h = (self.ui_font.line_h * 1.6).round();
         let explorer_w = if self.explorer.is_some() && self.explorer_visible {
-            (EXPLORER_CELLS * self.ui_font.cell_w).min(w * 0.4).round()
+            (self.settings.ui.explorer_width * self.ui_font.cell_w).min(w * 0.4).round()
         } else {
             0.0
         };
@@ -459,8 +491,9 @@ impl State {
         let scale = self.renderer.scale_factor();
         let family = self.family.clone();
         let fs = self.renderer.font_system();
-        self.font = font_metrics(fs, &family, self.font_pt * scale);
-        self.ui_font = font_metrics(fs, &family, self.font_pt * scale * UI_FONT_SCALE);
+        let lh = self.settings.font.line_height;
+        self.font = font_metrics(fs, &family, self.font_pt * scale, lh);
+        self.ui_font = font_metrics(fs, &family, self.font_pt * scale * self.settings.ui.font_scale, lh);
         let (font, ui) = (self.font, self.ui_font);
         for t in &mut self.tabs {
             t.set_font(self.renderer.font_system(), font);
@@ -536,6 +569,7 @@ impl State {
             let fs = self.renderer.font_system();
             let mut view = EditorView::new(doc, fs, self.font, self.family.clone());
             view.set_area(self.layout.editor);
+            self.configure_view(&mut view);
             if self.tabs[self.active].is_untouched() {
                 self.tabs[self.active] = view;
                 self.activate(self.active);
@@ -569,6 +603,7 @@ impl State {
         let fs = self.renderer.font_system();
         let mut view = EditorView::new(Document::default(), fs, self.font, self.family.clone());
         view.set_area(self.layout.editor);
+        self.configure_view(&mut view);
         self.tabs.push(view);
         self.mru.push(self.tabs.len() - 1);
         self.activate(self.tabs.len() - 1);
@@ -601,6 +636,7 @@ impl State {
             let fs = self.renderer.font_system();
             let mut view = EditorView::new(Document::default(), fs, self.font, self.family.clone());
             view.set_area(self.layout.editor);
+            self.configure_view(&mut view);
             self.tabs.push(view);
             self.mru = vec![0];
         }
@@ -662,7 +698,11 @@ impl State {
                 if let (Some(server), Some(path)) = (&mut self.lsp, ed.doc.path()) {
                     server.saved(path);
                 }
+                let is_settings = ed.doc.path().is_some() && ed.doc.path() == settings::path().as_deref();
                 self.show(format!("{name} gespeichert"));
+                if is_settings {
+                    self.reload_settings();
+                }
             }
             Err(e) => self.show(format!("Speichern fehlgeschlagen: {e}")),
         }
@@ -959,11 +999,11 @@ impl State {
         }
         let trigger = match (trigger, typed) {
             (Some(t), _) => Some(t),
-            (None, Some(".")) => Some(Some('.')),
+            (None, Some(".")) if self.settings.editor.auto_complete => Some(Some('.')),
             (None, Some(t)) => {
                 let mut chars = t.chars();
                 let ident = matches!((chars.next(), chars.next()), (Some(ch), None) if ch.is_alphabetic() || ch == '_');
-                (ident && ed.word_start() + 1 == head).then_some(None)
+                (ident && ed.word_start() + 1 == head && self.settings.editor.auto_complete).then_some(None)
             }
             _ => None,
         };
@@ -1155,7 +1195,11 @@ impl State {
             let due = since + HOVER_DELAY;
             if now >= due {
                 self.hover_rest = None;
-                if self.tooltip.is_none() && self.editor().contains(x, y) && matches!(self.overlay, Overlay::None) {
+                if self.settings.editor.hover
+                    && self.tooltip.is_none()
+                    && self.editor().contains(x, y)
+                    && matches!(self.overlay, Overlay::None)
+                {
                     let pos = self.editor().hit_test(x, y);
                     let rope = self.editor().doc.text();
                     let on_word = pos < rope.len_chars() && {
@@ -1334,6 +1378,7 @@ impl State {
         let fs = self.renderer.font_system();
         let mut view = EditorView::new(doc, fs, self.font, self.family.clone());
         view.set_area(self.layout.editor);
+        self.configure_view(&mut view);
         self.tabs.push(view);
         self.mru.push(self.tabs.len() - 1);
         Some(self.tabs.len() - 1)
@@ -1404,6 +1449,78 @@ impl State {
             Some(pos) => ed.jump_to(pos),
             None => self.show("Keine Fehler oder Warnungen in dieser Datei"),
         }
+    }
+
+    // ----- settings and themes -----
+
+    /// Applies tab width and default indentation from the settings to a document view.
+    fn configure_view(&self, view: &mut EditorView) {
+        view.doc.tab_width = self.settings.editor.tab_width;
+        if !view.doc.indent_detected() {
+            view.doc.indent_unit = self.settings.indent_unit();
+        }
+        view.invalidate();
+    }
+
+    /// Re-reads settings.toml and applies what changed. A broken file keeps the old settings.
+    fn reload_settings(&mut self) {
+        self.settings_mtime = settings::modified();
+        let new = match settings::load() {
+            Ok(s) => s,
+            Err(e) => {
+                self.show(format!("settings.toml: {e}"));
+                return;
+            }
+        };
+        if new == self.settings {
+            return;
+        }
+        let font_changed = new.font != self.settings.font || new.ui != self.settings.ui;
+        self.settings = new;
+        if let Some(theme) = Theme::by_name(&self.settings.theme) {
+            self.theme = theme;
+        } else {
+            self.show(format!("Unbekanntes Theme „{}“ (dunkel oder hell)", self.settings.theme));
+        }
+        if font_changed {
+            let fs = self.renderer.font_system();
+            self.family = choose_family(fs, &self.settings.font.family);
+            self.font_pt = self.settings.font.size;
+            self.apply_font();
+        }
+        let mut tabs = std::mem::take(&mut self.tabs);
+        for t in &mut tabs {
+            self.configure_view(t);
+        }
+        self.tabs = tabs;
+        if let Some(ex) = &mut self.explorer {
+            ex.invalidate();
+        }
+        self.relayout();
+        if self.message.is_none() {
+            self.show("Einstellungen übernommen");
+        }
+    }
+
+    /// Switches the theme now and writes it to settings.toml.
+    fn set_theme(&mut self, name: &str) {
+        let Some(theme) = Theme::by_name(name) else { return };
+        let display = theme.display_name();
+        self.theme = theme;
+        self.settings.theme = name.to_string();
+        if let Err(e) = settings::store_theme(name) {
+            self.show(format!("Theme nicht gespeichert: {e}"));
+        } else {
+            self.settings_mtime = settings::modified();
+            self.show(format!("Theme: {display}"));
+        }
+        for t in &mut self.tabs {
+            t.invalidate();
+        }
+        if let Some(ex) = &mut self.explorer {
+            ex.invalidate();
+        }
+        self.window.request_redraw();
     }
 
     // ----- search field -----
@@ -1550,6 +1667,32 @@ impl State {
             SaveAs => self.save_as(),
             CloseAll => self.close_all(),
             Later(msg) => self.show(msg),
+            OpenSettings => {
+                if let Some(path) = settings::ensure_file() {
+                    self.open_path(&path);
+                }
+            }
+            CheatSheet => {
+                let fs = self.renderer.font_system();
+                let mut view = EditorView::virtual_doc(
+                    "Tastenkürzel",
+                    &help::cheat_sheet(),
+                    "help.md",
+                    fs,
+                    self.font,
+                    self.family.clone(),
+                );
+                view.set_area(self.layout.editor);
+                self.tabs.push(view);
+                self.mru.push(self.tabs.len() - 1);
+                self.activate(self.tabs.len() - 1);
+                self.focus = Focus::Editor;
+            }
+            SetTheme(name) => self.set_theme(name),
+            ToggleTheme => {
+                let next = if self.theme.name == "dunkel" { "hell" } else { "dunkel" };
+                self.set_theme(next);
+            }
         }
     }
 
@@ -1668,7 +1811,7 @@ impl State {
                 follow_cursor = false;
             }
             Command::FontSizeReset => {
-                self.font_pt = DEFAULT_FONT_SIZE;
+                self.font_pt = self.settings.font.size;
                 self.apply_font();
                 follow_cursor = false;
             }
