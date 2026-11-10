@@ -9,6 +9,8 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use wyvern_buffer::{CommentMode, Direction, Movement};
 
+use crate::editor::FoldCmd;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Move(Movement, bool),
@@ -60,18 +62,21 @@ pub enum Command {
     Scroll(isize),
     FontSize(i32),
     FontSizeReset,
+    /// Ctrl+M chords: code folding.
+    Fold(FoldCmd),
     /// Recognized but not built yet; the message says which phase brings it.
     NotYet(&'static str),
 }
 
-/// Keeps state between key presses: `Strg+K` chords.
+/// Keeps state between key presses: `Ctrl+K` and `Ctrl+M` chords.
 #[derive(Default)]
 pub struct Keymap {
-    chord: bool,
+    /// First key of a pending chord ('k' or 'm').
+    chord: Option<char>,
 }
 
 impl Keymap {
-    pub fn chord_pending(&self) -> bool {
+    pub fn chord_pending(&self) -> Option<char> {
         self.chord
     }
 
@@ -98,14 +103,17 @@ impl Keymap {
             return None;
         }
 
-        if self.chord {
-            self.chord = false;
+        if let Some(first) = self.chord.take() {
             if let Key::Character(c) = &key {
-                return match (c.as_str(), ctrl) {
-                    ("c", _) => Some(Command::Comment(CommentMode::Add)),
-                    ("u", _) => Some(Command::Comment(CommentMode::Remove)),
-                    ("d", _) => Some(Command::Format),
-                    ("i", _) => Some(Command::QuickInfo),
+                return match (first, c.as_str()) {
+                    ('k', "c") => Some(Command::Comment(CommentMode::Add)),
+                    ('k', "u") => Some(Command::Comment(CommentMode::Remove)),
+                    ('k', "d") => Some(Command::Format),
+                    ('k', "i") => Some(Command::QuickInfo),
+                    ('m', "m") => Some(Command::Fold(FoldCmd::Toggle)),
+                    ('m', "l") => Some(Command::Fold(FoldCmd::ToggleAll)),
+                    ('m', "o") => Some(Command::Fold(FoldCmd::Definitions)),
+                    ('m', "p") => Some(Command::Fold(FoldCmd::ExpandAll)),
                     _ => None,
                 };
             }
@@ -177,7 +185,11 @@ impl Keymap {
                 ("-", false) => FontSize(-1),
                 ("0", false) => FontSizeReset,
                 ("k", false) => {
-                    self.chord = true;
+                    self.chord = Some('k');
+                    return None;
+                }
+                ("m", false) => {
+                    self.chord = Some('m');
                     return None;
                 }
                 ("q", false) => OpenPalette(""),

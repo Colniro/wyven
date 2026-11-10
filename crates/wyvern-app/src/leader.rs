@@ -53,6 +53,7 @@ const fn item(key: char, label: &'static str, action: Action) -> Item {
     Item { key, label, action }
 }
 
+use crate::editor::FoldCmd;
 use crate::keymap::Command;
 use Action::*;
 
@@ -136,6 +137,10 @@ const VIEW: &[Item] = &[
     item('w', "word wrap", Later("Word wrap comes in phase 2")),
     item('z', "zen mode", Later("Zen mode comes in phase 4")),
     item('t', "toggle light/dark theme", ToggleTheme),
+    item('f', "fold / unfold at cursor", Run(Command::Fold(FoldCmd::Toggle))),
+    item('a', "fold all / unfold all", Run(Command::Fold(FoldCmd::ToggleAll))),
+    item('d', "fold to definitions", Run(Command::Fold(FoldCmd::Definitions))),
+    item('e', "expand all folds", Run(Command::Fold(FoldCmd::ExpandAll))),
 ];
 
 const AI: &[Item] = &[

@@ -54,6 +54,10 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 | `Strg+K, Strg+U` | Kommentar entfernen (wie VS) |
 | `Strg+#` | Kommentar umschalten (QWERTZ, eine Hand) *(Vorschlag)* |
 | `Strg+K, Strg+D` | Dokument formatieren (wie VS) |
+| `Strg+M, Strg+M` | Block am Cursor falten/öffnen (wie VS) |
+| `Strg+M, Strg+L` | Alles falten / alles öffnen (wie VS) |
+| `Strg+M, Strg+O` | Auf Definitionen falten (wie VS) |
+| `Strg+M, Strg+P` | Alles öffnen (wie VS) |
 | `Strg+Leertaste` | Autovervollständigung öffnen *(Vorschlag)* |
 | `Strg+.` | Quick Actions: Fixes, Usings, Refactorings (wie VS) |
 | `F2` | Umbenennen *(Vorschlag; VS nutzt `Strg+R, Strg+R`)* |
@@ -99,7 +103,7 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 | `f` | **f**ile | `n` new file · `o` open file · `s` save as · `r` rename · `c` close all |
 | `p` | **p**roject | `o` Ordner öffnen · `r` zuletzt geöffnet (Projekt-Wechsler) · `a` Ordner zum Workspace hinzufügen |
 | `w` | **w**indow | `v` rechts teilen · `h` unten teilen · `←↑→↓` Fokus wechseln · `c` Teilung schließen |
-| `v` | **v**iew | `m` Minimap (Blöcke / Leiste / aus) · `s` Sticky Scroll an/aus · `i` Inlay Hints · `w` Zeilenumbruch · `z` Zen-Modus |
+| `v` | **v**iew | `m` Minimap (Blöcke / Leiste / aus) · `s` Sticky Scroll an/aus · `i` Inlay Hints · `w` Zeilenumbruch · `z` Zen-Modus · `f` Faltung am Cursor · `a` alles falten/öffnen · `d` auf Definitionen falten · `e` alles öffnen |
 | `a` | **a**i | `t` Vorschläge an/aus · `m` Modell wechseln (Haiku/Sonnet) · `k` API-Key setzen · `c` Claude Code im Terminal öffnen |
 | `m` | **m**arkdown | Vorschau ein/aus |
 | `,` | Einstellungen | Einstellungsseite öffnen |

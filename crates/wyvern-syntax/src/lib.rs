@@ -139,6 +139,48 @@ pub struct Symbol {
     pub end_line: usize,
 }
 
+fn line_text(rope: &Rope, line: usize) -> String {
+    rope.line(line).to_string()
+}
+
+/// Fold range of one node, if it is a block.
+fn fold_of(node: Node, rope: &Rope) -> Option<(usize, usize)> {
+    let (sr, er) = (node.start_position().row, node.end_position().row);
+    if node.kind() == "element" {
+        return Some((sr, er));
+    }
+    let n = node.child_count();
+    if n < 2 {
+        return None;
+    }
+    let first = node.child(0)?;
+    let last = node.child(n - 1)?;
+    let opens = matches!(first.kind(), "{" | "[");
+    let closes = matches!(last.kind(), "}" | "]");
+    if !opens || !closes {
+        return None;
+    }
+    // `{` alone on its line: the fold starts at the previous non-blank line (the signature).
+    let brace_line = line_text(rope, sr);
+    let mut start = sr;
+    if brace_line.trim_start().starts_with(first.kind()) && brace_line.trim().len() == 1 {
+        let mut l = sr;
+        while l > 0 {
+            l -= 1;
+            if !line_text(rope, l).trim().is_empty() {
+                start = l;
+                break;
+            }
+        }
+    }
+    // More code after the closing brace (`} else {`, `});` is fine): keep that line visible.
+    let end_line = line_text(rope, er);
+    let after: String = end_line.get(node.end_position().column..).unwrap_or("").trim().into();
+    let only_punct = after.chars().all(|c| matches!(c, ';' | ',' | ')' | ']' | '}'));
+    let end = if only_punct { er } else { er.saturating_sub(1) };
+    Some((start, end))
+}
+
 fn kind_label(kind: &str) -> &'static str {
     match kind {
         "class" => "class",
@@ -382,6 +424,40 @@ impl Syntax {
         self.reparse(rope);
     }
 
+    /// Foldable blocks: (line that stays visible, last line to hide), sorted by start.
+    /// Brace blocks fold from the line before a lone `{` (Allman style) and hide their `}`
+    /// line unless more code follows it (`} else {`). HTML elements fold as a whole.
+    pub fn fold_ranges(&self, rope: &Rope) -> Vec<(usize, usize)> {
+        let Some(tree) = &self.tree else { return Vec::new() };
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        let mut cursor = tree.walk();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            let (sr, er) = (node.start_position().row, node.end_position().row);
+            // A node on one line has no multi-line children either.
+            if er <= sr {
+                continue;
+            }
+            if let Some(r) = fold_of(node, rope)
+                && r.1 > r.0
+            {
+                out.push(r);
+            }
+            stack.extend(node.children(&mut cursor));
+        }
+        out.sort_unstable();
+        // Same first line (e.g. `foo({` + `{`): keep the bigger block.
+        out.dedup_by(|b, a| {
+            if a.0 == b.0 {
+                a.1 = a.1.max(b.1);
+                true
+            } else {
+                false
+            }
+        });
+        out
+    }
+
     /// All definitions in the file, in document order.
     pub fn symbols(&self, rope: &Rope) -> Vec<Symbol> {
         let (Some(tree), Some(query)) = (&self.tree, &self.config.tags) else {
@@ -539,6 +615,36 @@ enum E { One }
         ];
         let expect: Vec<(String, &str)> = expect.iter().map(|(n, k)| (n.to_string(), *k)).collect();
         assert_eq!(found, expect);
+    }
+
+    #[test]
+    fn fold_ranges_cover_blocks_in_both_brace_styles() {
+        let config = language_for_path(Path::new("a.cs")).unwrap();
+        let src = "namespace N
+{
+    class A
+    {
+        void M()
+        {
+            if (x) {
+                y();
+            } else {
+                z();
+            }
+        }
+    }
+}
+";
+        let rope = Rope::from_str(src);
+        let syntax = Syntax::new(config, &rope);
+        let folds = syntax.fold_ranges(&rope);
+        // namespace (0..13), class (2..12), method (4..11), if-block keeps the `} else {` line,
+        // else-block hides its `}` line.
+        assert!(folds.contains(&(0, 13)), "{folds:?}");
+        assert!(folds.contains(&(2, 12)), "{folds:?}");
+        assert!(folds.contains(&(4, 11)), "{folds:?}");
+        assert!(folds.contains(&(6, 7)), "{folds:?}");
+        assert!(folds.contains(&(8, 10)), "{folds:?}");
     }
 
     #[test]

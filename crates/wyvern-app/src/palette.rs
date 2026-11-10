@@ -59,6 +59,7 @@ pub struct Sources<'a> {
 pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
     use leader::Action as L;
     use leader::GitCmd as G;
+    use crate::editor::FoldCmd;
     use Cmd::{Key as K, Leader as Ld};
     use Command as C;
     vec![
@@ -76,6 +77,10 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("View: Toggle Terminal", "Alt t", Ld(L::ToggleTerminal)),
         ("View: Minimap Blocks / Bar / Off", "Alt v m", Ld(L::CycleMinimap)),
         ("View: Toggle Sticky Scroll", "Alt v s", Ld(L::ToggleStickyScroll)),
+        ("Fold: Toggle Fold at Cursor", "Ctrl+M Ctrl+M", K(C::Fold(FoldCmd::Toggle))),
+        ("Fold: Fold All / Unfold All", "Ctrl+M Ctrl+L", K(C::Fold(FoldCmd::ToggleAll))),
+        ("Fold: Fold to Definitions", "Ctrl+M Ctrl+O", K(C::Fold(FoldCmd::Definitions))),
+        ("Fold: Expand All", "Ctrl+M Ctrl+P", K(C::Fold(FoldCmd::ExpandAll))),
         ("Git: Show Panel", "Alt g g", Ld(L::Git(G::Panel))),
         ("Git: Commit All", "Alt g c", Ld(L::Git(G::Commit))),
         ("Git: Sync (Pull + Push)", "Alt g s", Ld(L::Git(G::Sync))),

@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 fertig, Phase 2 läuft (Terminal, Suchen/Ersetzen, Git, Minimap und Sticky Scroll fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Noch offen in Phase 2: Code-Faltung (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1 und Phase 2 fertig.** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Als Nächstes kommt Phase 3 (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -46,6 +46,11 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - Klick springt an die Stelle, Ziehen des Kastens scrollt. Bei langen Dateien scrollt die Minimap mit.
   - `Alt → v → m` schaltet um: Blöcke → schmale Markierungsleiste → aus. Die Wahl steht in `settings.toml` unter `[editor] minimap`.
 - **Sticky Scroll**: Beim Scrollen bleiben die Kopfzeilen von Namespace, Klasse/Struct/`impl` und Methode/Property oben stehen (höchstens 5, nie mehr als ein Drittel des Editors). Klick auf eine Kopfzeile springt zur Deklaration. `Alt → v → s` schaltet es an/aus (`[editor] sticky_scroll` in `settings.toml`).
+- **Code-Faltung** wie in Visual Studio: `Ctrl+M Ctrl+M` faltet den Block am Cursor oder öffnet ihn, `Ctrl+M Ctrl+L` faltet alles bzw. öffnet alles, `Ctrl+M Ctrl+O` faltet alle Methoden-, Konstruktor- und Property-Körper, `Ctrl+M Ctrl+P` öffnet alles (auch über `Alt → v → f/a/d/e`).
+  - Faltbar sind alle mehrzeiligen Blöcke aus dem Syntaxbaum (Typen, Methoden, `if`/`for`/`switch`, Objekte, Arrays, HTML-Elemente), `#region` … `#endregion` (auch als `// #region`) und Gruppen von `using`/`import`/`use`-Zeilen.
+  - Steht `{` allein in der Zeile (C#-Stil), bleibt die Signatur sichtbar. Hinter einer gefalteten Zeile steht ein `…`.
+  - Fährt die Maus über den Zeilenrand, erscheinen `▾`-Pfeile; gefaltete Stellen zeigen immer `▸`. Klick auf den Pfeil oder das `…` faltet bzw. öffnet.
+  - Der Cursor springt mit den Pfeiltasten über gefaltete Blöcke. Springen Suche, „Gehe zu“ oder Gehe-zu-Definition hinein, öffnet sich der Block. Änderungen darüber verschieben die Faltung, Änderungen darin öffnen sie.
 - **Startoptionen**: `wyvern <Datei> --goto=120` springt zu Zeile 120; `--terminal`, `--git` und `--diff` öffnen gleich Terminal, Git-Panel bzw. Diff der Datei.
 - **Oberfläche auf Englisch**: Leader-Menü, Befehle im Suchfeld (`File: Save`, `Git: Commit All` …), Spickzettel, Panels, Statusmeldungen und die Vorlage der `settings.toml`. Tasten heißen `Ctrl`, `PgUp` usw. In `settings.toml` gelten `theme = "dark"`/`"light"` und `indent = "spaces"`/`"tabs"`, die alten Werte `dunkel`/`hell`/`leerzeichen` funktionieren weiter.
 - **Spickzettel** mit allen Kürzeln: `Alt → h`. Er wird aus denselben Listen erzeugt wie Suchfeld und Leader-Menü und ist deshalb immer aktuell.

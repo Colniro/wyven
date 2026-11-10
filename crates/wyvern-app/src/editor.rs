@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use wyvern_buffer::{char_to_display_col, display_col_to_char, line_len_chars, Document};
+use wyvern_buffer::{char_to_display_col, display_col_to_char, line_len_chars, Document, Rope, TextEdit};
 use wyvern_render::{Attrs, Buffer, Family, FontSystem, Metrics, Quad, Rgba, Shaping, TextBlock, Wrap};
 use wyvern_syntax::{flatten, language_for_path, Syntax};
 
@@ -36,6 +36,8 @@ struct CacheKey {
     current_line: usize,
     font: (u32, u32),
     gutter_cells: usize,
+    fold_gen: u64,
+    gutter_hover: bool,
 }
 
 /// How the minimap on the right is shown (`[editor] minimap` in settings.toml, Alt → v → m).
@@ -120,10 +122,11 @@ pub struct Scope {
     pub end: usize,
 }
 
-/// The scope headers to show for `top` (first visible line): outer first, at most `max`.
-/// A header sticks once its own line has scrolled under the sticky area, and only while the
-/// line right below the sticky area is still inside the scope.
-pub fn sticky_for(scopes: &[Scope], top: usize, max: usize) -> Vec<Scope> {
+/// The scope headers to show over `lines` (the document lines on screen, top first; folded
+/// lines are skipped): outer first, at most `max`. A header sticks once its own line has
+/// scrolled under the sticky area, and only while the line right below the sticky area is
+/// still inside the scope.
+pub fn sticky_for(scopes: &[Scope], lines: &[usize], max: usize) -> Vec<Scope> {
     let chain = |probe: usize| -> Vec<Scope> {
         let mut c: Vec<Scope> = scopes.iter().copied().filter(|s| s.line < probe && probe <= s.end).collect();
         c.sort_by_key(|s| (s.line, std::cmp::Reverse(s.end)));
@@ -132,7 +135,8 @@ pub fn sticky_for(scopes: &[Scope], top: usize, max: usize) -> Vec<Scope> {
     // The largest row count n whose first code line (top + n) still lies in n scopes, where
     // header row i only covers a line after its own (so a header never hides itself).
     for n in (1..=max).rev() {
-        let c = chain(top + n);
+        let Some(&probe) = lines.get(n) else { continue };
+        let c = chain(probe);
         if c.len() < n {
             continue;
         }
@@ -140,12 +144,69 @@ pub fn sticky_for(scopes: &[Scope], top: usize, max: usize) -> Vec<Scope> {
         // scope that ends right below the headers is left out).
         let skip = c.len().saturating_sub(max);
         let pick: Vec<Scope> = c.into_iter().skip(skip).take(n).collect();
-        if pick.iter().enumerate().all(|(i, s)| s.line < top + i) {
+        if pick.iter().enumerate().all(|(i, s)| s.line < lines[i]) {
             return pick;
         }
     }
     Vec::new()
 }
+
+/// Folds found in the text itself: `#region` … `#endregion` (also as `// #region`) and runs
+/// of using/import/use lines. Same format as syntax folds: (line that stays, last hidden line).
+fn text_folds(rope: &Rope) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut regions: Vec<usize> = Vec::new();
+    let mut imports: Option<(usize, usize)> = None;
+    for (i, line) in rope.lines().enumerate() {
+        let line = line.to_string();
+        let t = line.trim();
+        let marker = t.trim_start_matches('/').trim_start();
+        if marker.starts_with("#region") {
+            regions.push(i);
+        } else if marker.starts_with("#endregion")
+            && let Some(start) = regions.pop()
+        {
+            out.push((start, i));
+        }
+        let is_import = (t.starts_with("using ") && t.ends_with(';') && !t.starts_with("using var ") && !t.starts_with("using ("))
+            || t.starts_with("import ")
+            || t.starts_with("use ")
+            || t.starts_with("pub use ");
+        match (&mut imports, is_import) {
+            (Some(r), true) => r.1 = i,
+            (None, true) => imports = Some((i, i)),
+            (Some(r), false) => {
+                if r.1 > r.0 {
+                    out.push(*r);
+                }
+                imports = None;
+            }
+            (None, false) => {}
+        }
+    }
+    if let Some(r) = imports
+        && r.1 > r.0
+    {
+        out.push(r);
+    }
+    out
+}
+
+/// Ctrl+M chords (like Visual Studio).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldCmd {
+    /// Ctrl+M Ctrl+M: fold or unfold the block at the cursor.
+    Toggle,
+    /// Ctrl+M Ctrl+L: fold everything, or unfold everything if something is folded.
+    ToggleAll,
+    /// Ctrl+M Ctrl+O: fold the bodies of methods, constructors, properties and functions.
+    Definitions,
+    /// Ctrl+M Ctrl+P: unfold everything.
+    ExpandAll,
+}
+
+/// Member kinds whose bodies Ctrl+M Ctrl+O folds.
+const MEMBER_KINDS: &[&str] = &["method", "constructor", "property", "function"];
 
 /// A problem reported by the language server, as a char range in the current text.
 #[derive(Debug, Clone)]
@@ -204,6 +265,18 @@ pub struct EditorView {
     sticky_key: Option<(u64, Vec<Scope>, &'static str, usize)>,
     sticky_text: Buffer,
     sticky_gutter: Buffer,
+    /// Foldable blocks (line that stays, last hidden line), sorted by start; computed lazily.
+    fold_ranges: Vec<(usize, usize)>,
+    fold_ranges_version: Option<u64>,
+    /// Folded blocks, sorted by start.
+    folded: Vec<(usize, usize)>,
+    /// Hidden lines as merged inclusive ranges, sorted.
+    hidden: Vec<(usize, usize)>,
+    /// Bumped whenever folds change (part of the render cache key).
+    fold_gen: u64,
+    /// The mouse is over the gutter: fold arrows are shown.
+    pub gutter_hover: bool,
+    fold_buf: Buffer,
 }
 
 impl EditorView {
@@ -223,7 +296,8 @@ impl EditorView {
         let mut gutter_buf = Buffer::new(fs, metrics);
         let mut sticky_text = Buffer::new(fs, metrics);
         let mut sticky_gutter = Buffer::new(fs, metrics);
-        for b in [&mut text_buf, &mut gutter_buf, &mut sticky_text, &mut sticky_gutter] {
+        let mut fold_buf = Buffer::new(fs, metrics);
+        for b in [&mut text_buf, &mut gutter_buf, &mut sticky_text, &mut sticky_gutter, &mut fold_buf] {
             b.set_wrap(Wrap::None);
             b.set_monospace_width(Some(font.cell_w));
         }
@@ -261,6 +335,13 @@ impl EditorView {
             sticky_key: None,
             sticky_text,
             sticky_gutter,
+            fold_ranges: Vec::new(),
+            fold_ranges_version: None,
+            folded: Vec::new(),
+            hidden: Vec::new(),
+            fold_gen: 0,
+            gutter_hover: false,
+            fold_buf,
         };
         view.refresh_disk_mtime();
         view
@@ -300,6 +381,8 @@ impl EditorView {
         self.doc.take_edits();
         self.diagnostics.clear();
         self.git_marks_version = None;
+        self.folded.clear();
+        self.rebuild_hidden();
         self.invalidate();
         true
     }
@@ -327,6 +410,7 @@ impl EditorView {
         self.mini_cache = None;
         self.sticky_key = None;
         self.scopes_version = None;
+        self.fold_ranges_version = None;
     }
 
     pub fn language_name(&self) -> &'static str {
@@ -379,7 +463,12 @@ impl EditorView {
         let line = rope.char_to_line(pos.min(rope.len_chars()));
         let col = char_to_display_col(rope.line(line), pos - rope.line_to_char(line), self.doc.tab_width);
         let x = self.text_x() - self.scroll_x + col as f32 * self.font.cell_w;
-        let y = self.area.y + (line as f32 - self.scroll_line as f32) * self.font.line_h;
+        let rows = if line >= self.scroll_line {
+            self.rows_between(self.scroll_line, line) as f32
+        } else {
+            -(self.rows_between(line, self.scroll_line) as f32)
+        };
+        let y = self.area.y + rows * self.font.line_h;
         (x, y)
     }
 
@@ -421,7 +510,8 @@ impl EditorView {
     pub fn jump_to(&mut self, pos: usize) {
         self.doc.set_cursor(pos.min(self.doc.text().len_chars()));
         let line = self.doc.text().char_to_line(self.doc.selection().primary().head);
-        self.scroll_line = line.saturating_sub(self.full_rows() / 3);
+        self.reveal_line(line);
+        self.scroll_line = self.back_visible(line, self.full_rows() / 3);
         self.ensure_cursor_visible();
     }
 
@@ -448,7 +538,7 @@ impl EditorView {
     pub fn set_font(&mut self, fs: &mut FontSystem, font: FontMetrics) {
         self.font = font;
         let metrics = Metrics::new(font.size, font.line_h);
-        for b in [&mut self.text_buf, &mut self.gutter_buf, &mut self.sticky_text, &mut self.sticky_gutter] {
+        for b in [&mut self.text_buf, &mut self.gutter_buf, &mut self.sticky_text, &mut self.sticky_gutter, &mut self.fold_buf] {
             b.set_metrics(metrics);
             b.set_monospace_width(Some(font.cell_w));
         }
@@ -466,8 +556,9 @@ impl EditorView {
         ((self.area.h / self.font.line_h).floor() as usize).max(1)
     }
 
+    /// Line numbers, a column for fold arrows, and room for the git bars.
     fn gutter_w(&self) -> f32 {
-        (self.gutter_cells as f32 + 2.0) * self.font.cell_w
+        (self.gutter_cells as f32 + 3.0) * self.font.cell_w
     }
 
     fn text_x(&self) -> f32 {
@@ -544,7 +635,8 @@ impl EditorView {
         self.doc.set_cursor(start + indent);
         // Parents of the scope stay sticky above it.
         let parents = self.sticky[..row].len();
-        self.scroll_line = scope.line.saturating_sub(parents);
+        self.reveal_line(scope.line);
+        self.scroll_line = self.back_visible(scope.line, parents);
         true
     }
 
@@ -586,6 +678,7 @@ impl EditorView {
     /// Call after every command that may have changed the text.
     pub fn after_edit(&mut self) {
         let edits = self.doc.take_edits();
+        self.shift_folds(&edits);
         if let Some(syntax) = &mut self.syntax {
             syntax.update(self.doc.text(), &edits);
         }
@@ -598,8 +691,21 @@ impl EditorView {
     }
 
     pub fn scroll_by(&mut self, lines: isize) {
-        let max = self.doc.text().len_lines().saturating_sub(1) as isize;
-        self.scroll_line = (self.scroll_line as isize + lines).clamp(0, max) as usize;
+        let max = self.doc.text().len_lines().saturating_sub(1);
+        if self.hidden.is_empty() {
+            self.scroll_line = (self.scroll_line as isize + lines).clamp(0, max as isize) as usize;
+            return;
+        }
+        self.scroll_line = self.scroll_line.min(max);
+        if let Some((s, _)) = self.hidden_range(self.scroll_line) {
+            self.scroll_line = s - 1;
+        }
+        let n = lines.unsigned_abs().min(max + 1);
+        self.scroll_line = if lines > 0 {
+            self.forward_visible(self.scroll_line, n)
+        } else {
+            self.back_visible(self.scroll_line, n)
+        };
     }
 
     pub fn scroll_x_by(&mut self, dx: f32) {
@@ -611,15 +717,17 @@ impl EditorView {
         let rope = self.doc.text();
         let head = self.doc.selection().primary().head;
         let line = rope.char_to_line(head);
+        self.reveal_line(line);
         let rows = self.full_rows();
         let margin = 2.min(rows / 3);
         // Lines under the sticky headers are hidden, so keep the cursor below them.
         let top_margin = (margin + self.sticky.len()).min(rows / 2);
-        if line < self.scroll_line + top_margin {
-            self.scroll_line = line.saturating_sub(top_margin);
-        } else if line + margin >= self.scroll_line + rows {
-            self.scroll_line = line + margin + 1 - rows;
+        if line < self.scroll_line || self.rows_between(self.scroll_line, line) < top_margin {
+            self.scroll_line = self.back_visible(line, top_margin);
+        } else if self.rows_between(self.scroll_line, line) + margin >= rows {
+            self.scroll_line = self.back_visible(line, rows - margin - 1);
         }
+        let rope = self.doc.text();
 
         let col = char_to_display_col(
             rope.line(line),
@@ -639,7 +747,8 @@ impl EditorView {
     pub fn hit_test(&self, x: f32, y: f32) -> usize {
         let rope = self.doc.text();
         let row = ((y - self.area.y) / self.font.line_h).floor().max(0.0) as usize;
-        let line = (self.scroll_line + row).min(rope.len_lines().saturating_sub(1));
+        let lines = self.visible_from(self.scroll_line, row + 1);
+        let line = lines.get(row).or(lines.last()).copied().unwrap_or(0);
         let col = ((x - self.text_x() + self.scroll_x) / self.font.cell_w)
             .round()
             .max(0.0) as usize;
@@ -649,6 +758,296 @@ impl EditorView {
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.area.x && x < self.area.x + self.area.w && y >= self.area.y
             && y < self.area.y + self.area.h
+    }
+
+    // ----- folding -----
+
+    /// The hidden range containing `line`, if it is folded away.
+    fn hidden_range(&self, line: usize) -> Option<(usize, usize)> {
+        let i = self.hidden.partition_point(|&(s, _)| s <= line);
+        let (s, e) = *self.hidden.get(i.checked_sub(1)?)?;
+        (line <= e).then_some((s, e))
+    }
+
+    /// Up to `count` shown lines from `top` on, skipping folded lines.
+    fn visible_from(&self, top: usize, count: usize) -> Vec<usize> {
+        let total = self.doc.text().len_lines();
+        let mut out = Vec::with_capacity(count);
+        let mut l = top;
+        while out.len() < count && l < total {
+            if let Some((_, e)) = self.hidden_range(l) {
+                l = e + 1;
+                continue;
+            }
+            out.push(l);
+            l += 1;
+        }
+        out
+    }
+
+    /// The document lines on screen, top first.
+    fn screen_lines(&self) -> Vec<usize> {
+        self.visible_from(self.scroll_line, self.rows())
+    }
+
+    /// Number of shown lines in `a..b`.
+    fn rows_between(&self, a: usize, b: usize) -> usize {
+        if b <= a {
+            return 0;
+        }
+        let mut n = b - a;
+        for &(s, e) in &self.hidden {
+            if e < a {
+                continue;
+            }
+            if s >= b {
+                break;
+            }
+            n -= e.min(b - 1) - s.max(a) + 1;
+        }
+        n
+    }
+
+    /// The shown line `n` shown lines above `line`.
+    fn back_visible(&self, line: usize, n: usize) -> usize {
+        let mut l = line;
+        for _ in 0..n {
+            if l == 0 {
+                break;
+            }
+            l -= 1;
+            if let Some((s, _)) = self.hidden_range(l) {
+                l = s - 1;
+            }
+        }
+        l
+    }
+
+    /// The shown line `n` shown lines below `line` (stops at the last line).
+    fn forward_visible(&self, line: usize, n: usize) -> usize {
+        let max = self.doc.text().len_lines().saturating_sub(1);
+        let mut l = line;
+        for _ in 0..n {
+            let mut next = l + 1;
+            if let Some((_, e)) = self.hidden_range(next) {
+                next = e + 1;
+            }
+            if next > max {
+                break;
+            }
+            l = next;
+        }
+        l
+    }
+
+    fn is_folded_start(&self, line: usize) -> bool {
+        self.folded.binary_search_by_key(&line, |f| f.0).is_ok()
+    }
+
+    /// Finds the foldable blocks again after the text changed. Folded blocks follow their
+    /// first line; a block that no longer exists opens.
+    fn ensure_fold_ranges(&mut self) {
+        if self.fold_ranges_version == Some(self.doc.version()) {
+            return;
+        }
+        let rope = self.doc.text();
+        let mut r = self.syntax.as_ref().map_or_else(Vec::new, |syn| syn.fold_ranges(rope));
+        r.extend(text_folds(rope));
+        r.sort_unstable();
+        r.dedup_by(|b, a| {
+            if a.0 == b.0 {
+                a.1 = a.1.max(b.1);
+                true
+            } else {
+                false
+            }
+        });
+        self.fold_ranges = r;
+        self.fold_ranges_version = Some(self.doc.version());
+        let ranges = &self.fold_ranges;
+        let folded: Vec<(usize, usize)> = self
+            .folded
+            .iter()
+            .filter_map(|&(start, _)| ranges.binary_search_by_key(&start, |r| r.0).ok().map(|i| ranges[i]))
+            .collect();
+        if folded != self.folded {
+            self.folded = folded;
+            self.rebuild_hidden();
+        }
+    }
+
+    /// Recomputes the hidden lines; keeps scroll position and cursor on shown lines.
+    fn rebuild_hidden(&mut self) {
+        self.folded.sort_unstable();
+        self.folded.dedup_by_key(|f| f.0);
+        let mut h: Vec<(usize, usize)> = Vec::new();
+        for &(s, e) in &self.folded {
+            let (a, b) = (s + 1, e);
+            if b < a {
+                continue;
+            }
+            match h.last_mut() {
+                Some(last) if a <= last.1 + 1 => last.1 = last.1.max(b),
+                _ => h.push((a, b)),
+            }
+        }
+        self.hidden = h;
+        self.fold_gen += 1;
+        if let Some((s, _)) = self.hidden_range(self.scroll_line) {
+            self.scroll_line = s - 1;
+        }
+        let rope = self.doc.text();
+        let head = self.doc.selection().primary().head;
+        let line = rope.char_to_line(head);
+        if let Some((s, _)) = self.hidden_range(line) {
+            let target = s - 1;
+            let col = (head - rope.line_to_char(line)).min(line_len_chars(rope, target));
+            let pos = rope.line_to_char(target) + col;
+            self.doc.set_cursor(pos);
+        }
+    }
+
+    /// Edits move the folds below them; an edit inside a folded block (or one that adds or
+    /// removes lines on its first line) opens it.
+    fn shift_folds(&mut self, edits: &[TextEdit]) {
+        if self.folded.is_empty() || edits.is_empty() {
+            return;
+        }
+        let before = self.folded.clone();
+        for e in edits {
+            let (sr, or, nr) = (e.start_point.0, e.old_end_point.0, e.new_end_point.0);
+            let delta = nr as isize - or as isize;
+            let shift = |l: usize| (l as isize + delta).max(0) as usize;
+            self.folded.retain_mut(|f| {
+                if sr > f.1 {
+                    true
+                } else if or < f.0 {
+                    *f = (shift(f.0), shift(f.1));
+                    true
+                } else {
+                    sr == f.0 && or == f.0 && delta == 0
+                }
+            });
+        }
+        if self.folded != before {
+            self.rebuild_hidden();
+        }
+    }
+
+    /// Opens the folds that hide `line`.
+    fn reveal_line(&mut self, line: usize) {
+        if self.hidden_range(line).is_some() {
+            self.folded.retain(|f| !(f.0 < line && line <= f.1));
+            self.rebuild_hidden();
+        }
+    }
+
+    pub fn fold(&mut self, cmd: FoldCmd) -> bool {
+        self.ensure_fold_ranges();
+        match cmd {
+            FoldCmd::Toggle => {
+                let line = self.doc.text().char_to_line(self.doc.selection().primary().head);
+                if let Ok(i) = self.folded.binary_search_by_key(&line, |f| f.0) {
+                    self.folded.remove(i);
+                } else {
+                    // The innermost block around the line that is still open.
+                    let Some(r) = self
+                        .fold_ranges
+                        .iter()
+                        .filter(|r| r.0 <= line && line <= r.1 && !self.folded.contains(r))
+                        .max_by_key(|r| r.0)
+                        .copied()
+                    else {
+                        return false;
+                    };
+                    self.folded.push(r);
+                }
+            }
+            FoldCmd::ToggleAll => {
+                if self.folded.is_empty() {
+                    self.folded = self.fold_ranges.clone();
+                } else {
+                    self.folded.clear();
+                }
+            }
+            FoldCmd::Definitions => {
+                let members: Vec<(usize, usize)> = self
+                    .symbols()
+                    .into_iter()
+                    .filter(|s| MEMBER_KINDS.contains(&s.kind) && s.end_line > s.line)
+                    .map(|s| (s.line, s.end_line))
+                    .collect();
+                self.folded = members
+                    .iter()
+                    .filter_map(|&(l, end)| self.fold_ranges.iter().find(|r| r.0 >= l && r.0 <= end).copied())
+                    .collect();
+            }
+            FoldCmd::ExpandAll => self.folded.clear(),
+        }
+        self.rebuild_hidden();
+        true
+    }
+
+    /// After a cursor move: a cursor that landed on a folded line jumps over the fold.
+    pub fn skip_folds(&mut self, old_head: usize) {
+        if self.hidden.is_empty() {
+            return;
+        }
+        let rope = self.doc.text();
+        let head = self.doc.selection().primary().head;
+        let line = rope.char_to_line(head);
+        let Some((s, e)) = self.hidden_range(line) else { return };
+        let col = head - rope.line_to_char(line);
+        let at_end = col >= line_len_chars(rope, line);
+        let forward = head > old_head;
+        let target = if forward { e + 1 } else { s - 1 };
+        if target >= rope.len_lines() {
+            self.reveal_line(line);
+            return;
+        }
+        let len = line_len_chars(rope, target);
+        let col = if !forward && at_end { len } else { col.min(len) };
+        let pos = rope.line_to_char(target) + col;
+        self.doc.set_cursor(pos);
+    }
+
+    /// The gutter (line numbers and fold arrows).
+    pub fn gutter_contains(&self, x: f32, y: f32) -> bool {
+        let a = self.area;
+        x >= a.x && x < a.x + self.gutter_w() && y >= a.y + self.sticky_h() && y < a.y + a.h
+    }
+
+    /// Click on a fold arrow in the gutter or on the `…` marker after a folded line.
+    pub fn fold_click(&mut self, x: f32, y: f32) -> bool {
+        let a = self.area;
+        if y < a.y + self.sticky_h() || y >= a.y + a.h || x < a.x || x >= self.text_right() {
+            return false;
+        }
+        let row = ((y - a.y) / self.font.line_h) as usize;
+        let Some(&line) = self.visible_from(self.scroll_line, row + 1).get(row) else { return false };
+        let in_gutter = x < a.x + self.gutter_w();
+        if self.is_folded_start(line) {
+            if !in_gutter {
+                // Only the marker itself opens the fold.
+                let rope = self.doc.text();
+                let end_col = char_to_display_col(rope.line(line), line_len_chars(rope, line), self.doc.tab_width);
+                let marker_x = self.text_x() - self.scroll_x + end_col as f32 * self.font.cell_w;
+                if x < marker_x || x > marker_x + 4.0 * self.font.cell_w {
+                    return false;
+                }
+            }
+            self.folded.retain(|f| f.0 != line);
+            self.rebuild_hidden();
+            return true;
+        }
+        if !in_gutter {
+            return false;
+        }
+        self.ensure_fold_ranges();
+        let Ok(i) = self.fold_ranges.binary_search_by_key(&line, |r| r.0) else { return false };
+        self.folded.push(self.fold_ranges[i]);
+        self.rebuild_hidden();
+        true
     }
 
     /// Re-shapes the visible text if anything relevant changed.
@@ -661,6 +1060,9 @@ impl EditorView {
         } else if !self.git_marks.is_empty() {
             self.git_marks.clear();
             self.git_marks_version = None;
+        }
+        if self.gutter_hover || !self.folded.is_empty() {
+            self.ensure_fold_ranges();
         }
         self.prepare_minimap(theme);
         self.prepare_sticky(fs, theme);
@@ -675,19 +1077,14 @@ impl EditorView {
             current_line,
             font: (self.font.size.to_bits(), self.font.cell_w.to_bits()),
             gutter_cells: digits,
+            fold_gen: self.fold_gen,
+            gutter_hover: self.gutter_hover,
         };
         if self.cache.as_ref() == Some(&key) {
             return;
         }
 
-        let first = self.scroll_line.min(rope.len_lines().saturating_sub(1));
-        let last = (first + self.rows()).min(rope.len_lines());
-        let start_byte = rope.line_to_byte(first);
-        let end_byte = rope.line_to_byte(last);
-        let spans = match &self.syntax {
-            Some(s) => flatten(&s.highlights(rope, start_byte..end_byte), start_byte..end_byte),
-            None => Vec::new(),
-        };
+        let lines = self.screen_lines();
 
         // Build colored runs for the visible lines; tabs become spaces so the grid holds.
         let tab_width = self.doc.tab_width;
@@ -696,8 +1093,21 @@ impl EditorView {
             Some((t, c)) if *c == color => t.push_str(text),
             _ => runs.push((text.to_string(), color)),
         };
-        let mut span_i = 0;
-        for line in first..last {
+        // Highlight each run of consecutive lines separately: a fold may hide thousands.
+        let mut seg = 0;
+        while seg < lines.len() {
+            let mut seg_end = seg + 1;
+            while seg_end < lines.len() && lines[seg_end] == lines[seg_end - 1] + 1 {
+                seg_end += 1;
+            }
+            let start_byte = rope.line_to_byte(lines[seg]);
+            let end_byte = rope.line_to_byte(lines[seg_end - 1] + 1);
+            let spans = match &self.syntax {
+                Some(s) => flatten(&s.highlights(rope, start_byte..end_byte), start_byte..end_byte),
+                None => Vec::new(),
+            };
+            let mut span_i = 0;
+            for &line in &lines[seg..seg_end] {
             let mut byte = rope.line_to_byte(line);
             let mut col = 0;
             for ch in rope.line(line).chars() {
@@ -722,7 +1132,12 @@ impl EditorView {
                 }
                 byte += ch.len_utf8();
             }
+            if self.folded.binary_search_by_key(&line, |f| f.0).is_ok() {
+                push(" … ", theme.gutter_current);
+            }
             push("\n", theme.text);
+            }
+            seg = seg_end;
         }
 
         let family = Family::Name(&self.family);
@@ -737,7 +1152,14 @@ impl EditorView {
         self.text_buf.shape_until_scroll(fs, false);
 
         let mut gutter: Vec<(String, Rgba)> = Vec::new();
-        for line in first..last {
+        let mut arrows = String::new();
+        for &line in &lines {
+            if self.is_folded_start(line) {
+                arrows.push('▸');
+            } else if self.gutter_hover && self.fold_ranges.binary_search_by_key(&line, |r| r.0).is_ok() {
+                arrows.push('▾');
+            }
+            arrows.push('\n');
             let color = if line == current_line { theme.gutter_current } else { theme.gutter_text };
             let label = match &self.gutter_labels {
                 Some(labels) => labels.get(line).cloned().unwrap_or_default(),
@@ -754,6 +1176,8 @@ impl EditorView {
             None,
         );
         self.gutter_buf.shape_until_scroll(fs, false);
+        self.fold_buf.set_text(&arrows, &base.clone().color(theme.gutter_text.to_glyphon()), Shaping::Advanced, None);
+        self.fold_buf.shape_until_scroll(fs, false);
         self.cache = Some(key);
     }
 
@@ -773,10 +1197,12 @@ impl EditorView {
         let text_left = self.area.x + self.gutter_w();
         let text_right = self.text_right();
         let text_x = self.text_x() - self.scroll_x;
-        let first = self.scroll_line;
-        let last = (first + self.rows()).min(rope.len_lines());
+        let lines = self.screen_lines();
+        let first = lines.first().copied().unwrap_or(0);
+        let last = lines.last().map_or(first, |l| l + 1);
         let tab = self.doc.tab_width;
-        let line_y = |line: usize| a.y + (line - first) as f32 * lh;
+        let row_of = |line: usize| lines.binary_search(&line).ok();
+        let row_y = |row: usize| a.y + row as f32 * lh;
         let col_of = |pos: usize| {
             let line = rope.char_to_line(pos);
             (line, char_to_display_col(rope.line(line), pos - rope.line_to_char(line), tab))
@@ -792,10 +1218,13 @@ impl EditorView {
 
         let primary = self.doc.selection().primary();
         let (cur_line, _) = col_of(primary.head);
-        if self.show_cursor && primary.is_empty() && (first..last).contains(&cur_line) {
+        if self.show_cursor
+            && primary.is_empty()
+            && let Some(row) = row_of(cur_line)
+        {
             under.push(Quad {
                 x: text_left,
-                y: line_y(cur_line),
+                y: row_y(row),
                 w: text_right - text_left,
                 h: lh,
                 color: theme.current_line,
@@ -818,6 +1247,7 @@ impl EditorView {
             let (l0, c0) = col_of(s);
             let (l1, c1) = col_of(e);
             for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
+                let Some(row) = row_of(line) else { continue };
                 let start = if line == l0 { c0 } else { 0 };
                 let end = if line == l1 {
                     c1
@@ -825,7 +1255,7 @@ impl EditorView {
                     char_to_display_col(rope.line(line), line_len_chars(rope, line), tab)
                 };
                 if let Some((x, w)) = clip(text_x + start as f32 * cw, (end.max(start + 1) - start) as f32 * cw) {
-                    under.push(Quad { x, y: line_y(line), w, h: lh, color });
+                    under.push(Quad { x, y: row_y(row), w, h: lh, color });
                 }
             }
         }
@@ -837,6 +1267,7 @@ impl EditorView {
             let (l0, c0) = col_of(r.from());
             let (l1, c1) = col_of(r.to());
             for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
+                let Some(row) = row_of(line) else { continue };
                 let start = if line == l0 { c0 } else { 0 };
                 let end = if line == l1 {
                     c1
@@ -845,7 +1276,7 @@ impl EditorView {
                     char_to_display_col(rope.line(line), len, tab) + 1
                 };
                 if let Some((x, w)) = clip(text_x + start as f32 * cw, (end - start) as f32 * cw) {
-                    under.push(Quad { x, y: line_y(line), w, h: lh, color: theme.selection });
+                    under.push(Quad { x, y: row_y(row), w, h: lh, color: theme.selection });
                 }
             }
         }
@@ -854,11 +1285,12 @@ impl EditorView {
         let cursor_w = (2.0 * scale).round().max(1.0);
         for r in self.doc.selection().ranges() {
             let (line, col) = col_of(r.head);
-            if !(first..last).contains(&line) || line_y(line) < sticky_bottom {
+            let Some(row) = row_of(line) else { continue };
+            if row_y(row) < sticky_bottom {
                 continue;
             }
             if let Some((x, w)) = clip(text_x + col as f32 * cw - cursor_w / 2.0, cursor_w) {
-                over.push(Quad { x, y: line_y(line), w, h: lh, color: theme.cursor });
+                over.push(Quad { x, y: row_y(row), w, h: lh, color: theme.cursor });
             }
         }
 
@@ -874,16 +1306,17 @@ impl EditorView {
             let (l0, c0) = col_of(d.start);
             let (l1, c1) = col_of(d.end.max(d.start + 1).min(rope.len_chars()));
             for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
+                let Some(row) = row_of(line) else { continue };
                 let s = if line == l0 { c0 } else { 0 };
                 let e = if line == l1 {
                     c1.max(s + 1)
                 } else {
                     char_to_display_col(rope.line(line), line_len_chars(rope, line), tab)
                 };
-                if line_y(line) < sticky_bottom {
+                if row_y(row) < sticky_bottom {
                     continue;
                 }
-                let base = line_y(line) + lh - 2.0 * step;
+                let base = row_y(row) + lh - 2.0 * step;
                 let x0 = text_x + s as f32 * cw;
                 let x1 = text_x + e as f32 * cw;
                 let mut x = x0;
@@ -903,9 +1336,18 @@ impl EditorView {
         }
 
         // Line backgrounds (diff view).
-        for line in first..last {
+        for (row, &line) in lines.iter().enumerate() {
             if let Some(Some(color)) = self.line_bg.get(line) {
-                under.push(Quad { x: text_left, y: line_y(line), w: text_right - text_left, h: lh, color: *color });
+                under.push(Quad { x: text_left, y: row_y(row), w: text_right - text_left, h: lh, color: *color });
+            }
+            // Box behind the `…` of a folded line.
+            if self.is_folded_start(line) {
+                let end_col = char_to_display_col(rope.line(line), line_len_chars(rope, line), tab);
+                let x = text_x + (end_col as f32 + 0.5) * cw;
+                if let Some((x, w)) = clip(x, 2.0 * cw) {
+                    let pad = (lh * 0.15).round();
+                    under.push(Quad { x, y: row_y(row) + pad, w, h: lh - 2.0 * pad, color: theme.selection.with_alpha(0x70) });
+                }
             }
         }
 
@@ -915,19 +1357,17 @@ impl EditorView {
         for &(line, mark) in &self.git_marks {
             match mark {
                 wyvern_git::LineMark::Added | wyvern_git::LineMark::Modified => {
-                    if (first..last).contains(&line) {
+                    if let Some(row) = row_of(line) {
                         let color = if mark == wyvern_git::LineMark::Added { theme.git_added } else { theme.git_modified };
-                        under.push(Quad { x: bar_x, y: line_y(line), w: bar_w, h: lh, color });
+                        under.push(Quad { x: bar_x, y: row_y(row), w: bar_w, h: lh, color });
                     }
                 }
                 wyvern_git::LineMark::DeletedAfter => {
                     // usize::MAX = deleted at the very top: mark above the first line.
                     let y = if line == usize::MAX {
-                        Some(a.y)
-                    } else if (first..last).contains(&line) {
-                        Some(line_y(line) + lh)
+                        (self.scroll_line == 0).then_some(a.y)
                     } else {
-                        None
+                        row_of(line).map(|row| row_y(row) + lh)
                     };
                     if let Some(y) = y {
                         let h = (lh * 0.3).round();
@@ -942,6 +1382,13 @@ impl EditorView {
         text.push(TextBlock {
             buffer: &self.gutter_buf,
             x: a.x + cw,
+            y: a.y,
+            color: theme.gutter_text,
+            clip: Some([a.x as i32, code_top, text_left as i32, bottom]),
+        });
+        text.push(TextBlock {
+            buffer: &self.fold_buf,
+            x: a.x + (self.gutter_cells as f32 + 1.2) * cw,
             y: a.y,
             color: theme.gutter_text,
             clip: Some([a.x as i32, code_top, text_left as i32, bottom]),
@@ -993,7 +1440,8 @@ impl EditorView {
         }
         // Never cover more than a third of the editor.
         let max = STICKY_MAX.min(self.full_rows() / 3);
-        self.sticky = sticky_for(&self.scopes, self.scroll_line, max);
+        let shown = self.visible_from(self.scroll_line, max + 1);
+        self.sticky = sticky_for(&self.scopes, &shown, max);
         if self.sticky.is_empty() {
             return;
         }
@@ -1220,19 +1668,107 @@ mod tests {
         Scope { line, end }
     }
 
+    fn from(top: usize) -> Vec<usize> {
+        (top..top + 10).collect()
+    }
+
+    #[test]
+    fn sticky_headers_skip_folded_lines() {
+        // The method 5..20 is folded except its first line: below line 5 comes line 21.
+        let scopes = [sc(0, 100), sc(2, 90), sc(5, 20)];
+        let shown = [4, 5, 21, 22, 23, 24];
+        assert_eq!(sticky_for(&scopes, &shown, 5), vec![sc(0, 100), sc(2, 90)]);
+    }
+
+    fn view(text: &str) -> super::EditorView {
+        let mut fs = wyvern_render::FontSystem::new();
+        let font = super::FontMetrics { size: 14.0, line_h: 20.0, cell_w: 8.0 };
+        let mut v = super::EditorView::virtual_doc("t", text, "a.cs", &mut fs, font, "monospace".into());
+        v.set_area(super::Rect { x: 0.0, y: 0.0, w: 800.0, h: 400.0 });
+        v
+    }
+
+    const CS: &str = "class A
+{
+    void M()
+    {
+        x();
+        y();
+    }
+    void N()
+    {
+        z();
+    }
+}
+";
+
+    #[test]
+    fn folding_hides_lines_and_the_cursor_jumps_over_them() {
+        use super::FoldCmd;
+        use wyvern_buffer::Movement;
+        let mut v = view(CS);
+        assert!(v.fold(FoldCmd::Definitions));
+        // M (lines 3..6) and N (8..10) are folded; their signature lines stay.
+        assert_eq!(v.screen_lines(), vec![0, 1, 2, 7, 11, 12]);
+        // Row 3 on screen is line 7.
+        assert_eq!(v.doc.text().char_to_line(v.hit_test(100.0, 3.5 * 20.0)), 7);
+        // Arrow down from line 2 lands on line 7, not inside M.
+        v.doc.set_cursor(v.doc.text().line_to_char(2) + 4);
+        let old = v.doc.selection().primary().head;
+        v.doc.move_cursors(Movement::Down, false);
+        v.skip_folds(old);
+        assert_eq!(v.doc.text().char_to_line(v.doc.selection().primary().head), 7);
+        // Typing above the folds moves them along.
+        v.doc.set_cursor(0);
+        v.doc.insert("// c
+");
+        v.after_edit();
+        assert_eq!(v.screen_lines(), vec![0, 1, 2, 3, 8, 12, 13]);
+        // Jumping into a folded body opens it.
+        let inside = v.doc.text().line_to_char(5);
+        v.jump_to(inside);
+        assert!(v.screen_lines().contains(&5));
+        assert!(!v.screen_lines().contains(&10), "N stays folded");
+        // Toggle all: everything open again.
+        assert!(v.fold(FoldCmd::ExpandAll));
+        assert_eq!(v.screen_lines().len(), 14);
+    }
+
+    #[test]
+    fn editing_inside_a_fold_opens_it() {
+        use super::FoldCmd;
+        let mut v = view(CS);
+        v.doc.set_cursor(v.doc.text().line_to_char(2));
+        assert!(v.fold(FoldCmd::Toggle));
+        assert_eq!(v.screen_lines(), vec![0, 1, 2, 7, 8, 9, 10, 11, 12]);
+        // Replace-all style edit in line 4 (hidden).
+        let at = v.doc.text().line_to_char(4) + 8;
+        v.doc.apply_changes(vec![wyvern_buffer::Change { start: at, end: at + 1, text: "w".into() }]);
+        v.after_edit();
+        assert_eq!(v.screen_lines().len(), 13);
+    }
+
+    #[test]
+    fn regions_and_import_runs_fold() {
+        let rope = wyvern_buffer::Rope::from_str(
+            "using A;\nusing B;\nusing C;\n\n#region Helpers\nint x;\n#endregion\n// #region js\nfoo();\n// #endregion\n",
+        );
+        assert_eq!(super::text_folds(&rope), vec![(0, 2), (4, 6), (7, 9)]);
+    }
+
     #[test]
     fn sticky_headers_follow_the_scroll_position() {
         // namespace 0..100, class 2..90, method 5..20, method 30..40
         let scopes = [sc(0, 100), sc(2, 90), sc(5, 20), sc(30, 40)];
-        assert_eq!(sticky_for(&scopes, 0, 5), vec![]);
-        assert_eq!(sticky_for(&scopes, 1, 5), vec![sc(0, 100)]);
-        assert_eq!(sticky_for(&scopes, 3, 5), vec![sc(0, 100), sc(2, 90)]);
-        assert_eq!(sticky_for(&scopes, 10, 5), vec![sc(0, 100), sc(2, 90), sc(5, 20)]);
+        assert_eq!(sticky_for(&scopes, &from(0), 5), vec![]);
+        assert_eq!(sticky_for(&scopes, &from(1), 5), vec![sc(0, 100)]);
+        assert_eq!(sticky_for(&scopes, &from(3), 5), vec![sc(0, 100), sc(2, 90)]);
+        assert_eq!(sticky_for(&scopes, &from(10), 5), vec![sc(0, 100), sc(2, 90), sc(5, 20)]);
         // Between the methods only namespace and class stick.
-        assert_eq!(sticky_for(&scopes, 22, 5), vec![sc(0, 100), sc(2, 90)]);
+        assert_eq!(sticky_for(&scopes, &from(22), 5), vec![sc(0, 100), sc(2, 90)]);
         // Limit: the innermost headers win.
-        assert_eq!(sticky_for(&scopes, 10, 2), vec![sc(2, 90), sc(5, 20)]);
+        assert_eq!(sticky_for(&scopes, &from(10), 2), vec![sc(2, 90), sc(5, 20)]);
         // The method's last line comes up under the headers: it is no longer sticky.
-        assert_eq!(sticky_for(&scopes, 18, 5), vec![sc(0, 100), sc(2, 90)]);
+        assert_eq!(sticky_for(&scopes, &from(18), 5), vec![sc(0, 100), sc(2, 90)]);
     }
 }

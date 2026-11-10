@@ -360,6 +360,11 @@ impl ApplicationHandler<UserEvent> for App {
                         state.editor_mut().minimap_hover = hover;
                         state.window.request_redraw();
                     }
+                    let gutter = state.editor().gutter_contains(x, y);
+                    if gutter != state.editor().gutter_hover {
+                        state.editor_mut().gutter_hover = gutter;
+                        state.window.request_redraw();
+                    }
                 }
                 if state.mouse.dragging {
                     let ed = state.editor_mut();
@@ -1039,12 +1044,16 @@ impl State {
             .keymap
             .handle(event, mods)
             .or_else(|| Keymap::text(event, mods).map(Command::Insert));
-        if self.keymap.chord_pending() {
-            self.show("Ctrl+K … (C = comment, U = uncomment, D = format, I = info)");
+        if let Some(first) = self.keymap.chord_pending() {
+            self.show(if first == 'm' {
+                "Ctrl+M … (M = fold/unfold, L = all, O = definitions, P = expand all)"
+            } else {
+                "Ctrl+K … (C = comment, U = uncomment, D = format, I = info)"
+            });
             return;
         }
         // The chord hint has done its job once the second key arrived.
-        if self.message.as_ref().is_some_and(|(m, _)| m.starts_with("Ctrl+K …")) {
+        if self.message.as_ref().is_some_and(|(m, _)| m.starts_with("Ctrl+K …") || m.starts_with("Ctrl+M …")) {
             self.message = None;
         }
         if let Some(cmd) = cmd {
@@ -2567,7 +2576,11 @@ impl State {
                     Movement::PageDown(_) => Movement::PageDown(ed.page_lines()),
                     m => m,
                 };
+                let old = ed.doc.selection().primary().head;
                 ed.doc.move_cursors(m, extend);
+                if !extend && ed.doc.selection().len() == 1 {
+                    ed.skip_folds(old);
+                }
             }
             Command::Insert(text) => ed.doc.insert(&text),
             Command::Newline => ed.doc.newline(),
@@ -2672,6 +2685,11 @@ impl State {
                 self.font_pt = self.settings.font.size;
                 self.apply_font();
                 follow_cursor = false;
+            }
+            Command::Fold(f) => {
+                if !ed.fold(f) {
+                    self.show("Nothing to fold here");
+                }
             }
             Command::NotYet(msg) => {
                 self.show(msg);
@@ -2876,7 +2894,7 @@ impl State {
         if button != MouseButton::Left || !self.editor().contains(x, y) {
             return;
         }
-        if self.diff.is_none() && self.editor_mut().sticky_click(x, y) {
+        if self.diff.is_none() && (self.editor_mut().sticky_click(x, y) || self.editor_mut().fold_click(x, y)) {
             self.focus = Focus::Editor;
             self.find.focused = false;
             return;
