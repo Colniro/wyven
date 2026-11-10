@@ -26,6 +26,8 @@ pub enum Action {
     ToggleTheme,
     /// Opens/focuses/closes the terminal panel.
     ToggleTerminal,
+    /// Minimap: blocks → bar → off.
+    CycleMinimap,
     Git(GitCmd),
 }
 
@@ -127,7 +129,7 @@ const WINDOW: &[Item] = &[
 ];
 
 const VIEW: &[Item] = &[
-    item('m', "minimap", Later("The minimap comes in phase 2")),
+    item('m', "minimap: blocks / bar / off", CycleMinimap),
     item('s', "sticky scroll", Later("Sticky scroll comes in phase 2")),
     item('i', "inlay hints", Later("Inlay hints come in phase 3")),
     item('w', "word wrap", Later("Word wrap comes in phase 2")),

@@ -147,6 +147,8 @@ struct Mouse {
     y: f32,
     dragging: bool,
     last_click: Option<(Instant, usize)>,
+    /// Dragging the minimap box: mouse y and scroll line at the press.
+    minimap_drag: Option<(f32, f32)>,
 }
 
 /// Screen layout, recomputed on resize, font change and when the explorer is toggled.
@@ -341,6 +343,17 @@ impl ApplicationHandler<UserEvent> for App {
                     state.terminal.dirty = true;
                     state.window.request_redraw();
                 }
+                if let Some((y0, start)) = state.mouse.minimap_drag {
+                    state.editor_mut().minimap_drag(start, y - y0);
+                    state.window.request_redraw();
+                }
+                if state.diff.is_none() {
+                    let hover = state.editor().minimap_contains(x, y);
+                    if hover != state.editor().minimap_hover {
+                        state.editor_mut().minimap_hover = hover;
+                        state.window.request_redraw();
+                    }
+                }
                 if state.mouse.dragging {
                     let ed = state.editor_mut();
                     let pos = ed.hit_test(position.x as f32, position.y as f32);
@@ -514,7 +527,7 @@ impl State {
             keymap: Keymap::default(),
             modifiers: ModifiersState::empty(),
             alt_alone: false,
-            mouse: Mouse { x: 0.0, y: 0.0, dragging: false, last_click: None },
+            mouse: Mouse { x: 0.0, y: 0.0, dragging: false, last_click: None, minimap_drag: None },
             clipboard: arboard::Clipboard::new().ok(),
             last_copy: None,
             status_left,
@@ -591,8 +604,10 @@ impl State {
             self.terminal.set_area(r);
         }
         let area = self.layout.editor;
+        let scale = self.renderer.scale_factor();
         for t in &mut self.tabs {
             t.set_area(area);
+            t.scale = scale;
         }
         if let (Some(ex), Some(r)) = (&mut self.explorer, self.layout.explorer) {
             ex.set_area(r);
@@ -1367,6 +1382,7 @@ impl State {
                 if self.settings.editor.hover
                     && self.tooltip.is_none()
                     && self.editor().contains(x, y)
+                    && !self.editor().minimap_contains(x, y)
                     && matches!(self.overlay, Overlay::None)
                 {
                     let pos = self.editor().hit_test(x, y);
@@ -1625,6 +1641,8 @@ impl State {
     /// Applies tab width and default indentation from the settings to a document view.
     fn configure_view(&self, view: &mut EditorView) {
         view.doc.tab_width = self.settings.editor.tab_width;
+        view.minimap = editor::MinimapMode::parse(&self.settings.editor.minimap);
+        view.scale = self.renderer.scale_factor();
         if !view.doc.indent_detected() {
             view.doc.indent_unit = self.settings.indent_unit();
         }
@@ -2469,6 +2487,7 @@ impl State {
                     self.family.clone(),
                 );
                 view.set_area(self.layout.editor);
+                self.configure_view(&mut view);
                 self.tabs.push(view);
                 self.mru.push(self.tabs.len() - 1);
                 self.activate(self.tabs.len() - 1);
@@ -2481,6 +2500,29 @@ impl State {
                 self.set_theme(next);
             }
             Git(cmd) => self.git_command(cmd),
+            CycleMinimap => self.cycle_minimap(),
+        }
+    }
+
+    /// Alt → v → m: blocks → bar → off, saved in settings.toml.
+    fn cycle_minimap(&mut self) {
+        let next = editor::MinimapMode::parse(&self.settings.editor.minimap).next();
+        self.settings.editor.minimap = next.name().to_string();
+        for t in &mut self.tabs {
+            t.minimap = next;
+            t.invalidate();
+        }
+        let label = match next {
+            editor::MinimapMode::Blocks => "Minimap: code blocks",
+            editor::MinimapMode::Bar => "Minimap: marker bar",
+            editor::MinimapMode::Off => "Minimap: off",
+        };
+        match settings::store_value(Some("editor"), "minimap", &format!("\"{}\"", next.name())) {
+            Ok(()) => {
+                self.settings_mtime = settings::modified();
+                self.show(label);
+            }
+            Err(e) => self.show(format!("{label} (not saved: {e})")),
         }
     }
 
@@ -2702,6 +2744,7 @@ impl State {
     fn mouse_button(&mut self, button: MouseButton, pressed: bool) {
         if !pressed {
             self.mouse.dragging = false;
+            self.mouse.minimap_drag = None;
             if self.terminal.selecting {
                 self.terminal.selecting = false;
                 // A click without dragging selects nothing.
@@ -2796,6 +2839,13 @@ impl State {
                 return;
             }
 
+        if button == MouseButton::Left
+            && let Some(start) = self.editor_mut().minimap_press(x, y)
+        {
+            self.mouse.minimap_drag = Some((y, start));
+            self.focus = Focus::Editor;
+            return;
+        }
         if button != MouseButton::Left || !self.editor().contains(x, y) {
             return;
         }

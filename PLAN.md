@@ -111,7 +111,7 @@ Cargo-Workspace, Fenster, wgpu-Rendering, Text auf dem Bildschirm, Benchmarks f�
 - TOML-Einstellungen, erstes Tastenkürzel-Schema, ein helles und ein dunkles Theme
 
 **Phase 2 – Arbeitsumgebung**
-~~Integriertes Terminal~~ ✅, ~~Git (Status, Diff nebeneinander, Commit von allem, Sync, Branches, Blame auf Abruf)~~ ✅, ~~globale Suche/Ersetzen~~ ✅, Minimap, Sticky Scroll, Folding.
+~~Integriertes Terminal~~ ✅, ~~Git (Status, Diff nebeneinander, Commit von allem, Sync, Branches, Blame auf Abruf)~~ ✅, ~~globale Suche/Ersetzen~~ ✅, ~~Minimap (Blöcke / Leiste / aus)~~ ✅, Sticky Scroll, Folding.
 
 **Phase 3 – Profi-Features**
 Debugger (netcoredbg), Inlay Hints, CodeLens, Markdown-Vorschau, KI-Inline-Vorschläge, Claude-Code-Brücke, Web-Sprachen per LSP.

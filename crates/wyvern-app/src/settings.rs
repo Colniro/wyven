@@ -35,6 +35,9 @@ indent = "spaces"
 auto_complete = true
 # Show info when the mouse rests on a name for a moment
 hover = true
+# Minimap on the right: "blocks" (shape of the code), "bar" (narrow marker bar) or "off".
+# Alt → v → m switches and saves it here.
+minimap = "blocks"
 
 [ui]
 # Size of the interface font (explorer, tabs, status bar) relative to the code font
@@ -92,6 +95,7 @@ pub struct EditorSettings {
     pub indent: String,
     pub auto_complete: bool,
     pub hover: bool,
+    pub minimap: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -121,7 +125,7 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, hover: true }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, hover: true, minimap: "blocks".into() }
     }
 }
 
@@ -185,23 +189,35 @@ pub fn load() -> Result<Settings, String> {
 
 /// Changes the `theme = "…"` line in the settings file, keeping everything else as it is.
 pub fn store_theme(name: &str) -> Result<(), String> {
+    store_value(None, "theme", &format!("\"{name}\""))
+}
+
+/// Sets `key = value` (value as TOML, e.g. `"\"bar\""`) in `[table]` or at the top level,
+/// keeping comments and everything else as it is.
+pub fn store_value(table: Option<&str>, key: &str, value: &str) -> Result<(), String> {
     let path = ensure_file().ok_or("no config folder")?;
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let new = replace_theme_line(&text, name);
+    let new = replace_value(&text, table, key, value);
     std::fs::write(&path, new).map_err(|e| e.to_string())
 }
 
-fn replace_theme_line(text: &str, name: &str) -> String {
-    let line = format!("theme = \"{name}\"");
+fn replace_value(text: &str, table: Option<&str>, key: &str, value: &str) -> String {
+    let line = format!("{key} = {value}");
     let mut found = false;
-    let mut in_table = false;
+    // None = top level; Some(name) = inside [name].
+    let mut current: Option<String> = None;
+    let mut header_at: Option<usize> = None;
     let mut out: Vec<String> = Vec::new();
     for l in text.lines() {
         let t = l.trim_start();
-        if t.starts_with('[') {
-            in_table = true;
+        if let Some(rest) = t.strip_prefix('[') {
+            current = Some(rest.split(']').next().unwrap_or("").trim().to_string());
+            if current.as_deref() == table {
+                header_at = Some(out.len());
+            }
         }
-        if !in_table && !found && t.starts_with("theme") && t[5..].trim_start().starts_with('=') {
+        let is_key = t.strip_prefix(key).is_some_and(|r| r.trim_start().starts_with('='));
+        if !found && is_key && current.as_deref() == table {
             out.push(line.clone());
             found = true;
         } else {
@@ -209,7 +225,15 @@ fn replace_theme_line(text: &str, name: &str) -> String {
         }
     }
     if !found {
-        out.insert(0, line);
+        match (table, header_at) {
+            (None, _) => out.insert(0, line),
+            (Some(_), Some(i)) => out.insert(i + 1, line),
+            (Some(t), None) => {
+                out.push(String::new());
+                out.push(format!("[{t}]"));
+                out.push(line);
+            }
+        }
     }
     let mut s = out.join("\n");
     s.push('\n');
@@ -250,7 +274,23 @@ mod tests {
     #[test]
     fn theme_line_is_replaced_in_place() {
         let text = "# Kommentar\ntheme = \"dunkel\"\n\n[font]\nsize = 14\n";
-        assert_eq!(replace_theme_line(text, "hell"), "# Kommentar\ntheme = \"hell\"\n\n[font]\nsize = 14\n");
-        assert_eq!(replace_theme_line("[font]\nsize = 14\n", "hell"), "theme = \"hell\"\n[font]\nsize = 14\n");
+        let theme = |t: &str, n: &str| replace_value(t, None, "theme", &format!("\"{n}\""));
+        assert_eq!(theme(text, "hell"), "# Kommentar\ntheme = \"hell\"\n\n[font]\nsize = 14\n");
+        assert_eq!(theme("[font]\nsize = 14\n", "hell"), "theme = \"hell\"\n[font]\nsize = 14\n");
+    }
+
+    #[test]
+    fn table_values_are_replaced_or_added() {
+        let text = "theme = \"dark\"\n[editor]\ntab_width = 4\nminimap = \"blocks\"\n";
+        let set = |t: &str, v: &str| replace_value(t, Some("editor"), "minimap", v);
+        assert_eq!(set(text, "\"bar\""), "theme = \"dark\"\n[editor]\ntab_width = 4\nminimap = \"bar\"\n");
+        assert_eq!(
+            set("[editor]\ntab_width = 4\n", "\"off\""),
+            "[editor]\nminimap = \"off\"\ntab_width = 4\n"
+        );
+        assert_eq!(set("theme = \"dark\"\n", "\"off\""), "theme = \"dark\"\n\n[editor]\nminimap = \"off\"\n");
+        // A key of the same name in another table stays untouched.
+        let other = "[font]\nminimap = 1\n[editor]\n";
+        assert_eq!(set(other, "\"bar\""), "[font]\nminimap = 1\n[editor]\nminimap = \"bar\"\n");
     }
 }

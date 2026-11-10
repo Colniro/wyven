@@ -38,6 +38,74 @@ struct CacheKey {
     gutter_cells: usize,
 }
 
+/// How the minimap on the right is shown (`[editor] minimap` in settings.toml, Alt → v → m).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinimapMode {
+    /// The shape of the code as colored blocks, plus a marker strip.
+    Blocks,
+    /// Only a narrow bar with markers and the visible area.
+    Bar,
+    Off,
+}
+
+impl MinimapMode {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "bar" | "leiste" => Self::Bar,
+            "off" | "none" | "aus" | "false" => Self::Off,
+            _ => Self::Blocks,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Blocks => "blocks",
+            Self::Bar => "bar",
+            Self::Off => "off",
+        }
+    }
+
+    /// Alt → v → m: blocks → bar → off → blocks.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Blocks => Self::Bar,
+            Self::Bar => Self::Off,
+            Self::Off => Self::Blocks,
+        }
+    }
+}
+
+/// Minimap sizes in logical pixels.
+const MINI_BLOCKS_W: f32 = 80.0;
+const MINI_BAR_W: f32 = 14.0;
+const MINI_STRIP_W: f32 = 4.0;
+const MINI_LINE_H: f32 = 2.0;
+const MINI_CHAR_W: f32 = 1.0;
+
+/// Where the minimap is and where its box for the visible area sits.
+struct MiniGeom {
+    rect: Rect,
+    /// First document line shown (blocks mode).
+    first: usize,
+    line_h: f32,
+    box_y: f32,
+    box_h: f32,
+    /// Lines scrolled per pixel when dragging the box.
+    lines_per_px: f32,
+}
+
+#[derive(PartialEq)]
+struct MiniKey {
+    version: u64,
+    first: usize,
+    rows: usize,
+    cols: usize,
+    theme: &'static str,
+}
+
+/// One block: row below `first`, start column, length in columns, color.
+type MiniRun = (usize, usize, usize, Rgba);
+
 /// A problem reported by the language server, as a char range in the current text.
 #[derive(Debug, Clone)]
 pub struct DiagSpan {
@@ -80,6 +148,12 @@ pub struct EditorView {
     cache: Option<CacheKey>,
     /// Tab title for documents without a file (e.g. the shortcut cheat sheet).
     title: Option<String>,
+    pub minimap: MinimapMode,
+    /// The mouse is over the minimap (the visible-area box is drawn brighter).
+    pub minimap_hover: bool,
+    /// Display scale, for the minimap's pixel sizes.
+    pub scale: f32,
+    mini_cache: Option<(MiniKey, Vec<MiniRun>)>,
 }
 
 impl EditorView {
@@ -124,6 +198,10 @@ impl EditorView {
             gutter_buf,
             cache: None,
             title: None,
+            minimap: MinimapMode::Off,
+            minimap_hover: false,
+            scale: 1.0,
+            mini_cache: None,
         };
         view.refresh_disk_mtime();
         view
@@ -187,6 +265,7 @@ impl EditorView {
     /// Forces a re-render (theme or settings changed).
     pub fn invalidate(&mut self) {
         self.cache = None;
+        self.mini_cache = None;
     }
 
     pub fn language_name(&self) -> &'static str {
@@ -333,6 +412,91 @@ impl EditorView {
         self.area.x + self.gutter_w() + self.font.cell_w * 0.5
     }
 
+    /// Width of the minimap in pixels (0 when off or the editor is too narrow).
+    fn minimap_w(&self) -> f32 {
+        let w = match self.minimap {
+            MinimapMode::Blocks => MINI_BLOCKS_W,
+            MinimapMode::Bar => MINI_BAR_W,
+            MinimapMode::Off => return 0.0,
+        } * self.scale;
+        if self.area.w < w * 5.0 { 0.0 } else { w.round() }
+    }
+
+    /// Right edge of the text (left edge of the minimap).
+    fn text_right(&self) -> f32 {
+        self.area.x + self.area.w - self.minimap_w()
+    }
+
+    fn mini_geom(&self) -> Option<MiniGeom> {
+        let w = self.minimap_w();
+        if w <= 0.0 {
+            return None;
+        }
+        let a = self.area;
+        let rect = Rect { x: a.x + a.w - w, y: a.y, w, h: a.h };
+        let total = self.doc.text().len_lines().max(1);
+        let max_scroll = total.saturating_sub(1).max(1) as f32;
+        let rows = self.full_rows() as f32;
+        let scroll = self.scroll_line as f32;
+        Some(match self.minimap {
+            MinimapMode::Blocks => {
+                let line_h = (MINI_LINE_H * self.scale).max(1.0);
+                let mm_rows = ((a.h / line_h).floor() as usize).max(1);
+                // Long files: the minimap scrolls along so the whole file can be reached.
+                let (first, k) = if total <= mm_rows {
+                    (0, 0.0)
+                } else {
+                    let spare = (total - mm_rows) as f32;
+                    (((scroll / max_scroll) * spare).round().min(spare) as usize, spare / max_scroll)
+                };
+                let box_y = a.y + (self.scroll_line as f32 - first as f32) * line_h;
+                let lines_per_px = 1.0 / (line_h * (1.0 - k).max(0.02));
+                MiniGeom { rect, first, line_h, box_y, box_h: rows * line_h, lines_per_px }
+            }
+            _ => {
+                let box_h = (rows / total as f32 * a.h).max(12.0 * self.scale).min(a.h);
+                let box_y = a.y + (scroll / max_scroll).min(1.0) * (a.h - box_h);
+                let lines_per_px = max_scroll / (a.h - box_h).max(1.0);
+                MiniGeom { rect, first: 0, line_h: a.h / total as f32, box_y, box_h, lines_per_px }
+            }
+        })
+    }
+
+    pub fn minimap_contains(&self, x: f32, y: f32) -> bool {
+        self.mini_geom().is_some_and(|g| {
+            let r = g.rect;
+            x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+        })
+    }
+
+    /// Mouse press in the minimap: outside the visible-area box it jumps there (centered).
+    /// Returns the scroll line to start dragging from, or None if (x, y) is not in the minimap.
+    pub fn minimap_press(&mut self, x: f32, y: f32) -> Option<f32> {
+        if !self.minimap_contains(x, y) {
+            return None;
+        }
+        let g = self.mini_geom()?;
+        if y < g.box_y || y >= g.box_y + g.box_h {
+            let total = self.doc.text().len_lines().max(1);
+            let line = match self.minimap {
+                MinimapMode::Blocks => g.first + ((y - g.rect.y) / g.line_h) as usize,
+                _ => ((y - g.rect.y) / g.rect.h * total as f32) as usize,
+            }
+            .min(total - 1);
+            self.scroll_line = line.saturating_sub(self.full_rows() / 2);
+            self.scroll_by(0);
+        }
+        Some(self.scroll_line as f32)
+    }
+
+    /// Dragging the box: `dy` pixels since the press that started at `start_scroll`.
+    pub fn minimap_drag(&mut self, start_scroll: f32, dy: f32) {
+        let Some(g) = self.mini_geom() else { return };
+        let target = (start_scroll + dy * g.lines_per_px).max(0.0).round() as usize;
+        self.scroll_line = target;
+        self.scroll_by(0);
+    }
+
     /// Call after every command that may have changed the text.
     pub fn after_edit(&mut self) {
         let edits = self.doc.take_edits();
@@ -375,7 +539,7 @@ impl EditorView {
             self.doc.tab_width,
         ) as f32;
         let x = col * self.font.cell_w;
-        let visible = self.area.w - self.gutter_w() - self.font.cell_w;
+        let visible = self.text_right() - self.area.x - self.gutter_w() - self.font.cell_w;
         if x < self.scroll_x {
             self.scroll_x = (x - 4.0 * self.font.cell_w).max(0.0);
         } else if x > self.scroll_x + visible - 2.0 * self.font.cell_w {
@@ -410,6 +574,7 @@ impl EditorView {
             self.git_marks.clear();
             self.git_marks_version = None;
         }
+        self.prepare_minimap(theme);
         let rope = self.doc.text();
         let digits = rope.len_lines().max(1).to_string().len().max(3);
         self.gutter_cells = digits;
@@ -517,6 +682,7 @@ impl EditorView {
         let lh = self.font.line_h;
         let cw = self.font.cell_w;
         let text_left = self.area.x + self.gutter_w();
+        let text_right = self.text_right();
         let text_x = self.text_x() - self.scroll_x;
         let first = self.scroll_line;
         let last = (first + self.rows()).min(rope.len_lines());
@@ -529,7 +695,7 @@ impl EditorView {
         // Horizontal clip of a rectangle to the text area.
         let clip = |x: f32, w: f32| -> Option<(f32, f32)> {
             let x0 = x.max(text_left);
-            let x1 = (x + w).min(a.x + a.w);
+            let x1 = (x + w).min(text_right);
             (x1 > x0).then_some((x0, x1 - x0))
         };
 
@@ -541,7 +707,7 @@ impl EditorView {
             under.push(Quad {
                 x: text_left,
                 y: line_y(cur_line),
-                w: a.w - (text_left - a.x),
+                w: text_right - text_left,
                 h: lh,
                 color: theme.current_line,
             });
@@ -646,7 +812,7 @@ impl EditorView {
         // Line backgrounds (diff view).
         for line in first..last {
             if let Some(Some(color)) = self.line_bg.get(line) {
-                under.push(Quad { x: text_left, y: line_y(line), w: a.w - (text_left - a.x), h: lh, color: *color });
+                under.push(Quad { x: text_left, y: line_y(line), w: text_right - text_left, h: lh, color: *color });
             }
         }
 
@@ -691,7 +857,156 @@ impl EditorView {
             x: text_x,
             y: a.y,
             color: theme.text,
-            clip: Some([text_left as i32, a.y as i32, (a.x + a.w) as i32, bottom]),
+            clip: Some([text_left as i32, a.y as i32, text_right as i32, bottom]),
         });
+        self.draw_minimap(theme, under, over);
+    }
+
+    /// Recomputes the colored blocks of the minimap if text, scroll position or theme changed.
+    fn prepare_minimap(&mut self, theme: &Theme) {
+        let Some(g) = self.mini_geom() else {
+            self.mini_cache = None;
+            return;
+        };
+        if self.minimap != MinimapMode::Blocks {
+            return;
+        }
+        let rope = self.doc.text();
+        let rows = ((g.rect.h / g.line_h).ceil() as usize).max(1);
+        let cols = ((g.rect.w - (MINI_STRIP_W + 2.0) * self.scale) / (MINI_CHAR_W * self.scale)).max(1.0) as usize;
+        let key = MiniKey { version: self.doc.version(), first: g.first, rows, cols, theme: theme.name };
+        if self.mini_cache.as_ref().is_some_and(|(k, _)| *k == key) {
+            return;
+        }
+        let first = g.first.min(rope.len_lines().saturating_sub(1));
+        let last = (first + rows).min(rope.len_lines());
+        let start_byte = rope.line_to_byte(first);
+        let end_byte = rope.line_to_byte(last);
+        let spans = match &self.syntax {
+            Some(syn) => flatten(&syn.highlights(rope, start_byte..end_byte), start_byte..end_byte),
+            None => Vec::new(),
+        };
+        let tab = self.doc.tab_width;
+        let mut runs: Vec<MiniRun> = Vec::new();
+        let mut span_i = 0;
+        for line in first..last {
+            let row = line - first;
+            let mut byte = rope.line_to_byte(line);
+            let mut col = 0;
+            // Current run: start column, length, color.
+            let mut run: Option<(usize, usize, Rgba)> = None;
+            for ch in rope.line(line).chars() {
+                if ch == '\n' || ch == '\r' || col >= cols {
+                    break;
+                }
+                while span_i < spans.len() && spans[span_i].end <= byte {
+                    span_i += 1;
+                }
+                let width = if ch == '\t' { tab - col % tab } else { 1 };
+                if ch.is_whitespace() {
+                    if let Some(r) = run.take() {
+                        runs.push((row, r.0, r.1, r.2));
+                    }
+                } else {
+                    let color = spans
+                        .get(span_i)
+                        .filter(|sp| sp.start <= byte)
+                        .map_or(theme.text, |sp| theme.highlight(sp.highlight));
+                    match &mut run {
+                        Some((_, len, c)) if *c == color => *len += width,
+                        _ => {
+                            if let Some(r) = run.take() {
+                                runs.push((row, r.0, r.1, r.2));
+                            }
+                            run = Some((col, width, color));
+                        }
+                    }
+                }
+                col += width;
+                byte += ch.len_utf8();
+            }
+            if let Some(r) = run {
+                runs.push((row, r.0, r.1.min(cols.saturating_sub(r.0)), r.2));
+            }
+        }
+        self.mini_cache = Some((key, runs));
+    }
+
+    fn draw_minimap(&self, theme: &Theme, under: &mut Vec<Quad>, over: &mut Vec<Quad>) {
+        let Some(g) = self.mini_geom() else { return };
+        let r = g.rect;
+        let sc = self.scale;
+        let rope = self.doc.text();
+        let total = rope.len_lines().max(1) as f32;
+
+        // Code shape.
+        if self.minimap == MinimapMode::Blocks
+            && let Some((key, runs)) = &self.mini_cache
+            && key.first == g.first
+        {
+            let cw = MINI_CHAR_W * sc;
+            let h = (g.line_h * 0.75).max(1.0);
+            let x0 = r.x + 2.0 * sc;
+            for &(row, col, len, color) in runs {
+                let y = r.y + row as f32 * g.line_h;
+                if y >= r.y + r.h {
+                    break;
+                }
+                under.push(Quad { x: x0 + col as f32 * cw, y, w: len as f32 * cw, h, color: color.with_alpha(0xA0) });
+            }
+        }
+
+        // Visible area.
+        let alpha = if self.minimap_hover { 0x30 } else { 0x16 };
+        let box_y = g.box_y.max(r.y);
+        let box_h = (g.box_y + g.box_h).min(r.y + r.h) - box_y;
+        if box_h > 0.0 {
+            over.push(Quad { x: r.x, y: box_y, w: r.w, h: box_h, color: theme.text.with_alpha(alpha) });
+        }
+
+        // Marker strip over the whole file: git left, find matches middle, problems right.
+        let (sx, sw) = match self.minimap {
+            MinimapMode::Blocks => (r.x + r.w - MINI_STRIP_W * sc, MINI_STRIP_W * sc),
+            _ => (r.x, r.w),
+        };
+        let third = (sw / 3.0).max(1.0);
+        let mark_h = (2.0 * sc).round().max(1.0);
+        let y_of = |line: usize| r.y + (line as f32 / total) * r.h;
+        let mut last_y = f32::MIN;
+        for &(line, mark) in &self.git_marks {
+            let color = match mark {
+                wyvern_git::LineMark::Added => theme.git_added,
+                wyvern_git::LineMark::Modified => theme.git_modified,
+                wyvern_git::LineMark::DeletedAfter => theme.git_deleted,
+            };
+            let line = if line == usize::MAX { 0 } else { line };
+            let y = y_of(line);
+            if (y - last_y).abs() < 0.5 {
+                continue;
+            }
+            last_y = y;
+            over.push(Quad { x: sx, y, w: third, h: mark_h.max(r.h / total), color });
+        }
+        last_y = f32::MIN;
+        for &(start, _) in self.find_matches.iter().take(20_000) {
+            let y = y_of(rope.char_to_line(start.min(rope.len_chars())));
+            if (y - last_y).abs() < 1.0 {
+                continue;
+            }
+            last_y = y;
+            over.push(Quad { x: sx + third, y, w: third, h: mark_h, color: theme.accent });
+        }
+        for d in &self.diagnostics {
+            let color = match d.severity {
+                1 => theme.error,
+                2 => theme.warning,
+                _ => continue,
+            };
+            let y = y_of(rope.char_to_line(d.start.min(rope.len_chars())));
+            over.push(Quad { x: sx + 2.0 * third, y, w: sw - 2.0 * third, h: mark_h, color });
+        }
+        // Cursor line.
+        let cur = rope.char_to_line(self.doc.selection().primary().head);
+        over.push(Quad { x: sx, y: y_of(cur), w: sw, h: sc.round().max(1.0), color: theme.cursor.with_alpha(0xC0) });
     }
 }

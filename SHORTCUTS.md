@@ -99,7 +99,7 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 | `f` | **f**ile | `n` new file · `o` open file · `s` save as · `r` rename · `c` close all |
 | `p` | **p**roject | `o` Ordner öffnen · `r` zuletzt geöffnet (Projekt-Wechsler) · `a` Ordner zum Workspace hinzufügen |
 | `w` | **w**indow | `v` rechts teilen · `h` unten teilen · `←↑→↓` Fokus wechseln · `c` Teilung schließen |
-| `v` | **v**iew | `m` Minimap · `s` Sticky Scroll · `i` Inlay Hints · `w` Zeilenumbruch · `z` Zen-Modus |
+| `v` | **v**iew | `m` Minimap (Blöcke / Leiste / aus) · `s` Sticky Scroll · `i` Inlay Hints · `w` Zeilenumbruch · `z` Zen-Modus |
 | `a` | **a**i | `t` Vorschläge an/aus · `m` Modell wechseln (Haiku/Sonnet) · `k` API-Key setzen · `c` Claude Code im Terminal öffnen |
 | `m` | **m**arkdown | Vorschau ein/aus |
 | `,` | Einstellungen | Einstellungsseite öffnen |

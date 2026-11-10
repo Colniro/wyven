@@ -74,6 +74,7 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Project: Focus Explorer", "Alt p e", Ld(L::FocusExplorer)),
         ("View: Toggle Explorer", "Alt e", Ld(L::ToggleExplorer)),
         ("View: Toggle Terminal", "Alt t", Ld(L::ToggleTerminal)),
+        ("View: Minimap Blocks / Bar / Off", "Alt v m", Ld(L::CycleMinimap)),
         ("Git: Show Panel", "Alt g g", Ld(L::Git(G::Panel))),
         ("Git: Commit All", "Alt g c", Ld(L::Git(G::Commit))),
         ("Git: Sync (Pull + Push)", "Alt g s", Ld(L::Git(G::Sync))),
