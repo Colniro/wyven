@@ -129,7 +129,7 @@ Der Name `wyvern` ist auf crates.io schon vergeben. Die Rust-Pakete heißen desh
 
 ## 8. Offene Fragen für später
 
-1. **Tastenkürzel-Schema:** Welche Logik soll es haben (z. B. Leader-Taste, Gruppen nach Bereich)? Das entwerfen wir gemeinsam vor Phase 1.
+1. ~~Tastenkürzel-Schema~~ → festgelegt in [SHORTCUTS.md](SHORTCUTS.md).
 2. **Panel-Layout im Detail:** Wo sollen Explorer, Terminal und Git standardmäßig liegen?
 3. **Font:** Eigene Standard-Schrift mitliefern (z. B. JetBrains Mono, Cascadia Code)?
 4. **Remote/WSL:** Vorerst raus; später nachrüsten?
