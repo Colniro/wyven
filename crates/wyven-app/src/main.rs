@@ -393,7 +393,10 @@ struct State {
     tab_spans: Vec<(f32, f32)>,
     /// The tab under the mouse, and the icons drawn on tabs (close ×, unsaved ●).
     tab_hover: Option<usize>,
-    tab_icons: (Buffer, Buffer),
+    /// ×, ● and ▶ (run) for the tab bar.
+    tab_icons: (Buffer, Buffer, Buffer),
+    /// The mouse is over the run button.
+    run_hover: bool,
 
     explorer: Option<Explorer>,
     /// Where the panels are docked and which ones show.
@@ -407,7 +410,7 @@ struct State {
     /// The dock area whose edge is being dragged to resize it.
     resizing: Option<(usize, f32)>,
     /// The mouse cursor shape last set (arrow or resize arrows).
-    cursor_resize: Option<dock::Dir>,
+    cursor_icon: winit::window::CursorIcon,
     focus: Focus,
 
     overlay: Overlay,
@@ -693,6 +696,19 @@ impl ApplicationHandler<UserEvent> for App {
                     state.terminal.list_hover = term_hover;
                     state.window.request_redraw();
                 }
+                // The run button: highlight and a tooltip.
+                let run_hover = state.run_button().is_some_and(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+                if run_hover != state.run_hover {
+                    state.run_hover = run_hover;
+                    state.tooltip = run_hover.then(|| {
+                        let r = state.run_button().unwrap_or_default();
+                        let fs = state.renderer.font_system();
+                        let tip = "Run the project in a terminal (Alt → r → r) · F5 debugs · Ctrl+Shift+B builds";
+                        let tx = (r.x + r.w - state.ui_font.cell_w * tip.chars().count() as f32).max(0.0);
+                        completion::Tooltip::new(fs, state.ui_font, &state.family, &state.theme, tip, tx, r.y + r.h + 6.0)
+                    });
+                    state.window.request_redraw();
+                }
                 // The tab under the mouse (shows its ×).
                 let t = state.layout.tabs;
                 let tab_hover = (y >= t.y && y < t.y + t.h)
@@ -730,13 +746,23 @@ impl ApplicationHandler<UserEvent> for App {
                 // Resize arrows over the edge of a dock area.
                 let edge = state.resizing.map(|r| r.0).or_else(|| state.splitter_at(x, y));
                 let edge = edge.and_then(|i| state.layout.splitters.get(i)).map(|s| s.dir);
-                if edge != state.cursor_resize {
-                    state.cursor_resize = edge;
-                    state.window.set_cursor(match edge {
-                        Some(dock::Dir::Column) => winit::window::CursorIcon::RowResize,
-                        Some(dock::Dir::Row) => winit::window::CursorIcon::ColResize,
-                        None => winit::window::CursorIcon::Default,
-                    });
+                // An I-beam over text (editor, terminal), arrows over gaps, else the arrow.
+                use winit::window::CursorIcon as Ci;
+                let over_text = matches!(state.overlay, Overlay::None)
+                    && state.panel_drag.is_none()
+                    && ((state.diff.is_none() && !state.editor().settings_page && state.editor().text_contains(x, y))
+                        || (state.panel_shown(Panel::Terminal) && state.terminal.screen_contains(x, y)));
+                let icon = match edge {
+                    Some(dock::Dir::Column) => Ci::RowResize,
+                    Some(dock::Dir::Row) => Ci::ColResize,
+                    None if over_text => Ci::Text,
+                    None if state.run_hover => Ci::Pointer,
+                    None if y >= state.layout.status.y && x >= state.status_ai_span.0 && x < state.status_ai_span.1 => Ci::Pointer,
+                    None => Ci::Default,
+                };
+                if icon != state.cursor_icon {
+                    state.cursor_icon = icon;
+                    state.window.set_cursor(icon);
                 }
                 state.hover_rest = (!state.mouse.dragging).then(|| (Instant::now(), x, y));
                 if state.terminal.selecting {
@@ -839,6 +865,13 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(due) = state.ai.due {
             if now >= due {
                 state.ai_trigger();
+            } else {
+                wake = wake.min(due);
+            }
+        }
+        if let Some(due) = state.ai.show_due() {
+            if now >= due {
+                state.show_held_suggestion();
             } else {
                 wake = wake.min(due);
             }
@@ -999,6 +1032,7 @@ impl State {
         let (status_left, status_right, tab_bar) = (line_buffer(), line_buffer(), line_buffer());
         let status_ai = line_buffer();
         let mut ai = ai::AiAssist::new(settings.ai.enabled, ai::backend_from(&settings.ai), settings.ai.delay_ms);
+        ai.set_show_after(settings.ai.show_after_ms);
         let ai_proxy = proxy.clone();
         ai.set_wake(move || {
             let _ = ai_proxy.send_event(UserEvent::Ai);
@@ -1047,6 +1081,7 @@ impl State {
             tab_spans: Vec::new(),
             tab_hover: None,
             tab_icons,
+            run_hover: false,
             explorer: None,
             dock: dock::Dock::load(),
             dock_bar,
@@ -1054,7 +1089,7 @@ impl State {
             panel_drag: None,
             floats: Vec::new(),
             resizing: None,
-            cursor_resize: None,
+            cursor_icon: winit::window::CursorIcon::Default,
             focus: Focus::Editor,
             overlay: Overlay::None,
             popup,
@@ -1495,12 +1530,24 @@ impl State {
     }
 
     /// The × and ● drawn on tabs.
-    fn make_tab_icons(fs: &mut FontSystem, ui: FontMetrics) -> (Buffer, Buffer) {
+    fn make_tab_icons(fs: &mut FontSystem, ui: FontMetrics) -> (Buffer, Buffer, Buffer) {
         let family = chrome::icon_family(fs);
         let size = (ui.size * 0.8).round();
         let close = chrome::label(fs, &chrome::ICON_CLOSE.to_string(), &family, size, size * 1.3);
         let dot = chrome::label(fs, "\u{25CF}", &family, size, size * 1.3);
-        (close, dot)
+        let run_size = ui.size.round();
+        let run = chrome::label(fs, &chrome::ICON_PLAY.to_string(), &family, run_size, run_size * 1.2);
+        (close, dot, run)
+    }
+
+    /// The ▶ button at the right end of the tab bar.
+    fn run_button(&self) -> Option<Rect> {
+        let t = self.layout.tabs;
+        if self.zen || t.h <= 0.0 || self.explorer.is_none() {
+            return None;
+        }
+        let s = (t.h * 0.8).round();
+        Some(Rect { x: t.x + t.w - s - self.ui_font.cell_w * 0.6, y: t.y + (t.h - s) / 2.0, w: s, h: s })
     }
 
     fn show_context(&mut self, b: ctxmenu::MenuBuilder, x: f32, y: f32) {
@@ -4335,6 +4382,7 @@ impl State {
         }
         let a = &self.settings.ai;
         self.ai.configure(a.enabled, ai::backend_from(a), a.delay_ms);
+        self.ai.set_show_after(a.show_after_ms);
         self.relayout();
         if self.message.is_none() {
             self.show("Settings applied");
@@ -5225,17 +5273,25 @@ impl State {
         self.ai.start(tab, version, head, ctx);
     }
 
+    /// Shows the prepared suggestion when the pause after typing is long enough and the
+    /// cursor is still where it was asked for.
+    fn show_held_suggestion(&mut self) {
+        let Some((tab, version, pos, text)) = self.ai.take_due(Instant::now()) else { return };
+        let still_valid = tab == self.active
+            && self.tabs.get(tab).is_some_and(|t| t.doc.version() == version && t.doc.selection().primary().head == pos);
+        if still_valid {
+            self.tabs[tab].set_ghost(Some((pos, text)));
+            self.window.request_redraw();
+        }
+    }
+
     fn ai_poll(&mut self) {
         for update in self.ai.poll(Instant::now()) {
             match update {
                 ai::AiUpdate::Show { tab, version, pos, text } => {
-                    let still_valid = tab == self.active
-                        && self.tabs.get(tab).is_some_and(|t| {
-                            t.doc.version() == version && t.doc.selection().primary().head == pos
-                        });
-                    if still_valid {
-                        self.tabs[tab].set_ghost(Some((pos, text)));
-                    }
+                    // Prepared now, shown once typing has paused long enough.
+                    self.ai.held = Some((tab, version, pos, text));
+                    self.show_held_suggestion();
                 }
                 ai::AiUpdate::Message(m) => self.show(m),
             }
@@ -6652,6 +6708,16 @@ impl State {
             // The other half: it gets the focus, then the click works as usual.
             self.focus_other_half();
         }
+        if button == MouseButton::Left
+            && let Some(r) = self.run_button()
+            && x >= r.x
+            && x < r.x + r.w
+            && y >= r.y
+            && y < r.y + r.h
+        {
+            self.run_task(tasks::TaskKind::Run);
+            return;
+        }
         let t = self.layout.tabs;
         if y >= t.y && y < t.y + t.h && x >= t.x && x < t.x + t.w {
             if let Some(i) = self.tab_spans.iter().position(|&(a, b)| x >= a && x < b) {
@@ -7171,6 +7237,7 @@ impl State {
         let shown = Panel::ALL.map(|p| self.panel_shown(p));
         let focused_panel = self.focused_panel();
         let strips = self.strips();
+        let run_btn = self.run_button();
         let theme = &self.theme;
         let scale = self.renderer.scale_factor();
         let l = self.layout.clone();
@@ -7278,6 +7345,12 @@ impl State {
                 });
             }
         }
+        // The run button covers the end of the tab bar.
+        let run = run_btn;
+        let tab_clip = match run {
+            Some(r) => [tab_clip[0], tab_clip[1], (r.x - self.ui_font.cell_w * 0.4) as i32, tab_clip[3]],
+            None => tab_clip,
+        };
         text.push(TextBlock {
             buffer: &self.tab_bar,
             x: l.tabs.x,
@@ -7285,6 +7358,22 @@ impl State {
             color: theme.tab_text,
             clip: Some(tab_clip),
         });
+        if let Some(r) = run {
+            under.push(Quad { x: r.x - self.ui_font.cell_w * 0.4, y: l.tabs.y, w: l.tabs.x + l.tabs.w - r.x + self.ui_font.cell_w * 0.4, h: l.tabs.h, color: theme.tab_bar });
+            let green = chrome::panel_color(Panel::Debug, theme.dark);
+            if self.run_hover {
+                cards.push(RoundRect::new(r.x, r.y, r.w, r.h, green.with_alpha(0x30), (5.0 * scale).round()));
+            }
+            let size = self.ui_font.size.round();
+            let iw = self.tab_icons.2.layout_runs().next().map_or(size, |run| run.line_w);
+            text.push(TextBlock {
+                buffer: &self.tab_icons.2,
+                x: (r.x + (r.w - iw) / 2.0).round(),
+                y: (r.y + (r.h - size * 1.2) / 2.0).round(),
+                color: if self.run_hover { green } else { green.with_alpha(0xD0) },
+                clip: None,
+            });
+        }
 
         match &self.diff {
             Some(d) => d.draw(theme, scale, &mut under, &mut over, &mut text),
@@ -7348,8 +7437,22 @@ impl State {
         // The AI switch, left of the right-hand status text (click toggles).
         let ai_w = self.status_ai.layout_runs().next().map_or(0.0, |r| r.line_w);
         let ai_x = s.w - right_w - 3.0 * pad - ai_w;
-        self.status_ai_span = (ai_x - pad * 0.5, ai_x + ai_w + pad * 0.5);
-        let ai_color = if self.ai.enabled && self.ai.has_key() { theme.status_accent } else { theme.status_text };
+        // A small switch in front of the label: filled with the knob right while on.
+        let on = self.ai.enabled && self.ai.usable();
+        let sh = (self.ui_font.line_h * 0.62).round();
+        let sw = (sh * 1.8).round();
+        let sx = (ai_x - sw - pad * 0.6).round();
+        let sy = (s.y + (s.h - sh) / 2.0).round();
+        let knob = (sh - 4.0 * scale).max(2.0);
+        if on {
+            masks.push(RoundRect::new(sx, sy, sw, sh, theme.status_accent, sh / 2.0));
+            masks.push(RoundRect::new(sx + sw - knob - 2.0 * scale, sy + 2.0 * scale, knob, knob, theme.status_bg, knob / 2.0));
+        } else {
+            masks.push(RoundRect::outline(sx, sy, sw, sh, theme.status_text.with_alpha(0xA0), sh / 2.0, scale.max(1.0)));
+            masks.push(RoundRect::new(sx + 2.0 * scale, sy + 2.0 * scale, knob, knob, theme.status_text.with_alpha(0xA0), knob / 2.0));
+        }
+        self.status_ai_span = (sx - pad * 0.3, ai_x + ai_w + pad * 0.5);
+        let ai_color = if on { theme.status_accent } else { theme.status_text };
         let status_clip = Some([0, s.y as i32, s.w as i32, (s.y + s.h) as i32]);
         text.push(TextBlock { buffer: &self.status_ai, x: ai_x, y: text_y, color: ai_color, clip: status_clip });
 

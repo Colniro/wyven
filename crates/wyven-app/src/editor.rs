@@ -1628,6 +1628,12 @@ impl EditorView {
         self.doc.set_cursor(pos);
     }
 
+    /// The text itself (not the gutter or minimap): the mouse shows an I-beam there.
+    pub fn text_contains(&self, x: f32, y: f32) -> bool {
+        let a = self.area;
+        x >= a.x + self.gutter_w() && x < self.text_right() && y >= a.y && y < a.y + a.h
+    }
+
     /// The gutter (line numbers and fold arrows).
     pub fn gutter_contains(&self, x: f32, y: f32) -> bool {
         let a = self.area;

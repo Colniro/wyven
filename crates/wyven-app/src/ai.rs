@@ -52,6 +52,11 @@ pub struct AiAssist {
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     paused_until: Option<Instant>,
     last_error: Option<Instant>,
+    /// The last keystroke: suggestions appear only `show_after` later.
+    last_typed: Option<Instant>,
+    show_after: Duration,
+    /// A finished suggestion waiting for the pause: tab, version, position, text.
+    pub held: Option<(usize, u64, usize, String)>,
 }
 
 impl AiAssist {
@@ -74,7 +79,26 @@ impl AiAssist {
             wake: None,
             paused_until: None,
             last_error: None,
+            last_typed: None,
+            show_after: Duration::from_millis(4000),
+            held: None,
         }
+    }
+
+    /// How long typing must pause before a (already computed) suggestion appears.
+    pub fn set_show_after(&mut self, ms: u64) {
+        self.show_after = Duration::from_millis(ms.min(30_000));
+    }
+
+    /// When the held suggestion may appear.
+    pub fn show_due(&self) -> Option<Instant> {
+        self.held.as_ref()?;
+        Some(self.last_typed.map_or_else(Instant::now, |t| t + self.show_after))
+    }
+
+    /// The held suggestion, once the pause is long enough.
+    pub fn take_due(&mut self, now: Instant) -> Option<(usize, u64, usize, String)> {
+        if self.show_due().is_some_and(|due| now >= due) { self.held.take() } else { None }
     }
 
     pub fn set_wake(&mut self, wake: impl Fn() + Send + Sync + 'static) {
@@ -131,6 +155,7 @@ impl AiAssist {
     /// Typing happened: ask again once typing pauses.
     pub fn schedule(&mut self, now: Instant) {
         self.cancel();
+        self.last_typed = Some(now);
         if self.ready(now) {
             self.due = Some(now + self.delay);
         }
@@ -139,6 +164,7 @@ impl AiAssist {
     /// Anything else happened (cursor moved, Esc): forget the pending request.
     pub fn cancel(&mut self) {
         self.due = None;
+        self.held = None;
         if self.pending.take().is_some() {
             self.generation.next();
         }

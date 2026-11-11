@@ -70,8 +70,10 @@ provider = "local"
 local_model = "qwen2.5-coder:7b-base"
 # Claude model for "claude": "haiku" (fast and cheap) or "sonnet" (better, a bit slower)
 model = "haiku"
-# Pause after typing, in milliseconds, before a suggestion is requested
+# Pause after typing, in milliseconds, before a suggestion is requested (it is prepared quietly)
 delay_ms = 400
+# Pause after typing, in milliseconds, before the prepared suggestion is shown
+show_after_ms = 4000
 
 [terminal]
 # Shell for the terminal (Alt → t). Empty = automatic (PowerShell 7, else Windows PowerShell).
@@ -124,6 +126,7 @@ pub struct AiSettings {
     pub local_model: String,
     pub model: String,
     pub delay_ms: u64,
+    pub show_after_ms: u64,
 }
 
 impl Default for AiSettings {
@@ -134,6 +137,7 @@ impl Default for AiSettings {
             local_model: wyven_ai::DEFAULT_LOCAL_MODEL.into(),
             model: "haiku".into(),
             delay_ms: 400,
+            show_after_ms: 4000,
         }
     }
 }

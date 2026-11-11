@@ -67,7 +67,15 @@ impl Completion {
                 .filter_map(|(i, it)| {
                     let s = pattern.score(Utf32Str::new(&it.filter, &mut buf), &mut self.matcher)?;
                     // Exact prefix matches first, like Visual Studio.
-                    let bonus = if it.filter.to_lowercase().starts_with(&prefix.to_lowercase()) { 1000 } else { 0 };
+                    let (f, p) = (it.filter.to_lowercase(), prefix.to_lowercase());
+                    // Exactly the typed word first (a snippet before the keyword), then prefixes.
+                    let bonus = if f == p {
+                        if it.snippet { 4000 } else { 3000 }
+                    } else if f.starts_with(&p) {
+                        1000
+                    } else {
+                        0
+                    };
                     Some((i, s + bonus))
                 })
                 .collect();
@@ -206,5 +214,27 @@ impl Tooltip {
         quads.push(Quad { x: x - b, y: y - b, w: w + 2.0 * b, h: h + 2.0 * b, color: theme.popup_border });
         quads.push(Quad { x, y, w, h, color: theme.popup_bg });
         text.push(TextBlock { buffer: &self.buffer, x: x + pad, y: y + pad * 0.5, color: theme.panel_text, clip: None });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(label: &str, sort: &str, snippet: bool) -> CompletionItem {
+        CompletionItem { label: label.into(), detail: String::new(), insert: label.into(), filter: label.into(), sort: sort.into(), snippet }
+    }
+
+    #[test]
+    fn the_exact_word_comes_first_and_its_snippet_before_the_keyword() {
+        let mut fs = FontSystem::new();
+        let font = FontMetrics { size: 14.0, line_h: 20.0, cell_w: 8.0 };
+        let items = vec![item("IFormatProvider", "a", false), item("if", "b", false), item("ifelse", "~ifelse", true), item("if", "~if", true)];
+        let mut c = Completion::new(&mut fs, font, PathBuf::new(), 0, items);
+        c.filter("if");
+        let first = c.selected().unwrap();
+        assert!(first.label == "if" && first.snippet);
+        c.move_selection(1);
+        assert!(c.selected().is_some_and(|i| i.label == "if" && !i.snippet));
     }
 }

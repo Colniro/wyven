@@ -170,7 +170,8 @@ count shows on its icon in the activity bar. `Tab` switches to the output of the
 
 `Ctrl+Shift+B` (or `Alt r b`) builds the project in the background after saving all files: Wyven
 finds `dotnet` (.sln/.csproj), `cargo` (Cargo.toml) or `npm` (package.json). `Alt r t` tests,
-`Alt r c` cleans, `Alt r x` stops, `Alt r r` runs the program in a new terminal. Errors open the
+`Alt r c` cleans, `Alt r x` stops, `Alt r r` (or ▶ at the right end of the tab bar) runs the program
+in a new terminal. Errors open the
 Problems panel.
 
 **Git changes:** click a change bar left of the text to see the lines of the last commit in a card
@@ -195,7 +196,8 @@ attaches to a running process (for example Godot).
 
 ## AI suggestions
 
-Gray suggestions appear after a short pause while typing: `Tab` accepts, `Ctrl+→` takes one word,
+Suggestions are prepared quietly after a short pause and appear gray once you have not typed for
+4 seconds (settings "Delay" and "Show after"); the switch in the status bar turns them on and off: `Tab` accepts, `Ctrl+→` takes one word,
 `Esc` dismisses. By default they come from a free local model through
 [Ollama](https://ollama.com) (`ollama pull qwen2.5-coder:7b-base`); nothing leaves your PC.
 Optionally Claude (Haiku or Sonnet) with your own API key (`Alt a k`, stored in the Windows

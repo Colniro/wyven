@@ -237,6 +237,12 @@ impl TerminalPanel {
         (self.ui.line_h * 1.5).round()
     }
 
+    /// The shell's screen (not the header or the list).
+    pub fn screen_contains(&self, x: f32, y: f32) -> bool {
+        let c = self.content();
+        x >= c.x && x < c.x + c.w && y >= c.y && y < self.area.y + self.area.h
+    }
+
     /// The list row under a point: the terminal's number and whether it is its ×.
     pub fn list_hit(&self, x: f32, y: f32) -> Option<(usize, bool)> {
         let lw = self.list_w();
