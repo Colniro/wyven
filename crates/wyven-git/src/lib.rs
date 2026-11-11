@@ -189,6 +189,16 @@ impl Repo {
         run(&self.root, &["switch", "-c", branch]).map(|_| ())
     }
 
+    /// Throws away the changes of one file: back to the last commit (new files: removed from
+    /// the index; deleting them from disk is up to the caller).
+    pub fn discard(&self, rel: &str, kind: ChangeKind) -> Result<(), String> {
+        match kind {
+            ChangeKind::Untracked => Ok(()),
+            ChangeKind::Added => run(&self.root, &["rm", "--cached", "-q", "--", rel]).map(|_| ()),
+            _ => run(&self.root, &["checkout", "HEAD", "--", rel]).map(|_| ()),
+        }
+    }
+
     /// Who last changed a line (1-based).
     pub fn blame_line(&self, rel: &str, line: usize) -> Result<BlameLine, String> {
         let range = format!("{line},{line}");

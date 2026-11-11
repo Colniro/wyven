@@ -162,6 +162,19 @@ Change bars in the gutter, the Git panel (`Alt g g`) with commit message and cha
 side-by-side diffs (`Alt g d`, `F8` jumps between changes), sync, branches and blame. Everything
 runs in the background with the `git` you have installed.
 
+## Start page, dropping files, closing
+
+Without an open file Wyven shows a start page: new file, open file or folder, settings, shortcuts,
+recent projects and tips; typing starts a new file. Drop files from Windows onto the window to open
+them (folders join the workspace). Closing the window with unsaved files asks: save all and close,
+close without saving, or cancel.
+
+Brackets and quotes close themselves: typing `(` inserts `()`, typing `)` steps over it, with a
+selection the pair goes around it, and `Backspace` in an empty pair removes both.
+
+The status bar is clickable: the position opens "go to line", errors open Problems, the language
+and the line breaks (LF/CRLF) can be switched there.
+
 ## Problems, build and test
 
 The **Problems** panel (`Alt r p`) lists every error and warning of the project, from the language
@@ -176,6 +189,10 @@ Problems panel.
 
 **Git changes:** click a change bar left of the text to see the lines of the last commit in a card
 below; "Revert" puts them back.
+
+The **Git panel** works with the mouse too: branch button (switch branches), sync/publish button,
+message field and commit button; hover a changed file for open and discard buttons, right-click it
+for more.
 
 ## Terminal
 

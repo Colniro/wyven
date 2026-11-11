@@ -26,6 +26,7 @@ pub const ICON_PROBLEMS: char = '\u{E7BA}';
 pub const ICON_OUTPUT: char = '\u{E8A5}';
 pub const ICON_CHEVRON_DOWN: char = '\u{E70D}';
 pub const ICON_PLAY: char = '\u{E768}';
+pub const ICON_UNDO: char = '\u{E7A7}';
 
 /// The icon font: Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets.
 pub fn icon_family(fs: &FontSystem) -> String {

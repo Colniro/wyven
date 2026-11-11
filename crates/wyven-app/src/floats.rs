@@ -265,7 +265,7 @@ impl State {
                 self.apply_panel_action(action);
             }
             Panel::Git if self.git.contains(x, y) && left => {
-                let action = self.git.click(y);
+                let action = self.git.click_at(x, y, false);
                 self.apply_git_action(action);
             }
             Panel::Problems if self.problems.contains(x, y) && left => {

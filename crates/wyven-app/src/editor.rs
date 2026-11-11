@@ -641,7 +641,18 @@ impl EditorView {
 
     /// An unnamed, never edited, empty document (can be replaced when opening a file).
     pub fn is_untouched(&self) -> bool {
-        self.doc.path().is_none() && self.doc.version() == 0 && self.doc.text().len_chars() == 0
+        self.doc.path().is_none()
+            && self.title.is_none()
+            && !self.settings_page
+            && self.doc.version() == 0
+            && self.doc.text().len_chars() == 0
+    }
+
+    /// Highlights the text as another language (`None`: plain text).
+    pub fn set_language(&mut self, name: Option<&str>) {
+        self.syntax = name.and_then(wyven_syntax::language_by_name).map(|cfg| Syntax::new(cfg, self.doc.text()));
+        self.doc.take_edits();
+        self.cache = None;
     }
 
     /// Saves under a new path and re-detects the language.

@@ -38,6 +38,7 @@ mod search_panel;
 mod settings;
 mod settings_page;
 mod tasks;
+mod welcome;
 mod snippets;
 mod terminal;
 mod theme;
@@ -250,8 +251,10 @@ fn tab_bar_spans(tabs: &[EditorView], active: usize, x0: f32, cw: f32, theme: &T
     let (mut labels, mut spans) = (Vec::new(), Vec::new());
     for (i, t) in tabs.iter().enumerate() {
         // "  C# Program.cs    ": badge, name, and room for the close button (drawn on top).
-        let name = t.file_name();
-        let (badge, badge_color) = chrome::file_badge(&name, theme.dark);
+        // The lone empty tab is the start page.
+        let welcome = tabs.len() == 1 && t.is_untouched();
+        let name = if welcome { "Welcome".to_string() } else { t.file_name() };
+        let (badge, badge_color) = if welcome { ("✦", theme.accent) } else { chrome::file_badge(&name, theme.dark) };
         let text_color = if i == active { theme.tab_text_active } else { theme.tab_text };
         let cells = 2 + 2 + 1 + name.chars().count() + TAB_CLOSE_CELLS;
         let w = cells as f32 * cw;
@@ -262,6 +265,29 @@ fn tab_bar_spans(tabs: &[EditorView], active: usize, x0: f32, cw: f32, theme: &T
         labels.push((format!(" {name}{}", " ".repeat(TAB_CLOSE_CELLS)), text_color));
     }
     (labels, spans)
+}
+
+/// A clickable part of the status bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusItem {
+    GotoLine,
+    Problems,
+    Language,
+    LineEnding,
+}
+
+/// The x range of each clickable part in a shaped line of text (byte ranges of the parts).
+fn item_spans(buf: &Buffer, parts: &[(StatusItem, std::ops::Range<usize>)]) -> Vec<(StatusItem, f32, f32)> {
+    let Some(run) = buf.layout_runs().next() else { return Vec::new() };
+    parts
+        .iter()
+        .filter_map(|(item, range)| {
+            let glyphs: Vec<_> = run.glyphs.iter().filter(|g| range.contains(&g.start)).collect();
+            let x0 = glyphs.iter().map(|g| g.x).fold(f32::MAX, f32::min);
+            let x1 = glyphs.iter().map(|g| g.x + g.w).fold(f32::MIN, f32::max);
+            (x0 < x1).then_some((*item, x0, x1))
+        })
+        .collect()
 }
 
 /// The old lines of a changed block, shown in a card under it.
@@ -316,6 +342,10 @@ enum Overlay {
     ExplorerPrompt { prompt: menu::Prompt, op: ExplorerOp, target: PathBuf },
     /// "Move … to the recycle bin?"
     ConfirmDelete(menu::Menu, PathBuf),
+    /// "Discard the changes of …?" (git, path relative to the repository).
+    ConfirmDiscard(menu::Menu, String, wyven_git::ChangeKind),
+    /// Closing the window with unsaved files: save all / discard / cancel.
+    ConfirmClose(menu::Menu),
     /// "Wyven x.y is available – install?"
     Update(menu::Menu),
     /// The color theme picker (state in `State::theme_picker`).
@@ -429,6 +459,11 @@ struct State {
     /// AI switch in the status bar, and where it was drawn (for clicks).
     status_ai: Buffer,
     status_ai_span: (f32, f32),
+    /// Clickable parts of the status bar: relative to the left / right text, then on screen.
+    status_left_items: Vec<(StatusItem, f32, f32)>,
+    status_right_items: Vec<(StatusItem, f32, f32)>,
+    status_items: Vec<(StatusItem, f32, f32)>,
+    status_hover: Option<StatusItem>,
     ai: ai::AiAssist,
     /// The Claude Code bridge (MCP server for Claude Code in a terminal).
     claude: Option<claude::Bridge>,
@@ -461,6 +496,9 @@ struct State {
     git: git_panel::GitPanel,
     debugger: debug::Debugger,
     problems: problems::ProblemsPanel,
+    welcome: welcome::Welcome,
+    /// Recent projects for the start page, and when they were read.
+    welcome_recent: Option<(Instant, Vec<PathBuf>)>,
     tasks: tasks::TaskRunner,
     /// Breakpoints of files that are not open (open tabs keep their own).
     breakpoint_store: debug::Breakpoints,
@@ -488,6 +526,8 @@ struct State {
     custom_keys: custom_keys::CustomKeys,
     /// The committed version of a changed block, shown under it (click on a git change bar).
     git_peek: Option<GitPeek>,
+    /// The close dialog decided to quit (handled in `about_to_wait`).
+    quit: bool,
     /// A snippet being filled in: its tab and tab stops.
     snippet: Option<(usize, snippets::Session)>,
     /// Snippets from %APPDATA%\\Wyven\\snippets.
@@ -656,6 +696,10 @@ impl ApplicationHandler<UserEvent> for App {
                 state.window.request_redraw();
             }
             WindowEvent::ModifiersChanged(m) => state.modifiers = m.state(),
+            // Files and folders dropped from Windows: files open as tabs, folders join the workspace.
+            WindowEvent::HoveredFile(_) => state.show("Drop to open (folders join the workspace)"),
+            WindowEvent::HoveredFileCancelled => state.message = None,
+            WindowEvent::DroppedFile(path) => state.dropped(path),
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. } => state.key_event(&event),
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
@@ -687,6 +731,28 @@ impl ApplicationHandler<UserEvent> for App {
                     let hover = (explorer_shown && ex.contains(x, y)).then(|| ex.row_at(y)).flatten();
                     if hover != ex.hover {
                         ex.hover = hover;
+                        state.window.request_redraw();
+                    }
+                }
+                // The status bar part under the mouse.
+                let sh = if y >= state.layout.status.y { state.status_items.iter().find(|it| x >= it.1 && x < it.2).map(|it| it.0) } else { None };
+                if sh != state.status_hover {
+                    state.status_hover = sh;
+                    state.window.request_redraw();
+                }
+                // Git panel buttons and rows under the mouse.
+                if state.panel_shown(Panel::Git) {
+                    let h = state.git.hover_at(x, y);
+                    if h != state.git.hover {
+                        state.git.hover = h;
+                        state.window.request_redraw();
+                    }
+                }
+                // The start page row under the mouse.
+                if state.welcome_shown() {
+                    let h = state.welcome.row_at(x, y);
+                    if h != state.welcome.hover {
+                        state.welcome.hover = h;
                         state.window.request_redraw();
                     }
                 }
@@ -748,16 +814,21 @@ impl ApplicationHandler<UserEvent> for App {
                 let edge = edge.and_then(|i| state.layout.splitters.get(i)).map(|s| s.dir);
                 // An I-beam over text (editor, terminal), arrows over gaps, else the arrow.
                 use winit::window::CursorIcon as Ci;
+                let welcome = state.welcome_shown();
                 let over_text = matches!(state.overlay, Overlay::None)
                     && state.panel_drag.is_none()
+                    && !welcome
                     && ((state.diff.is_none() && !state.editor().settings_page && state.editor().text_contains(x, y))
                         || (state.panel_shown(Panel::Terminal) && state.terminal.screen_contains(x, y)));
                 let icon = match edge {
                     Some(dock::Dir::Column) => Ci::RowResize,
                     Some(dock::Dir::Row) => Ci::ColResize,
                     None if over_text => Ci::Text,
-                    None if state.run_hover => Ci::Pointer,
+                    None if state.run_hover || (welcome && state.welcome.hover.is_some()) => Ci::Pointer,
                     None if y >= state.layout.status.y && x >= state.status_ai_span.0 && x < state.status_ai_span.1 => Ci::Pointer,
+                    None if state.status_hover.is_some() => Ci::Pointer,
+                    None if state.panel_shown(Panel::Git)
+                        && matches!(state.git.hover, Some(git_panel::GitHover::Branch | git_panel::GitHover::Sync | git_panel::GitHover::Commit | git_panel::GitHover::Row(..))) => Ci::Pointer,
                     None => Ci::Default,
                 };
                 if icon != state.cursor_icon {
@@ -836,6 +907,15 @@ impl ApplicationHandler<UserEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Sleep until the next status refresh or until the leader popup is due.
         let Some(state) = &mut self.state else { return };
+        // "Save all and close" / "Close without saving" in the close dialog.
+        if state.quit {
+            state.debugger.stop();
+            for server in state.servers.values_mut() {
+                server.shutdown();
+            }
+            event_loop.exit();
+            return;
+        }
         state.sync_floats(event_loop);
         let now = Instant::now();
         if now >= state.next_stats {
@@ -1054,6 +1134,7 @@ impl State {
         let mut git = git_panel::GitPanel::new(fs, ui_font, family.clone());
         let mut debugger = debug::Debugger::new(fs, ui_font, family.clone());
         let problems = problems::ProblemsPanel::new(fs, ui_font, family.clone());
+        let welcome_page = welcome::Welcome::new(fs, ui_font, family.clone());
         let debug_proxy = proxy.clone();
         debugger.set_wake(move || {
             let _ = debug_proxy.send_event(UserEvent::Debug);
@@ -1105,6 +1186,10 @@ impl State {
             status_right,
             status_ai,
             status_ai_span: (0.0, 0.0),
+            status_left_items: Vec::new(),
+            status_right_items: Vec::new(),
+            status_items: Vec::new(),
+            status_hover: None,
             ai,
             claude: None,
             claude_diff: None,
@@ -1121,6 +1206,8 @@ impl State {
             git,
             debugger,
             problems,
+            welcome: welcome_page,
+            welcome_recent: None,
             tasks: tasks::TaskRunner::default(),
             breakpoint_store: debug::Breakpoints::new(),
             debug_project: None,
@@ -1139,6 +1226,7 @@ impl State {
             custom_keys: custom_keys::CustomKeys::default(),
             auto_save_due: None,
             snippet: None,
+            quit: false,
             user_snippets: snippets::UserSnippets::load(),
             git_peek: None,
             header_tip_due: None,
@@ -1312,6 +1400,27 @@ impl State {
         self.settings_page.set_area(area);
         if let (Some(p), Some(r)) = (&mut self.preview, self.layout.preview) {
             p.set_area(r);
+        }
+        self.window.request_redraw();
+    }
+
+    /// The start page shows instead of a lone, empty, unnamed tab.
+    fn welcome_shown(&self) -> bool {
+        !self.zen && self.diff.is_none() && self.split.is_none() && self.tabs.len() == 1 && self.tabs[0].is_untouched()
+    }
+
+    /// A page (settings, shortcuts) opened next to the start page replaces it.
+    fn drop_start_page(&mut self) {
+        if self.tabs.len() >= 2 && self.active != 0 && self.tabs[0].is_untouched() {
+            Self::take_tab(&mut self.tabs, &mut self.active, &mut self.mru, 0);
+        }
+    }
+
+    fn welcome_click(&mut self, i: usize) {
+        match self.welcome.action(i) {
+            Some(welcome::WelcomeAction::Leader(a)) => self.leader_action(a),
+            Some(welcome::WelcomeAction::OpenRecent(p)) => self.open_folder(&p),
+            None => {}
         }
         self.window.request_redraw();
     }
@@ -1786,6 +1895,18 @@ impl State {
             C::SplitRight => self.split_editor(true),
             C::SplitDown => self.split_editor(false),
             C::Run(cmd) => self.run(cmd),
+            C::SetLanguage(name) => {
+                self.editor_mut().set_language(name.as_deref());
+                self.show(format!("Highlighted as {}", name.as_deref().unwrap_or("plain text")));
+            }
+            C::SetLineEnding(crlf) => {
+                let ending = if crlf { wyven_buffer::LineEnding::CrLf } else { wyven_buffer::LineEnding::Lf };
+                self.editor_mut().doc.set_line_ending(ending);
+                self.show(format!("Line breaks: {} (saved with the next save)", if crlf { "CRLF" } else { "LF" }));
+            }
+            C::GitDiff(rel) => self.apply_git_action(git_panel::GitAction::OpenDiff(rel)),
+            C::GitOpenFile(rel) => self.apply_git_action(git_panel::GitAction::OpenFile(rel)),
+            C::GitDiscard(rel, kind) => self.apply_git_action(git_panel::GitAction::Discard(rel, kind)),
             C::RenameTerminal(i) => {
                 let fs = self.renderer.font_system();
                 let current = self.terminal.display_name(i);
@@ -1916,6 +2037,30 @@ impl State {
         // A click on another bar opens that one instead (handled by the caller).
         self.git_peek = None;
         false
+    }
+
+    /// A click on a part of the status bar.
+    fn status_click(&mut self, item: StatusItem, x: f32, top: f32) {
+        use ctxmenu::CtxAction as C;
+        match item {
+            StatusItem::GotoLine => self.open_palette(":"),
+            StatusItem::Problems => self.leader_action(leader::Action::ShowProblems),
+            StatusItem::Language => {
+                let mut b = ctxmenu::MenuBuilder::new();
+                for name in wyven_syntax::language_names() {
+                    b = b.item(name, "", C::SetLanguage(Some(name.to_string())));
+                }
+                b = b.separator().item("Plain Text", "", C::SetLanguage(None));
+                self.show_context(b, x, top);
+            }
+            StatusItem::LineEnding => {
+                let b = ctxmenu::MenuBuilder::new()
+                    .item("LF (Linux, macOS, git default)", "", C::SetLineEnding(false))
+                    .item("CRLF (Windows)", "", C::SetLineEnding(true));
+                self.show_context(b, x, top);
+            }
+        }
+        self.window.request_redraw();
     }
 
     /// A click on an icon button in a panel header.
@@ -2193,6 +2338,7 @@ impl State {
         self.git.set_font(ui);
         self.debugger.set_font(ui);
         self.problems.set_font(ui);
+        self.welcome.set_font(ui);
         self.settings_page.set_font(ui, self.family.clone());
         self.dock_bar.set_font(self.renderer.font_system(), ui);
         self.tab_icons = Self::make_tab_icons(self.renderer.font_system(), ui);
@@ -2473,6 +2619,11 @@ impl State {
             dialog = dialog.set_directory(dir.parent().unwrap_or(dir));
         }
         let Some(path) = dialog.pick_folder() else { return };
+        self.add_folder_path(path);
+    }
+
+    /// A folder into the workspace (opens it when no folder is open yet).
+    fn add_folder_path(&mut self, path: PathBuf) {
         if self.explorer.is_none() {
             self.open_folder(&path);
             return;
@@ -2484,6 +2635,17 @@ impl State {
         }
         self.workspace_changed();
         self.show(format!("Added {} to the workspace", file_name(&path)));
+    }
+
+    fn dropped(&mut self, path: PathBuf) {
+        if path.is_dir() {
+            self.add_folder_path(path);
+        } else if path.is_file() {
+            self.open_path(&path);
+            self.focus = Focus::Editor;
+        }
+        self.window.focus_window();
+        self.window.request_redraw();
     }
 
     /// The × on a folder in the explorer.
@@ -2957,10 +3119,61 @@ impl State {
         if dirty == 0 {
             return true;
         }
-        let msg = format!("{dirty} file(s) unsaved! Close again to discard");
-        let ok = self.confirm("close-window", 0, &msg);
+        // Ask in a small dialog: save everything, close anyway, or stay.
+        let mut names: Vec<String> = self.tabs.iter().filter(|t| t.doc.is_dirty()).map(|t| t.file_name()).collect();
+        names.dedup();
+        let shown = if names.len() > 3 { format!("{}, … ({} files)", names[..3].join(", "), dirty) } else { names.join(", ") };
+        let title = format!("Unsaved changes in {shown}");
+        let items = vec![
+            ("Save all and close".to_string(), wyven_lsp::Value::from("save")),
+            ("Close without saving".to_string(), wyven_lsp::Value::from("discard")),
+            ("Cancel".to_string(), wyven_lsp::Value::from("cancel")),
+        ];
+        let mut m = menu::Menu::new(self.renderer.font_system(), self.ui_font, &title, items);
+        m.select(0);
+        self.overlay = Overlay::ConfirmClose(m);
+        self.window.focus_window();
         self.window.request_redraw();
-        ok
+        false
+    }
+
+    /// Keys in the close dialog: ↑/↓ + Enter, 1/2/3, Esc cancels.
+    fn confirm_close_key(&mut self, key: &Key) {
+        let Overlay::ConfirmClose(menu) = &mut self.overlay else { return };
+        let choice = match key {
+            Key::Named(NamedKey::Escape) => Some("cancel".to_string()),
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.move_selection(-1);
+                None
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                menu.move_selection(1);
+                None
+            }
+            Key::Named(NamedKey::Enter) => menu.selected().and_then(|v| v.as_str().map(str::to_string)),
+            Key::Character(c) => c.chars().next().and_then(|ch| ch.to_digit(10)).and_then(|n| menu.numbered(n as usize)).and_then(|v| v.as_str().map(str::to_string)),
+            _ => None,
+        };
+        let Some(choice) = choice else { return };
+        self.overlay = Overlay::None;
+        match choice.as_str() {
+            "save" => {
+                self.save_all(false);
+                // New files without a name: ask where to save them.
+                while let Some(i) = self.tabs.iter().position(|t| t.doc.is_dirty() && t.doc.path().is_none() && !t.settings_page) {
+                    self.activate(i);
+                    self.save_as();
+                    if self.tabs[i].doc.is_dirty() {
+                        self.show("Not closed: a file was not saved");
+                        return;
+                    }
+                }
+                self.quit = true;
+            }
+            "discard" => self.quit = true,
+            _ => {}
+        }
+        self.window.request_redraw();
     }
 
     // ----- keyboard -----
@@ -3034,6 +3247,14 @@ impl State {
             }
             Overlay::ConfirmDelete(..) => {
                 self.confirm_delete_key(&key);
+                return;
+            }
+            Overlay::ConfirmClose(..) => {
+                self.confirm_close_key(&key);
+                return;
+            }
+            Overlay::ConfirmDiscard(..) => {
+                self.confirm_discard_key(&key);
                 return;
             }
             Overlay::Themes(_) => {
@@ -4289,6 +4510,7 @@ impl State {
             self.tabs.push(view);
             self.mru.push(self.tabs.len() - 1);
             self.activate(self.tabs.len() - 1);
+            self.drop_start_page();
         }
         self.focus = Focus::Editor;
         self.window.request_redraw();
@@ -4900,6 +5122,19 @@ impl State {
         use git_panel::GitResult as R;
         for result in self.git.poll() {
             match result {
+                R::Discarded(Ok(rel)) => {
+                    self.show(format!("Changes in {rel} discarded"));
+                    if let Some(p) = self.git_path(&rel)
+                        && !p.exists()
+                        && let Some(i) = self.tab_for(&p)
+                    {
+                        self.close_tab(i);
+                    }
+                    self.reload_changed_files();
+                    self.after_files_changed();
+                    self.git.refresh_status();
+                }
+                R::Discarded(Err(e)) => self.show(format!("Discard failed: {e}")),
                 R::Status(Ok(_)) => {}
                 R::Status(Err(e)) => log::warn!("git status: {e}"),
                 R::Committed(Ok(summary)) => {
@@ -5056,12 +5291,87 @@ impl State {
             A::Close => self.close_sidebar_panel(),
             A::Commit => self.git_command(leader::GitCmd::Commit),
             A::OpenDiff(rel) => {
-                let Some(root) = self.git.repo.as_ref().map(|r| r.root().to_path_buf()) else { return };
-                let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                let Some(path) = self.git_path(&rel) else { return };
                 self.open_diff(&path);
                 // Stay in the panel to look through the changes with arrows and Enter.
                 self.focus = Focus::Git;
             }
+            A::OpenFile(rel) => {
+                let Some(path) = self.git_path(&rel) else { return };
+                if path.is_file() {
+                    self.open_path(&path);
+                    self.focus = Focus::Editor;
+                } else {
+                    self.show("The file was deleted – its diff shows what it was.");
+                }
+            }
+            A::Discard(rel, kind) => {
+                let what = if matches!(kind, wyven_git::ChangeKind::Untracked | wyven_git::ChangeKind::Added) {
+                    "Move the new file to the recycle bin"
+                } else {
+                    "Throw away the changes, back to the last commit"
+                };
+                let title = format!("Discard {rel}? {what}.");
+                let items = vec![
+                    ("Yes, discard".to_string(), wyven_lsp::Value::Bool(true)),
+                    ("No".to_string(), wyven_lsp::Value::Bool(false)),
+                ];
+                let mut m = menu::Menu::new(self.renderer.font_system(), self.ui_font, &title, items);
+                m.select(1);
+                self.overlay = Overlay::ConfirmDiscard(m, rel, kind);
+            }
+            A::Sync => self.git_command(leader::GitCmd::Sync),
+            A::Branches => self.git_command(leader::GitCmd::Branch),
+            A::Menu(rel, kind) => {
+                use ctxmenu::CtxAction as C;
+                let mut b = ctxmenu::MenuBuilder::new()
+                    .item("Open Changes (diff)", "Enter", C::GitDiff(rel.clone()))
+                    .item("Open File", "", C::GitOpenFile(rel.clone()));
+                if let Some(p) = self.git_path(&rel) {
+                    b = b.separator().item("Copy Path", "", C::CopyPath(p.clone())).item("Reveal in File Explorer", "", C::RevealInOs(p));
+                }
+                b = b.separator().item("Discard Changes …", "", C::GitDiscard(rel, kind));
+                let (x, y) = (self.mouse.x, self.mouse.y);
+                self.show_context(b, x, y);
+            }
+        }
+    }
+
+    /// A path from the git panel (relative to the repository) on disk.
+    fn git_path(&self, rel: &str) -> Option<PathBuf> {
+        let root = self.git.repo.as_ref()?.root().to_path_buf();
+        Some(root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR)))
+    }
+
+    fn confirm_discard_key(&mut self, key: &Key) {
+        let Overlay::ConfirmDiscard(menu, ..) = &mut self.overlay else { return };
+        let choice = match key {
+            Key::Named(NamedKey::Escape) => Some(false),
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.move_selection(-1);
+                None
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                menu.move_selection(1);
+                None
+            }
+            Key::Named(NamedKey::Enter) => menu.selected().and_then(|v| v.as_bool()),
+            Key::Character(c) if c.as_str() == "1" => Some(true),
+            Key::Character(c) if c.as_str() == "2" => Some(false),
+            _ => None,
+        };
+        let Some(yes) = choice else { return };
+        let Overlay::ConfirmDiscard(_, rel, kind) = std::mem::replace(&mut self.overlay, Overlay::None) else { return };
+        if yes {
+            // An open tab of the file must not keep (and save back) the old text.
+            if let Some(p) = self.git_path(&rel)
+                && let Some(i) = self.tab_for(&p)
+                && self.tabs[i].doc.is_dirty()
+            {
+                self.show("The file has unsaved changes open: save or close it first");
+                return;
+            }
+            self.git.discard(rel, kind);
         }
     }
 
@@ -6069,6 +6379,7 @@ impl State {
                 self.tabs.push(view);
                 self.mru.push(self.tabs.len() - 1);
                 self.activate(self.tabs.len() - 1);
+                self.drop_start_page();
                 self.focus = Focus::Editor;
             }
             SetTheme(name) => self.set_theme(name),
@@ -6380,7 +6691,13 @@ impl State {
                     ed.skip_folds(old);
                 }
             }
-            Command::Insert(text) => ed.doc.insert(&text),
+            Command::Insert(text) => {
+                if self.settings.editor.auto_close {
+                    ed.doc.type_char(&text)
+                } else {
+                    ed.doc.insert(&text)
+                }
+            }
             Command::Newline => ed.doc.newline(),
             Command::NewlineBelow => {
                 ed.doc.move_cursors(Movement::LineEnd, false);
@@ -6672,6 +6989,13 @@ impl State {
         let st = self.layout.status;
         if button == MouseButton::Left
             && y >= st.y
+            && let Some(item) = self.status_items.iter().find(|it| x >= it.1 && x < it.2).map(|it| it.0)
+        {
+            self.status_click(item, x, st.y);
+            return;
+        }
+        if button == MouseButton::Left
+            && y >= st.y
             && x >= self.status_ai_span.0
             && x < self.status_ai_span.1
         {
@@ -6774,8 +7098,8 @@ impl State {
         }
         if self.panel_shown(Panel::Git) && self.git.contains(x, y) {
             self.focus = Focus::Git;
-            if button == MouseButton::Left {
-                let action = self.git.click(y);
+            if matches!(button, MouseButton::Left | MouseButton::Right) {
+                let action = self.git.click_at(x, y, button == MouseButton::Right);
                 self.apply_git_action(action);
             }
             return;
@@ -6845,6 +7169,14 @@ impl State {
         }
         if button == MouseButton::Right && self.diff.is_none() && self.editor().contains(x, y) && !self.editor().settings_page {
             self.open_editor_menu(x, y);
+            return;
+        }
+        if button == MouseButton::Left
+            && self.welcome_shown()
+            && self.editor().contains(x, y)
+            && let Some(i) = self.welcome.row_at(x, y)
+        {
+            self.welcome_click(i);
             return;
         }
         if button != MouseButton::Left || !self.editor().contains(x, y) {
@@ -7002,7 +7334,8 @@ impl State {
             (None, Some(r)) => format!(" – {}", file_name(r)),
             (None, None) => String::new(),
         };
-        let title = format!("{dirty}{}{project} – Wyven", ed.file_name());
+        let name = if self.welcome_shown() { "Welcome".to_string() } else { ed.file_name() };
+        let title = format!("{dirty}{name}{project} – Wyven");
         if title != self.title {
             self.window.set_title(&title);
             self.title = title;
@@ -7075,18 +7408,38 @@ impl State {
             wyven_buffer::LineEnding::Lf => "LF",
             wyven_buffer::LineEnding::CrLf => "CRLF",
         };
-        let ram = metrics::ram_mb().map_or("–".into(), |mb| format!("{mb:.0} MB"));
-        let right = format!(
-            "{problems}{language}  ·  {ending}  ·  RAM {ram}  ·  key→frame {} (avg {})",
-            metrics::ms(self.latency.last()),
-            metrics::ms(self.latency.average()),
-        );
+        // The right side in parts; problems, language and line breaks can be clicked.
+        let mut right = String::new();
+        let mut parts = Vec::new();
+        if !problems.is_empty() {
+            parts.push((StatusItem::Problems, 0..problems.trim_end_matches("  ·  ").len()));
+            right.push_str(&problems);
+        }
+        let at = right.len();
+        right.push_str(&language);
+        parts.push((StatusItem::Language, at..right.len()));
+        right.push_str("  ·  ");
+        let at = right.len();
+        right.push_str(ending);
+        parts.push((StatusItem::LineEnding, at..right.len()));
+        if self.settings.ui.show_metrics {
+            let ram = metrics::ram_mb().map_or("–".into(), |mb| format!("{mb:.0} MB"));
+            right.push_str(&format!(
+                "  ·  RAM {ram}  ·  key→frame {} (avg {})",
+                metrics::ms(self.latency.last()),
+                metrics::ms(self.latency.average()),
+            ));
+        }
+        let pos_len = left.find("   ").unwrap_or(left.len());
+        let left_parts = if self.diff.is_none() && left.starts_with("Ln ") { vec![(StatusItem::GotoLine, 0..pos_len)] } else { Vec::new() };
         let attrs = Attrs::new().family(Family::Name(&self.family));
         let fs = self.renderer.font_system();
         self.status_left.set_text(&left, &attrs, Shaping::Advanced, None);
         self.status_left.shape_until_scroll(fs, false);
         self.status_right.set_text(&right, &attrs, Shaping::Advanced, None);
         self.status_right.shape_until_scroll(fs, false);
+        self.status_left_items = item_spans(&self.status_left, &left_parts);
+        self.status_right_items = item_spans(&self.status_right, &parts);
         let ai_label = self.ai.label();
         self.status_ai.set_text(&ai_label, &attrs, Shaping::Advanced, None);
         self.status_ai.shape_until_scroll(fs, false);
@@ -7163,7 +7516,9 @@ impl State {
             | Overlay::References(m)
             | Overlay::Themes(m)
             | Overlay::Update(m)
-            | Overlay::ConfirmDelete(m, _) => {
+            | Overlay::ConfirmDelete(m, _)
+            | Overlay::ConfirmDiscard(m, ..)
+            | Overlay::ConfirmClose(m) => {
                 m.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
             Overlay::ExplorerPrompt { prompt, .. } => prompt.prepare(self.renderer.font_system(), &self.theme, &self.family),
@@ -7236,6 +7591,15 @@ impl State {
         // Which panels show (before the panels hand out their text for this frame).
         let shown = Panel::ALL.map(|p| self.panel_shown(p));
         let focused_panel = self.focused_panel();
+        let show_welcome = self.welcome_shown();
+        if show_welcome {
+            let now = Instant::now();
+            if self.welcome_recent.as_ref().is_none_or(|(t, _)| now.duration_since(*t) > Duration::from_secs(5)) {
+                self.welcome_recent = Some((now, config::recent_projects()));
+            }
+            let recent = self.welcome_recent.as_ref().map(|r| r.1.clone()).unwrap_or_default();
+            self.welcome.prepare(self.renderer.font_system(), &self.theme, &recent);
+        }
         let strips = self.strips();
         let run_btn = self.run_button();
         let theme = &self.theme;
@@ -7378,6 +7742,7 @@ impl State {
         match &self.diff {
             Some(d) => d.draw(theme, scale, &mut under, &mut over, &mut text),
             None if self.tabs[self.active].settings_page => self.settings_page.draw(theme, &mut under, &mut text),
+            None if show_welcome => self.welcome.draw(theme, l.editor, scale, &mut under, &mut text),
             None => self.tabs[self.active].draw(theme, scale, &mut under, &mut over, &mut text),
         }
         if let (Some(sp), Some(t2), Some(e2)) = (&self.split, l.tabs2, l.editor2) {
@@ -7420,6 +7785,17 @@ impl State {
         let text_y = s.y + (s.h - self.ui_font.line_h) / 2.0;
         let right_w = self.status_right.layout_runs().next().map_or(0.0, |r| r.line_w);
         let msg_color = if self.message.is_some() { theme.status_accent } else { theme.status_text };
+        // Clickable parts: where they are on screen, a light background under the hovered one.
+        let right_x = s.w - right_w - pad;
+        self.status_items = self
+            .status_left_items
+            .iter()
+            .map(|&(i, a, b)| (i, pad + a, pad + b))
+            .chain(self.status_right_items.iter().map(|&(i, a, b)| (i, right_x + a, right_x + b)))
+            .collect();
+        if let Some(&(_, a, b)) = self.status_items.iter().find(|it| Some(it.0) == self.status_hover) {
+            under.push(Quad { x: a - pad * 0.5, y: s.y, w: b - a + pad, h: s.h, color: theme.status_text.with_alpha(0x22) });
+        }
         text.push(TextBlock {
             buffer: &self.status_left,
             x: pad,
@@ -7489,7 +7865,9 @@ impl State {
                 | Overlay::References(m)
                 | Overlay::Themes(m)
                 | Overlay::Update(m)
-                | Overlay::ConfirmDelete(m, _) => {
+                | Overlay::ConfirmDelete(m, _)
+                | Overlay::ConfirmDiscard(m, ..)
+                | Overlay::ConfirmClose(m) => {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }

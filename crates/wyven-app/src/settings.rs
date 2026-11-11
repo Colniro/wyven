@@ -33,6 +33,8 @@ tab_width = 4
 indent = "spaces"
 # Show suggestions automatically while typing (Ctrl+Space always works)
 auto_complete = true
+# Type ( [ { " ' and the closing partner appears too
+auto_close = true
 # Save changed files by themselves shortly after you stop typing
 auto_save = true
 # How long to wait after the last change, in milliseconds
@@ -57,6 +59,8 @@ code_lens = true
 font_scale = 0.93
 # Width of the explorer in characters
 explorer_width = 30
+# Show RAM and key-to-frame time in the status bar
+show_metrics = false
 
 [ai]
 # AI suggestions while typing (Tab accepts, Ctrl+→ one word, Esc dismisses).
@@ -171,6 +175,7 @@ pub struct EditorSettings {
     pub indent: String,
     pub auto_complete: bool,
     pub auto_save: bool,
+    pub auto_close: bool,
     pub auto_save_delay_ms: u64,
     pub hover: bool,
     pub minimap: String,
@@ -185,6 +190,7 @@ pub struct EditorSettings {
 pub struct UiSettings {
     pub font_scale: f32,
     pub explorer_width: f32,
+    pub show_metrics: bool,
 }
 
 impl Default for Settings {
@@ -209,13 +215,13 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_close: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
     }
 }
 
 impl Default for UiSettings {
     fn default() -> Self {
-        Self { font_scale: 0.93, explorer_width: 30.0 }
+        Self { font_scale: 0.93, explorer_width: 30.0, show_metrics: false }
     }
 }
 

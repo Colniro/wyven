@@ -38,6 +38,13 @@ pub enum CtxAction {
     RenameTerminal(usize),
     ColorTerminal(usize, Option<[u8; 3]>),
     KillTerminal(usize),
+    /// Status bar: highlight the file as another language (None: plain text), line breaks.
+    SetLanguage(Option<String>),
+    SetLineEnding(bool),
+    /// Git panel: a changed file (path relative to the repository).
+    GitDiff(String),
+    GitOpenFile(String),
+    GitDiscard(String, wyven_git::ChangeKind),
     /// A new terminal with profile `i` of [`crate::terminal::profiles`].
     NewTerminalProfile(usize),
 }

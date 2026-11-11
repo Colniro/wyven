@@ -351,6 +351,15 @@ fn registry() -> &'static [LanguageConfig] {
     })
 }
 
+/// The names of all languages with highlighting.
+pub fn language_names() -> Vec<&'static str> {
+    registry().iter().map(|c| c.name).collect()
+}
+
+pub fn language_by_name(name: &str) -> Option<&'static LanguageConfig> {
+    registry().iter().find(|c| c.name == name)
+}
+
 /// Finds the language for a file by its extension.
 pub fn language_for_path(path: &Path) -> Option<&'static LanguageConfig> {
     let name = path.file_name()?.to_str()?.to_ascii_lowercase();

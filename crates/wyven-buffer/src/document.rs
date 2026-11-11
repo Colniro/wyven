@@ -184,6 +184,14 @@ impl Document {
         self.line_ending
     }
 
+    /// Saves with other line breaks from now on (the file counts as changed).
+    pub fn set_line_ending(&mut self, ending: LineEnding) {
+        if ending != self.line_ending {
+            self.line_ending = ending;
+            self.saved_version = self.version.wrapping_sub(1);
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.version != self.saved_version
     }
@@ -311,6 +319,55 @@ impl Document {
         });
     }
 
+    /// Types one character with automatic pairs, like Visual Studio: `(` `[` `{` `"` `'` `` ` ``
+    /// also insert their closing partner (before whitespace, a closing bracket, `;`, `,` or the
+    /// line end); a typed closing character steps over the one already there; with a selection
+    /// the pair goes around it. Anything else is inserted as usual.
+    pub fn type_char(&mut self, text: &str) {
+        let mut chars = text.chars();
+        let (Some(c), None) = (chars.next(), chars.next()) else {
+            self.insert(text);
+            return;
+        };
+        let close = match c {
+            '(' => Some(')'),
+            '[' => Some(']'),
+            '{' => Some('}'),
+            '"' | '\'' | '`' => Some(c),
+            _ => None,
+        };
+        let is_closer = matches!(c, ')' | ']' | '}' | '"' | '\'' | '`');
+        if close.is_none() && !is_closer {
+            self.insert(text);
+            return;
+        }
+        let quote = matches!(c, '"' | '\'' | '`');
+        self.replace_each(EditKind::Insert, false, |rope, r| {
+            let next = (r.to() < rope.len_chars()).then(|| rope.char(r.to()));
+            let prev = (r.from() > 0).then(|| rope.char(r.from() - 1));
+            let plain = (Change { start: r.from(), end: r.to(), text: c.to_string() }, 1);
+            if !r.is_empty() {
+                // Around the selection (cursor before the closing character).
+                let Some(cl) = close else { return plain };
+                let inner: String = rope.slice(r.from()..r.to()).to_string();
+                let n = inner.chars().count();
+                return (Change { start: r.from(), end: r.to(), text: format!("{c}{inner}{cl}") }, n + 1);
+            }
+            // Step over a closing character that is already there.
+            if is_closer && next == Some(c) {
+                return (Change { start: r.from(), end: r.from(), text: String::new() }, 1);
+            }
+            let Some(cl) = close else { return plain };
+            let free_after = next.is_none_or(|n| n.is_whitespace() || matches!(n, ')' | ']' | '}' | ';' | ',' | '.' | ':' | '>'));
+            // A quote right after a letter is an apostrophe (don't), not a string.
+            let word_before = prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == c);
+            if !free_after || (quote && word_before) {
+                return plain;
+            }
+            (Change { start: r.from(), end: r.to(), text: format!("{c}{cl}") }, 1)
+        });
+    }
+
     /// Enter: new line with the indentation of the current line. Between brackets like `{|}`
     /// the closing bracket moves to its own line.
     pub fn newline(&mut self) {
@@ -428,6 +485,13 @@ impl Document {
             let pos = r.head;
             if pos == 0 {
                 return (Change { start: 0, end: 0, text: String::new() }, 0);
+            }
+            // Between an empty pair `(|)`: both go.
+            if pos < rope.len_chars() {
+                let (a, b) = (rope.char(pos - 1), rope.char(pos));
+                if matches!((a, b), ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('\'', '\'') | ('`', '`')) {
+                    return (Change { start: pos - 1, end: pos + 1, text: String::new() }, 0);
+                }
             }
             let line = rope.char_to_line(pos);
             let line_start = rope.line_to_char(line);
@@ -1078,5 +1142,35 @@ mod tests {
         assert_eq!(edits[0].start_point, (1, 1));
         assert_eq!(edits[1].start_byte, 1);
         assert_eq!(edits[1].new_end_byte, 3);
+    }
+
+    #[test]
+    fn brackets_and_quotes_close_themselves() {
+        let typed = |text: &str, at: usize, c: &str| {
+            let mut d = Document::from_str(text);
+            d.set_cursor(at);
+            d.type_char(c);
+            (d.text().to_string(), d.selection().primary().head)
+        };
+        assert_eq!(typed("foo", 3, "("), ("foo()".into(), 4));
+        assert_eq!(typed("x = ;", 4, "\""), ("x = \"\";".into(), 5));
+        assert_eq!(typed("if x {}", 6, "{"), ("if x {{}}".into(), 7));
+        // Before a word: no pair.
+        assert_eq!(typed("abc", 0, "("), ("(abc".into(), 1));
+        // An apostrophe.
+        assert_eq!(typed("don", 3, "'"), ("don'".into(), 4));
+        // Typing the closing character steps over it.
+        assert_eq!(typed("f()", 2, ")"), ("f()".into(), 3));
+        assert_eq!(typed("\"\"", 1, "\""), ("\"\"".into(), 2));
+        // Around a selection.
+        let mut d = Document::from_str("say hi");
+        d.set_selection(Selection::single(Range::new(4, 6)));
+        d.type_char("\"");
+        assert_eq!(d.text().to_string(), "say \"hi\"");
+        // Backspace in an empty pair removes both.
+        let mut d = Document::from_str("f()");
+        d.set_cursor(2);
+        d.backspace();
+        assert_eq!(d.text().to_string(), "f");
     }
 }
