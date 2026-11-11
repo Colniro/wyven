@@ -117,7 +117,7 @@ Cargo-Workspace, Fenster, wgpu-Rendering, Text auf dem Bildschirm, Benchmarks f�
 ~~Debugger (netcoredbg)~~ ✅, ~~Inlay Hints~~ ✅, ~~CodeLens~~ ✅, ~~Markdown-Vorschau~~ ✅, ~~KI-Inline-Vorschläge~~ ✅, ~~Claude-Code-Brücke~~ ✅, ~~Web-Sprachen per LSP~~ ✅.
 
 **Phase 4 – Anpassbarkeit**
-~~Andockbare Panels~~ ✅, ~~grafische Einstellungsseite~~ ✅, Import von VS-Code-Themes, Multi-Root-Workspaces, WASM-Plugin-System.
+~~Andockbare Panels~~ ✅, ~~grafische Einstellungsseite~~ ✅, ~~Import von VS-Code-Themes~~ ✅, Multi-Root-Workspaces, WASM-Plugin-System.
 
 **Phase 5 – Veröffentlichung**
 Installer (Windows MSI/winget, Linux AppImage/Flatpak), Auto-Update, Doku, Website.

@@ -27,6 +27,8 @@ pub enum Action {
     /// Switches to a theme by its settings name ("dark", "light") and stores it.
     SetTheme(&'static str),
     ToggleTheme,
+    /// Picker with all themes (Wyven's and VS Code's), previewing while moving.
+    ChooseTheme,
     /// Opens/focuses/closes the terminal panel.
     ToggleTerminal,
     /// Minimap: blocks → bar → off.
@@ -156,6 +158,7 @@ const VIEW: &[Item] = &[
     item('w', "word wrap", Later("Word wrap comes in phase 2")),
     item('z', "zen mode", Later("Zen mode comes in phase 4")),
     item('t', "toggle light/dark theme", ToggleTheme),
+    item('c', "color theme …", ChooseTheme),
     item('f', "fold / unfold at cursor", Run(Command::Fold(FoldCmd::Toggle))),
     item('a', "fold all / unfold all", Run(Command::Fold(FoldCmd::ToggleAll))),
     item('d', "fold to definitions", Run(Command::Fold(FoldCmd::Definitions))),

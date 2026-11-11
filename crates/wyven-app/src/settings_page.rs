@@ -47,7 +47,7 @@ const A: Option<&str> = Some("ai");
 const T: Option<&str> = Some("terminal");
 
 pub const ITEMS: &[Item] = &[
-    item("Appearance", None, "theme", "Color theme", "Also: Alt → v → t switches between dark and light.",
+    item("Appearance", None, "theme", "Color theme", "Alt → v → c picks any theme, installed VS Code themes included (with preview). Alt → v → t switches dark/light.",
          Kind::Choice(&[("dark", "Dark"), ("light", "Light")])),
     item("Font", F, "family", "Font family", "Font for code and interface (Cascadia Mono, JetBrains Mono, Consolas, …).",
          Kind::Text { empty: "automatic" }),

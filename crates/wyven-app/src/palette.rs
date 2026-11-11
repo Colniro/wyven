@@ -108,6 +108,7 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Git: New Branch …", "Alt g n", Ld(L::Git(G::NewBranch))),
         ("Git: Diff Current File", "Alt g d", Ld(L::Git(G::Diff))),
         ("Git: Blame Current Line", "Alt g l", Ld(L::Git(G::Blame))),
+        ("Theme: Color Theme … (VS Code themes too)", "Alt v c", Ld(L::ChooseTheme)),
         ("Theme: Wyven Dark", "", Ld(L::SetTheme("dark"))),
         ("Theme: Wyven Light", "", Ld(L::SetTheme("light"))),
         ("Theme: Toggle Light/Dark", "Alt v t", Ld(L::ToggleTheme)),

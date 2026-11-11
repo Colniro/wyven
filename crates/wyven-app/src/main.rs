@@ -33,6 +33,7 @@ mod settings;
 mod settings_page;
 mod terminal;
 mod theme;
+mod vscode_theme;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -167,6 +168,14 @@ enum Focus {
 
 use dock::{Area, Panel};
 
+/// The theme picker: every theme (label, settings name), the filter typed so far, and the
+/// theme to go back to on Esc.
+struct ThemePicker {
+    all: Vec<(String, String)>,
+    filter: String,
+    before: String,
+}
+
 /// A panel tab being dragged with the mouse.
 struct PanelDrag {
     panel: Panel,
@@ -187,6 +196,8 @@ enum Overlay {
     Rename { prompt: menu::Prompt, pos: usize },
     /// Branch picker (items: branch names, `null` = create a new branch).
     Branches(menu::Menu),
+    /// The color theme picker (state in `State::theme_picker`).
+    Themes(menu::Menu),
     /// Name for a new branch.
     NewBranch(menu::Prompt),
     /// F5 with several startable projects: which one.
@@ -316,6 +327,7 @@ struct State {
     /// Side-by-side diff shown instead of the editor.
     diff: Option<diff_view::DiffView>,
     settings_page: settings_page::SettingsPage,
+    theme_picker: Option<ThemePicker>,
 
     latency: InputLatency,
     started: Instant,
@@ -665,7 +677,10 @@ impl State {
         let dock_bar = dock::DockBar::new(fs, ui_font, family.clone());
         let settings_page = settings_page::SettingsPage::new(ui_font, family.clone());
         let find_bar = find::FindBar::new(fs, ui_font);
-        let initial_theme = Theme::by_name(&settings.theme).unwrap_or_else(Theme::dark);
+        let (initial_theme, theme_error) = match Theme::resolve(&settings.theme) {
+            Ok(t) => (t, None),
+            Err(e) => (Theme::dark(), Some(e)),
+        };
         let find_labels = find::ToggleLabels::new(fs, ui_font, &family, &initial_theme);
         let search = search_panel::SearchPanel::new(fs, ui_font, family.clone());
         let mut git = git_panel::GitPanel::new(fs, ui_font, family.clone());
@@ -682,7 +697,7 @@ impl State {
         let mut state = Self {
             window,
             renderer,
-            theme: Theme::by_name(&settings.theme).unwrap_or_else(Theme::dark),
+            theme: initial_theme,
             family,
             font_pt: settings.font.size,
             font,
@@ -739,6 +754,7 @@ impl State {
             run_only: false,
             diff: None,
             settings_page,
+            theme_picker: None,
             proxy,
             servers: HashMap::new(),
             lsp_failed: HashSet::new(),
@@ -753,6 +769,9 @@ impl State {
         };
         state.relayout();
         state.start_claude_bridge();
+        if let Some(e) = theme_error {
+            state.show(e);
+        }
         if let Some(e) = settings_error {
             state.show(format!("settings.toml: {e}"));
         }
@@ -1434,6 +1453,10 @@ impl State {
             }
             Overlay::Branches(_) => {
                 self.branch_menu_key(&key);
+                return;
+            }
+            Overlay::Themes(_) => {
+                self.theme_picker_key(event, &key);
                 return;
             }
             Overlay::References(_) => {
@@ -2271,12 +2294,13 @@ impl State {
             return;
         }
         let font_changed = new.font != self.settings.font || new.ui != self.settings.ui;
+        let new_theme = new.theme != self.settings.theme;
         self.settings = new;
-        if let Some(theme) = Theme::by_name(&self.settings.theme) {
-            self.theme = theme;
-            self.terminal.dirty = true;
-        } else {
-            self.show(format!("Unknown theme “{}” (dark or light)", self.settings.theme));
+        if new_theme {
+            match Theme::resolve(&self.settings.theme) {
+                Ok(theme) => self.apply_theme(theme),
+                Err(e) => self.show(e),
+            }
         }
         if font_changed {
             let fs = self.renderer.font_system();
@@ -2301,13 +2325,17 @@ impl State {
     }
 
     /// Switches the theme now and writes it to settings.toml.
+    /// Switches to a theme and stores it in settings.toml.
     fn set_theme(&mut self, name: &str) {
-        let Some(theme) = Theme::by_name(name) else { return };
-        self.terminal.dirty = true;
-        let fs = self.renderer.font_system();
-        self.find_labels.set(fs, &self.family, &theme);
+        let theme = match Theme::resolve(name) {
+            Ok(t) => t,
+            Err(e) => {
+                self.show(e);
+                return;
+            }
+        };
         let display = theme.display_name();
-        self.theme = theme;
+        self.apply_theme(theme);
         self.settings.theme = name.to_string();
         if let Err(e) = settings::store_theme(name) {
             self.show(format!("Theme not saved: {e}"));
@@ -2315,11 +2343,128 @@ impl State {
             self.settings_mtime = settings::modified();
             self.show(format!("Theme: {display}"));
         }
+    }
+
+    /// Shows a theme everywhere (without storing it: also the picker's preview).
+    fn apply_theme(&mut self, theme: Theme) {
+        self.terminal.dirty = true;
+        let fs = self.renderer.font_system();
+        self.find_labels.set(fs, &self.family, &theme);
+        self.theme = theme;
         for t in &mut self.tabs {
             t.invalidate();
         }
         if let Some(ex) = &mut self.explorer {
             ex.invalidate();
+        }
+        if let Some(d) = &mut self.diff {
+            d.invalidate();
+        }
+        self.window.request_redraw();
+    }
+
+    /// Alt → v → c: all themes; moving through the list previews them.
+    fn open_theme_picker(&mut self) {
+        let mut all: Vec<(String, String)> =
+            theme::THEMES.iter().map(|(id, label)| (label.to_string(), id.to_string())).collect();
+        all.extend(vscode_theme::discover().into_iter().map(|e| (format!("{}   · {}", e.label, e.source), e.label)));
+        let before = self.settings.theme.clone();
+        self.theme_picker = Some(ThemePicker { all, filter: String::new(), before });
+        self.refill_theme_picker();
+    }
+
+    /// Builds the list for the current filter, with the current theme selected.
+    fn refill_theme_picker(&mut self) {
+        let Some(p) = &self.theme_picker else { return };
+        let f = p.filter.to_lowercase();
+        let items: Vec<(String, wyven_lsp::Value)> = p
+            .all
+            .iter()
+            .filter(|(label, _)| f.is_empty() || label.to_lowercase().contains(&f))
+            .map(|(label, id)| (label.clone(), wyven_lsp::Value::String(id.clone())))
+            .collect();
+        let title = if p.filter.is_empty() {
+            "Color theme (type to filter · ↑↓ preview · Enter keeps · Esc back)".to_string()
+        } else {
+            format!("Color theme: {}▏", p.filter)
+        };
+        let current = self.theme.name;
+        let at = items.iter().position(|(_, v)| {
+            v.as_str().is_some_and(|id| Theme::by_name(id).map_or(id == current, |t| t.name == current))
+        });
+        let fs = self.renderer.font_system();
+        let mut menu = menu::Menu::new(fs, self.ui_font, &title, items);
+        if let Some(i) = at {
+            menu.select(i);
+        }
+        self.overlay = Overlay::Themes(menu);
+    }
+
+    fn preview_selected_theme(&mut self) {
+        let Overlay::Themes(menu) = &self.overlay else { return };
+        let Some(id) = menu.selected().and_then(|v| v.as_str().map(str::to_string)) else { return };
+        if Theme::by_name(&id).map_or(id.as_str(), |t| t.name) == self.theme.name {
+            return;
+        }
+        match Theme::resolve(&id) {
+            Ok(t) => self.apply_theme(t),
+            Err(e) => self.show(e),
+        }
+    }
+
+    fn theme_picker_key(&mut self, event: &KeyEvent, key: &Key) {
+        let Overlay::Themes(menu) = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.overlay = Overlay::None;
+                if let Some(p) = self.theme_picker.take()
+                    && let Ok(t) = Theme::resolve(&p.before)
+                {
+                    self.apply_theme(t);
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.move_selection(-1);
+                self.preview_selected_theme();
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                menu.move_selection(1);
+                self.preview_selected_theme();
+            }
+            Key::Named(NamedKey::PageUp) => {
+                menu.move_selection(-10);
+                self.preview_selected_theme();
+            }
+            Key::Named(NamedKey::PageDown) => {
+                menu.move_selection(10);
+                self.preview_selected_theme();
+            }
+            Key::Named(NamedKey::Enter) => {
+                let id = menu.selected().and_then(|v| v.as_str().map(str::to_string));
+                self.overlay = Overlay::None;
+                self.theme_picker = None;
+                if let Some(id) = id {
+                    self.set_theme(&id);
+                }
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(p) = &mut self.theme_picker {
+                    p.filter.pop();
+                }
+                self.refill_theme_picker();
+                self.preview_selected_theme();
+            }
+            _ => {
+                let typed = event.text.as_ref().map(|t| t.to_string()).unwrap_or_default();
+                let typed: String = typed.chars().filter(|c| !c.is_control()).collect();
+                if !typed.is_empty() && !self.modifiers.control_key() {
+                    if let Some(p) = &mut self.theme_picker {
+                        p.filter.push_str(&typed);
+                    }
+                    self.refill_theme_picker();
+                    self.preview_selected_theme();
+                }
+            }
         }
         self.window.request_redraw();
     }
@@ -3601,6 +3746,7 @@ impl State {
                 self.focus = Focus::Editor;
             }
             SetTheme(name) => self.set_theme(name),
+            ChooseTheme => self.open_theme_picker(),
             ToggleTerminal => self.toggle_terminal(),
             ToggleTheme => {
                 let next = if self.theme.name == "dark" { "light" } else { "dark" };
@@ -4425,7 +4571,11 @@ impl State {
             Overlay::Rename { prompt, .. } | Overlay::NewBranch(prompt) => {
                 prompt.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
-            Overlay::Branches(m) | Overlay::DebugProjects(m) | Overlay::Processes(m) | Overlay::References(m) => {
+            Overlay::Branches(m)
+            | Overlay::DebugProjects(m)
+            | Overlay::Processes(m)
+            | Overlay::References(m)
+            | Overlay::Themes(m) => {
                 m.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
             Overlay::Watch(prompt) | Overlay::ApiKey(prompt) => {
@@ -4609,7 +4759,11 @@ impl State {
                     prompt.draw(theme, self.ui_font, cx, below, window, scale, &mut overlay, &mut overlay_text)
                 }
                 // Git popups belong to no cursor: show them near the top of the editor.
-                Overlay::Branches(m) | Overlay::DebugProjects(m) | Overlay::Processes(m) | Overlay::References(m) => {
+                Overlay::Branches(m)
+                | Overlay::DebugProjects(m)
+                | Overlay::Processes(m)
+                | Overlay::References(m)
+                | Overlay::Themes(m) => {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }

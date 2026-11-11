@@ -1,5 +1,5 @@
-//! Colors. Two built-in themes, "dark" and "light"; chosen in settings.toml or via the
-//! search field (`>Theme`). Importing VS Code themes is planned for phase 4.
+//! Colors. Two built-in themes, "dark" and "light", plus every VS Code theme that is installed
+//! (see `vscode_theme`); chosen in settings.toml or via the search field (`>Theme`).
 
 use wyven_render::Rgba;
 use wyven_syntax::Highlight;
@@ -61,6 +61,10 @@ pub struct Theme {
     pub diff_filler: Rgba,
     /// Background of the line where the debugger is paused.
     pub debug_line: Rgba,
+    /// Dark background (decides derived colors and the terminal's default palette).
+    pub dark: bool,
+    /// Terminal colors from a VS Code theme (black, red, … bright white).
+    pub ansi: Option<[Rgba; 16]>,
     pub syntax: SyntaxColors,
 }
 
@@ -111,6 +115,8 @@ impl Theme {
             diff_added: Rgba(0x40, 0xA0, 0x50, 0x40),
             diff_filler: Rgba(0x00, 0x00, 0x00, 0x40),
             debug_line: Rgba(0xE8, 0xB0, 0x3A, 0x40),
+            dark: true,
+            ansi: None,
             // Inspired by Visual Studio's dark theme.
             syntax: SyntaxColors {
                 keyword: Rgba::rgb(0x56, 0x9C, 0xD6),
@@ -166,6 +172,8 @@ impl Theme {
             diff_added: Rgba(0x80, 0xE0, 0x90, 0x60),
             diff_filler: Rgba(0x00, 0x00, 0x00, 0x14),
             debug_line: Rgba(0xF5, 0xC0, 0x40, 0x70),
+            dark: false,
+            ansi: None,
             // Inspired by Visual Studio's light theme.
             syntax: SyntaxColors {
                 keyword: Rgba::rgb(0x00, 0x00, 0xFF),
@@ -188,7 +196,17 @@ impl Theme {
     pub fn terminal_palette(&self) -> wyven_terminal::Palette {
         let rgb = |c: Rgba| [c.0, c.1, c.2];
         let hex = |v: u32| [(v >> 16) as u8, (v >> 8) as u8, v as u8];
-        let ansi = if self.name == "light" {
+        if let Some(a) = self.ansi {
+            let sel = self.selection;
+            return wyven_terminal::Palette {
+                foreground: rgb(self.text),
+                background: rgb(self.panel_bg),
+                cursor: rgb(self.cursor),
+                selection: [sel.0, sel.1, sel.2],
+                ansi: a.map(rgb),
+            };
+        }
+        let ansi = if !self.dark {
             // VS Code light terminal colors.
             [
                 0x000000, 0xCD3131, 0x107C10, 0x949800, 0x0451A5, 0xBC05BC, 0x0598BC, 0x555555,
@@ -209,6 +227,19 @@ impl Theme {
             selection: [sel.0, sel.1, sel.2],
             ansi: ansi.map(hex),
         }
+    }
+
+    /// A built-in theme or a VS Code theme by its label ("Dracula Theme").
+    pub fn resolve(name: &str) -> Result<Self, String> {
+        if let Some(t) = Self::by_name(name) {
+            return Ok(t);
+        }
+        let want = name.trim().to_lowercase();
+        let entry = crate::vscode_theme::discover()
+            .into_iter()
+            .find(|e| e.label.to_lowercase() == want)
+            .ok_or_else(|| format!("Unknown theme “{name}”"))?;
+        crate::vscode_theme::load(&entry.label, &entry.path)
     }
 
     pub fn display_name(&self) -> &'static str {

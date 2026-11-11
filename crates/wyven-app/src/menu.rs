@@ -48,6 +48,14 @@ impl Menu {
         }
     }
 
+    /// Selects item `i` and scrolls it into view.
+    pub fn select(&mut self, i: usize) {
+        if i < self.items.len() {
+            self.selected = i;
+            self.scroll = i.saturating_sub(ROWS / 2).min(self.items.len().saturating_sub(ROWS));
+        }
+    }
+
     pub fn selected(&self) -> Option<Value> {
         self.items.get(self.selected).map(|(_, v)| v.clone())
     }

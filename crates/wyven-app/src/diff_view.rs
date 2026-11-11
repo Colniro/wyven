@@ -148,6 +148,12 @@ impl DiffView {
         }
     }
 
+    /// Re-render both sides (theme changed).
+    pub fn invalidate(&mut self) {
+        self.left.invalidate();
+        self.right.invalidate();
+    }
+
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme) {
         let attrs = Attrs::new().family(Family::Name(&self.family));
         let n = self.changes();
