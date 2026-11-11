@@ -27,6 +27,8 @@ const VISIBLE_ROWS: usize = 12;
 pub enum Cmd {
     Key(Command),
     Leader(leader::Action),
+    /// A plugin's command: plugin index and command id.
+    Plugin(usize, String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +120,9 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Preferences: Open Settings", "Alt ,", Ld(L::OpenSettings)),
         ("Preferences: Open Settings File (settings.toml)", "", Ld(L::OpenSettingsFile)),
         ("Help: All Keyboard Shortcuts", "Alt h", Ld(L::CheatSheet)),
+        ("Plugins: Show Installed Plugins", "", Ld(L::ShowPlugins)),
+        ("Plugins: Reload Plugins", "", Ld(L::ReloadPlugins)),
+        ("Plugins: Open Plugins Folder", "", Ld(L::OpenPluginsFolder)),
         ("View: Zoom In", "Ctrl++", K(C::FontSize(1))),
         ("View: Zoom Out", "Ctrl+-", K(C::FontSize(-1))),
         ("View: Reset Zoom", "Ctrl+0", K(C::FontSizeReset)),
@@ -156,6 +161,8 @@ pub struct Palette {
     /// Box position from the last draw, for mouse clicks.
     rows_rect: Rect,
     row_h: f32,
+    /// Commands of the loaded plugins (title, detail, command).
+    pub plugin_commands: Vec<(String, String, Cmd)>,
 }
 
 impl Palette {
@@ -176,6 +183,7 @@ impl Palette {
             waiting_for_index: false,
             rows_rect: Rect::default(),
             row_h: font.line_h,
+            plugin_commands: Vec::new(),
         }
     }
 
@@ -324,20 +332,22 @@ impl Palette {
 
     fn match_commands(&mut self, q: &str) -> Vec<Entry> {
         self.matcher.config = Config::DEFAULT;
-        let cmds = commands();
+        let mut cmds: Vec<(String, String, Cmd)> =
+            commands().into_iter().map(|(label, keys, cmd)| (label.to_string(), keys.to_string(), cmd)).collect();
+        cmds.extend(self.plugin_commands.iter().cloned());
         let order: Vec<(usize, Vec<u32>)> = if q.is_empty() {
             (0..cmds.len()).map(|i| (i, Vec::new())).collect()
         } else {
-            Self::rank(&mut self.matcher, q, cmds.iter().map(|c| c.0))
+            Self::rank(&mut self.matcher, q, cmds.iter().map(|c| c.0.as_str()))
                 .into_iter()
-                .map(|(i, _, _)| (i, Self::hits(&mut self.matcher, q, cmds[i].0)))
+                .map(|(i, _, _)| (i, Self::hits(&mut self.matcher, q, &cmds[i].0)))
                 .collect()
         };
         order
             .into_iter()
             .map(|(i, hits)| Entry {
-                label: cmds[i].0.into(),
-                detail: cmds[i].1.into(),
+                label: cmds[i].0.clone(),
+                detail: cmds[i].1.clone(),
                 action: Action::Run(cmds[i].2.clone()),
                 hits,
             })

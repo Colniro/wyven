@@ -35,6 +35,7 @@ mod terminal;
 mod theme;
 mod vscode_theme;
 mod workspace;
+mod plugins;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -329,6 +330,7 @@ struct State {
     diff: Option<diff_view::DiffView>,
     settings_page: settings_page::SettingsPage,
     theme_picker: Option<ThemePicker>,
+    plugins: plugins::Plugins,
     /// The `.code-workspace` file the workspace came from (folders are written back to it).
     workspace_file: Option<PathBuf>,
     /// The file Git last followed (the panel shows the repository of the active file).
@@ -762,6 +764,7 @@ impl State {
             diff: None,
             settings_page,
             theme_picker: None,
+            plugins: plugins::Plugins::new(),
             workspace_file: None,
             git_followed: None,
             proxy,
@@ -778,6 +781,7 @@ impl State {
         };
         state.relayout();
         state.start_claude_bridge();
+        state.reload_plugins(false);
         if let Some(e) = theme_error {
             state.show(e);
         }
@@ -1368,6 +1372,7 @@ impl State {
                 self.mru.push(self.tabs.len() - 1);
                 self.activate(self.tabs.len() - 1);
             }
+            self.plugin_event(plugins::Event::Open);
         }
         if let Some(ex) = &mut self.explorer {
             ex.reveal(path);
@@ -1379,7 +1384,11 @@ impl State {
     }
 
     fn activate(&mut self, index: usize) {
+        let switched = index != self.active;
         self.active = index;
+        if switched {
+            self.plugin_event(plugins::Event::Switch);
+        }
         self.diff = None;
         if self.cycling.is_none() {
             self.mru.retain(|&i| i != index);
@@ -1489,6 +1498,7 @@ impl State {
             self.save_as();
             return;
         }
+        self.plugin_event(plugins::Event::BeforeSave);
         let ed = &mut self.tabs[self.active];
         match ed.doc.save() {
             Ok(()) => {
@@ -1499,6 +1509,7 @@ impl State {
                 }
                 let is_settings = ed.doc.path().is_some() && ed.doc.path() == settings::path().as_deref();
                 self.show(format!("{name} saved"));
+                self.plugin_event(plugins::Event::Save);
                 if is_settings {
                     self.reload_settings();
                 }
@@ -2394,6 +2405,113 @@ impl State {
     }
 
     /// Re-reads settings.toml and applies what changed. A broken file keeps the old settings.
+    /// Loads the plugins folder (again) and puts their commands into the search field.
+    fn reload_plugins(&mut self, report: bool) {
+        let errors = self.plugins.load_all();
+        self.refresh_plugin_commands();
+        if let Some(e) = errors.last() {
+            self.show(e.clone());
+        } else if report {
+            self.show(format!("{} plugin(s) loaded", self.plugins.len()));
+        }
+    }
+
+    fn refresh_plugin_commands(&mut self) {
+        self.palette.plugin_commands = self
+            .plugins
+            .commands()
+            .into_iter()
+            .map(|(i, id, title)| (title, "plugin".to_string(), palette::Cmd::Plugin(i, id)))
+            .collect();
+    }
+
+    /// The active file as plugins see it.
+    fn plugin_editor(&self) -> plugins::Editor {
+        let ed = self.editor();
+        let r = ed.doc.selection().primary();
+        plugins::Editor {
+            path: ed.doc.path().map(|p| p.display().to_string()),
+            language: ed.language_name().to_string(),
+            text: ed.doc.text().to_string(),
+            selection_start: r.from(),
+            selection_end: r.to(),
+        }
+    }
+
+    fn run_plugin_command(&mut self, index: usize, id: &str) {
+        if self.editor().settings_page || self.diff.is_some() {
+            self.show("Plugin commands work on files.");
+            return;
+        }
+        let editor = self.plugin_editor();
+        match self.plugins.run_command(index, id, editor) {
+            Ok(actions) => self.apply_plugin_actions(actions),
+            Err(e) => {
+                self.show(e);
+                self.refresh_plugin_commands();
+            }
+        }
+    }
+
+    /// Tells the plugins that want it about an event in the active tab.
+    fn plugin_event(&mut self, event: plugins::Event) {
+        if !self.plugins.wants(event) || self.editor().settings_page {
+            return;
+        }
+        let editor = self.plugin_editor();
+        let (actions, errors) = self.plugins.event(event, &editor);
+        self.apply_plugin_actions(actions);
+        if let Some(e) = errors.last() {
+            self.show(e.clone());
+            self.refresh_plugin_commands();
+        }
+    }
+
+    /// Carries out what a plugin answered (each edit is one undo step).
+    fn apply_plugin_actions(&mut self, actions: Vec<plugins::Action>) {
+        use plugins::Action as A;
+        let mut edited = false;
+        for action in actions {
+            let ed = &mut self.tabs[self.active];
+            let len = ed.doc.text().len_chars();
+            match action {
+                A::ReplaceAll { text } => {
+                    if ed.doc.text() != text.as_str() {
+                        let head = ed.doc.selection().primary().head;
+                        ed.doc.replace_range(0, len, &text);
+                        let new_len = ed.doc.text().len_chars();
+                        ed.doc.set_cursor(head.min(new_len));
+                        edited = true;
+                    }
+                }
+                A::ReplaceSelection { text } => {
+                    let r = ed.doc.selection().primary();
+                    ed.doc.replace_range(r.from().min(len), r.to().min(len), &text);
+                    edited = true;
+                }
+                A::ReplaceRange { start, end, text } => {
+                    let end = end.min(len);
+                    ed.doc.replace_range(start.min(end), end, &text);
+                    edited = true;
+                }
+                A::SetSelection { start, end } => {
+                    let (s, e) = (start.min(len), end.min(len));
+                    ed.doc.set_selection(wyven_buffer::Selection::single(wyven_buffer::Range::new(s, e)));
+                }
+                A::Message { text } => self.show(text),
+            }
+        }
+        let ed = &mut self.tabs[self.active];
+        if edited {
+            ed.after_edit();
+        }
+        ed.ensure_cursor_visible();
+        if edited {
+            self.lsp_after_edit();
+        }
+        self.window.request_redraw();
+    }
+
     /// Alt → ,: the settings page as a tab (switches to it if it is open).
     fn open_settings_page(&mut self) {
         settings::ensure_file();
@@ -3828,6 +3946,7 @@ impl State {
             }
             A::Run(Cmd::Key(cmd)) => self.run(cmd),
             A::Run(Cmd::Leader(action)) => self.leader_action(action),
+            A::Run(Cmd::Plugin(index, id)) => self.run_plugin_command(index, &id),
             A::Line(line, col) => {
                 self.editor_mut().jump_to_line(line, col);
                 self.focus = Focus::Editor;
@@ -3905,6 +4024,24 @@ impl State {
             CloseAll => self.close_all(),
             Later(msg) => self.show(msg),
             OpenSettings => self.open_settings_page(),
+            ReloadPlugins => self.reload_plugins(true),
+            ShowPlugins => {
+                let list = self.plugins.summary();
+                let dir = plugins::dir().map(|d| d.display().to_string()).unwrap_or_default();
+                if list.is_empty() {
+                    self.show(format!("No plugins installed. Put .wasm files into {dir}"));
+                } else {
+                    self.show(format!("Plugins: {}", list.join("  ·  ")));
+                }
+            }
+            OpenPluginsFolder => {
+                if let Some(dir) = plugins::dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
+                        self.show(format!("{}: {e}", dir.display()));
+                    }
+                }
+            }
             OpenSettingsFile => {
                 if let Some(path) = settings::ensure_file() {
                     self.open_path(&path);

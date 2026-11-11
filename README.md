@@ -3,8 +3,8 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1, 2 und 3 fertig.** Wyven öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Dazu kommen Debugger, KI-Vorschläge, Inlay Hints, CodeLens, Markdown-Vorschau, die Claude-Code-Brücke und Web-Sprachen per LSP. Als Nächstes kommt Phase 4 (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1 bis 4 fertig.** Wyven öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Dazu kommen Debugger, KI-Vorschläge, Inlay Hints, CodeLens, Markdown-Vorschau, die Claude-Code-Brücke und Web-Sprachen per LSP. Phase 4 brachte andockbare Panels, eine Einstellungsseite, VS-Code-Themes, mehrere Ordner pro Fenster und Plugins. Als Nächstes kommt Phase 5 (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -27,6 +27,12 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyven.exe`.
   - Dateisuche (`Ctrl+Q`) und Projektsuche durchsuchen alle Ordner; Dateien weiterer Ordner beginnen mit deren Namen (`lib/src/x.rs`).
   - Git zeigt das Repository der aktiven Datei, das Terminal startet in ihrem Ordner, Language-Server und Debugger nehmen ebenfalls ihren Ordner. Claude Code sieht alle Ordner.
   - Gemerkt wird das auf zwei Arten: automatisch beim Hauptordner (`%APPDATA%\Wyven\workspaces.json`; „zuletzt geöffnet“ bringt die weiteren Ordner zurück) und als VS-Code-Datei: `Alt → p → w` speichert eine `.code-workspace`-Datei, `Alt → p → f` öffnet eine (auch `wyven datei.code-workspace`). Änderungen an den Ordnern werden dann in die Datei geschrieben, ihre übrigen Einträge bleiben.
+- **Plugins** (WebAssembly, in Rust geschrieben):
+  - Plugins liegen als `.wasm`-Dateien in `%APPDATA%\Wyven\plugins` (auch in Unterordnern) und werden beim Start geladen. Ihre Befehle erscheinen im Suchfeld (`Ctrl+Q`, `>`), z. B. „Text Tools: Sort Lines“.
+  - Sie können auf Ereignisse reagieren: Datei geöffnet, Tab gewechselt, vor und nach dem Speichern.
+  - Sicher: Plugins laufen in einer Sandbox (wasmi) ohne Zugriff auf Dateien, Netzwerk oder Programme. Sie sehen nur Text, Auswahl, Pfad und Sprache der aktiven Datei und antworten mit Aktionen (Text ersetzen, auswählen, Meldung). Jeder Aufruf hat ein Rechenbudget, ein hängendes Plugin wird angehalten.
+  - Befehle: „Plugins: Show Installed Plugins“, „Plugins: Reload Plugins“, „Plugins: Open Plugins Folder“.
+  - Eigene Plugins: Crate `wyven-plugin` einbinden, `Plugin` implementieren, `export_plugin!(MeinPlugin)`, dann `cargo build --release --target wasm32-unknown-unknown`. Beispiel: [`plugins/text-tools`](plugins/text-tools) (Zeilen sortieren, Groß/Klein, Wörter zählen, Leerzeichen am Zeilenende beim Speichern entfernen). Die Schnittstelle (JSON über `wyven_alloc`/`wyven_handle`) ist in `crates/wyven-plugin/src/lib.rs` beschrieben und geht auch aus anderen Sprachen.
 - **Andockbare Panels**: Explorer, Suche, Git, Debug und Terminal liegen in drei Bereichen um den Editor: links, rechts und unten.
   - Jeder Bereich zeigt oben eine Leiste mit seinen Panels als Tabs; ein Klick wechselt das Panel.
   - Einen Tab mit der Maus ziehen verschiebt das Panel: auf die Tab-Leiste eines Bereichs, an den linken oder rechten Fensterrand oder nach unten. Der Zielbereich leuchtet beim Ziehen auf.
@@ -140,6 +146,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyven.exe`.
 | `crates/wyven-search` | Suchen/Ersetzen: Abfragen (Text, Wort, Groß/Klein, Regex), Projektsuche |
 | `crates/wyven-ai` | KI-Vorschläge: lokal über Ollama oder über die Anthropic-API (beides Streaming über HTTP), Prompt-Aufbau, API-Key im Windows-Tresor |
 | `crates/wyven-dap` | Debug-Adapter-Client (DAP) für netcoredbg |
+| `crates/wyven-plugin` | SDK für Plugins (Rust → WebAssembly): Anfragen, Antworten, `export_plugin!` |
 | `crates/wyven-git` | Git über die `git`-Kommandozeile: Status, Commit, Sync, Branches, Blame, Zeilen-Diffs |
 | `crates/wyven-terminal` | Terminal: Shell in ConPTY, Emulation mit `alacritty_terminal`, Tasten-Kodierung |
 | `crates/wyven-lsp` | Language-Server-Client: JSON-RPC über stdio, UTF-16-Positionen |

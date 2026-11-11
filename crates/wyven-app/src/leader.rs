@@ -26,6 +26,10 @@ pub enum Action {
     Later(&'static str),
     /// The settings page (a tab).
     OpenSettings,
+    /// Loads the plugins folder again.
+    ReloadPlugins,
+    ShowPlugins,
+    OpenPluginsFolder,
     /// settings.toml itself.
     OpenSettingsFile,
     CheatSheet,

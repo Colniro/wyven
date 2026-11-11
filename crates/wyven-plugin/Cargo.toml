@@ -1,0 +1,11 @@
+[package]
+name = "wyven-plugin"
+description = "SDK for Wyven plugins (WebAssembly): commands and events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

@@ -18,6 +18,7 @@ wyven-ai = { path = "crates/wyven-ai" }
 wyven-terminal = { path = "crates/wyven-terminal" }
 wyven-search = { path = "crates/wyven-search" }
 wyven-git = { path = "crates/wyven-git" }
+wyven-plugin = { path = "crates/wyven-plugin" }
 similar = "3.2"
 regex = "1.13"
 serde_json = "1"
