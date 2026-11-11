@@ -11,6 +11,7 @@ mod ai;
 mod claude;
 mod completion;
 mod chrome;
+mod colors;
 mod compass;
 mod floats;
 mod config;
@@ -130,6 +131,7 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // wyven [folder, file or .code-workspace] [--terminal] [--git] [--diff] [--goto=LINE] [--preview] [--settings] [--zen] [--split]
     let mut path = None;
+    let mut more_files: Vec<PathBuf> = Vec::new();
     let (mut open_terminal, mut open_git, mut open_diff) = (false, false, false);
     let mut goto_line: Option<usize> = None;
     let mut open_preview = false;
@@ -163,6 +165,9 @@ fn main() {
             goto_line = n.parse().ok();
         } else if path.is_none() {
             path = Some(PathBuf::from(arg));
+        } else {
+            // `wyven <folder> <file> …`: further files open as tabs.
+            more_files.push(PathBuf::from(arg));
         }
     }
     let event_loop = EventLoop::<UserEvent>::with_user_event()
@@ -170,12 +175,13 @@ fn main() {
         .expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
-    let mut app = App { path, open_terminal, open_git, open_diff, goto_line, open_preview, open_settings, open_zen, open_split, open_popup, demo, state: None, proxy };
+    let mut app = App { path, more_files, open_terminal, open_git, open_diff, goto_line, open_preview, open_settings, open_zen, open_split, open_popup, demo, state: None, proxy };
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
 struct App {
     path: Option<PathBuf>,
+    more_files: Vec<PathBuf>,
     open_terminal: bool,
     open_git: bool,
     open_diff: bool,
@@ -290,6 +296,21 @@ fn item_spans(buf: &Buffer, parts: &[(StatusItem, std::ops::Range<usize>)]) -> V
         .collect()
 }
 
+/// The color picker: replaces the color at `start..end` of tab `tab`.
+struct ColorPick {
+    tab: usize,
+    start: usize,
+    end: usize,
+    /// Written as rgb(…) (else as hex).
+    rgb: bool,
+    /// Top left of the card.
+    at: (f32, f32),
+    palette: Vec<Rgba>,
+    header: Buffer,
+    /// The grid of color cells (for the mouse), set when drawn.
+    cells: std::cell::Cell<(f32, f32, f32)>,
+}
+
 /// The old lines of a changed block, shown in a card under it.
 struct GitPeek {
     tab: usize,
@@ -336,6 +357,12 @@ enum Overlay {
     Rename { prompt: menu::Prompt, pos: usize },
     /// Branch picker (items: branch names, `null` = create a new branch).
     Branches(menu::Menu),
+    /// Saved layouts to switch to (values: name, "save" or "default").
+    Layouts(menu::Menu),
+    /// Name for saving the current layout.
+    LayoutName(menu::Prompt),
+    /// Picking a color for a color written in the code.
+    ColorPick(ColorPick),
     /// A right-click menu.
     Context(ctxmenu::ContextMenu),
     /// Name for a rename or a new file/folder in the explorer.
@@ -423,6 +450,10 @@ struct State {
     tab_spans: Vec<(f32, f32)>,
     /// The tab under the mouse, and the icons drawn on tabs (close ×, unsaved ●).
     tab_hover: Option<usize>,
+    /// Fingerprints of the shaped tab bars (this half, other half).
+    tab_bar_keys: (u64, u64),
+    /// The status bar texts as last shaped (left, right, AI label).
+    status_texts: (String, String, String),
     /// ×, ● and ▶ (run) for the tab bar.
     tab_icons: (Buffer, Buffer, Buffer),
     /// The mouse is over the run button.
@@ -528,6 +559,8 @@ struct State {
     custom_keys: custom_keys::CustomKeys,
     /// The committed version of a changed block, shown under it (click on a git change bar).
     git_peek: Option<GitPeek>,
+    /// When to write layout.json (after a floating window stopped moving).
+    layout_save_due: Option<Instant>,
     /// The close dialog decided to quit (handled in `about_to_wait`).
     quit: bool,
     /// A snippet being filled in: its tab and tab stops.
@@ -609,6 +642,14 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(last) = config::recent_projects().into_iter().next() {
                     state.open_folder(&last);
                 }
+            }
+        }
+        for f in std::mem::take(&mut self.more_files) {
+            let f = std::path::absolute(&f).unwrap_or(f);
+            if f.is_dir() {
+                state.add_folder_path(f);
+            } else {
+                state.open_path(&f);
             }
         }
         log_stage("state", started);
@@ -735,6 +776,9 @@ impl ApplicationHandler<UserEvent> for App {
                         ex.hover = hover;
                         state.window.request_redraw();
                     }
+                }
+                if matches!(state.overlay, Overlay::ColorPick(_)) {
+                    state.window.request_redraw();
                 }
                 // Theme list: the row under the mouse is selected and previewed.
                 if let Overlay::Themes(menu) = &mut state.overlay
@@ -939,6 +983,14 @@ impl ApplicationHandler<UserEvent> for App {
             state.window.request_redraw();
         }
         let mut wake = state.next_stats;
+        if let Some(due) = state.layout_save_due {
+            if now >= due {
+                state.layout_save_due = None;
+                state.dock.save();
+            } else {
+                wake = wake.min(due);
+            }
+        }
         if let Some(due) = state.header_tip_due {
             if now >= due {
                 state.header_tip_due = None;
@@ -1174,6 +1226,8 @@ impl State {
             tab_hover: None,
             tab_icons,
             run_hover: false,
+            tab_bar_keys: (0, 0),
+            status_texts: Default::default(),
             explorer: None,
             dock: dock::Dock::load(),
             dock_bar,
@@ -1239,6 +1293,7 @@ impl State {
             auto_save_due: None,
             snippet: None,
             quit: false,
+            layout_save_due: None,
             user_snippets: snippets::UserSnippets::load(),
             git_peek: None,
             header_tip_due: None,
@@ -1495,6 +1550,11 @@ impl State {
             Focus::Terminal => Some(Panel::Terminal),
             Focus::Editor => None,
         }
+    }
+
+    /// Saves the layout a moment later (moving a window sends many events).
+    fn save_layout_soon(&mut self) {
+        self.layout_save_due = Some(Instant::now() + Duration::from_millis(600));
     }
 
     /// Saves the panel layout and lays the window out again.
@@ -2124,6 +2184,148 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Below the cursor on screen.
+    fn cursor_screen(&self) -> (f32, f32) {
+        let ed = self.editor();
+        let (x, y) = ed.screen_pos(ed.doc.selection().primary().head);
+        (x, y + self.font.line_h)
+    }
+
+    /// Opens the color picker for the color written at `start..end`.
+    fn open_color_pick(&mut self, start: usize, end: usize, current: Rgba, x: f32, y: f32) {
+        let text: String = self.editor().doc.text().slice(start..end).to_string();
+        let fs = self.renderer.font_system();
+        let mut header = Buffer::new(fs, Metrics::new(self.ui_font.size, self.ui_font.line_h));
+        header.set_wrap(Wrap::None);
+        let attrs = Attrs::new().family(Family::Name(&self.family));
+        header.set_text(&format!("{text}   →  click a color (Esc)"), &attrs, Shaping::Advanced, None);
+        header.shape_until_scroll(fs, false);
+        let _ = current;
+        self.overlay = Overlay::ColorPick(ColorPick {
+            tab: self.active,
+            start,
+            end,
+            rgb: text.to_ascii_lowercase().starts_with("rgb"),
+            at: (x, y),
+            palette: colors::palette(),
+            header,
+            cells: std::cell::Cell::new((0.0, 0.0, 0.0)),
+        });
+        self.window.request_redraw();
+    }
+
+    /// A click while the color picker is open: a cell writes its color, elsewhere closes.
+    fn color_pick_click(&mut self, x: f32, y: f32) -> bool {
+        let Overlay::ColorPick(p) = &self.overlay else { return false };
+        let (gx, gy, cell) = p.cells.get();
+        let (col, row) = (((x - gx) / cell).floor(), ((y - gy) / cell).floor());
+        let hit = (col >= 0.0 && row >= 0.0 && (col as usize) < colors::COLS && (row as usize) < colors::ROWS)
+            .then(|| p.palette[row as usize * colors::COLS + col as usize]);
+        let (tab, start, end, rgb) = (p.tab, p.start, p.end, p.rgb);
+        self.overlay = Overlay::None;
+        if let Some(c) = hit
+            && tab == self.active
+        {
+            let text = if rgb { format!("rgb({}, {}, {})", c.0, c.1, c.2) } else { colors::hex(c) };
+            let ed = self.editor_mut();
+            if end <= ed.doc.text().len_chars() {
+                ed.doc.replace_range(start, end, &text);
+                ed.after_edit();
+                self.lsp_after_edit();
+            }
+        }
+        self.window.request_redraw();
+        true
+    }
+
+    /// Alt → w → l: the saved layouts, "save current", "default".
+    fn open_layouts(&mut self) {
+        let mut items: Vec<(String, wyven_lsp::Value)> =
+            dock::named_layouts().into_iter().map(|n| (n.clone(), wyven_lsp::Value::String(n))).collect();
+        items.push(("＋ Save current layout as …".into(), wyven_lsp::Value::Bool(true)));
+        items.push(("↺ Default layout".into(), wyven_lsp::Value::Bool(false)));
+        let title = "Layouts (Enter switches · Del deletes · Esc)";
+        let m = menu::Menu::new(self.renderer.font_system(), self.ui_font, title, items);
+        self.overlay = Overlay::Layouts(m);
+        self.window.request_redraw();
+    }
+
+    fn apply_layout_choice(&mut self, v: wyven_lsp::Value) {
+        self.overlay = Overlay::None;
+        match v {
+            wyven_lsp::Value::Bool(true) => {
+                let p = menu::Prompt::new(self.renderer.font_system(), self.ui_font, "Name for this layout (Enter saves, Esc)", "");
+                self.overlay = Overlay::LayoutName(p);
+            }
+            wyven_lsp::Value::Bool(false) => self.reset_layout(),
+            wyven_lsp::Value::String(name) => match dock::Dock::load_named(&name) {
+                Some(d) => {
+                    self.dock = d;
+                    if self.focused_panel().is_some_and(|p| !self.dock.shown(p)) {
+                        self.focus = Focus::Editor;
+                    }
+                    self.dock_changed();
+                    self.show(format!("Layout “{name}”"));
+                }
+                None => self.show(format!("Layout “{name}” could not be read")),
+            },
+            _ => {}
+        }
+        self.window.request_redraw();
+    }
+
+    fn layouts_key(&mut self, key: &Key) {
+        let Overlay::Layouts(menu) = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::ArrowUp) => menu.move_selection(-1),
+            Key::Named(NamedKey::ArrowDown) => menu.move_selection(1),
+            Key::Named(NamedKey::Enter) => {
+                if let Some(v) = menu.selected() {
+                    self.apply_layout_choice(v);
+                }
+            }
+            Key::Named(NamedKey::Delete) => {
+                if let Some(wyven_lsp::Value::String(name)) = menu.selected() {
+                    dock::delete_layout(&name);
+                    self.show(format!("Layout “{name}” deleted"));
+                    self.open_layouts();
+                }
+            }
+            Key::Character(c) => {
+                if let Some(v) = c.chars().next().and_then(|ch| ch.to_digit(10)).and_then(|n| menu.numbered(n as usize)) {
+                    self.apply_layout_choice(v);
+                }
+            }
+            _ => {}
+        }
+        self.window.request_redraw();
+    }
+
+    fn layout_name_key(&mut self, event: &KeyEvent, key: &Key) {
+        let ctrl = self.modifiers.control_key() && !self.modifiers.alt_key();
+        let Overlay::LayoutName(prompt) = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::Enter) => {
+                let name = prompt.text.clone();
+                self.overlay = Overlay::None;
+                match self.dock.save_named(&name) {
+                    Ok(saved) => self.show(format!("Layout “{saved}” saved – Alt → w → l switches")),
+                    Err(e) => self.show(e),
+                }
+            }
+            Key::Named(NamedKey::Backspace) => prompt.backspace(ctrl),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::End | NamedKey::Home) => prompt.keep(),
+            _ => {
+                if let Some(t) = Keymap::text(event, self.modifiers) {
+                    prompt.type_text(&t);
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
     /// Alt → w → r: everything back to where it was at first.
     fn reset_layout(&mut self) {
         self.dock = dock::Dock::default();
@@ -2410,6 +2612,8 @@ impl State {
         for b in [&mut self.status_left, &mut self.status_right, &mut self.tab_bar, &mut self.status_ai] {
             b.set_metrics(m);
         }
+        self.status_texts = Default::default();
+        self.tab_bar_keys = (0, 0);
         self.relayout();
     }
 
@@ -3302,6 +3506,21 @@ impl State {
                 self.branch_menu_key(&key);
                 return;
             }
+            Overlay::Layouts(_) => {
+                self.layouts_key(&key);
+                return;
+            }
+            Overlay::ColorPick(_) => {
+                if key == Key::Named(NamedKey::Escape) {
+                    self.overlay = Overlay::None;
+                    self.window.request_redraw();
+                }
+                return;
+            }
+            Overlay::LayoutName(_) => {
+                self.layout_name_key(event, &key);
+                return;
+            }
             Overlay::ExplorerPrompt { .. } => {
                 self.explorer_prompt_key(event, &key);
                 return;
@@ -3989,7 +4208,10 @@ impl State {
 
     /// The line about the task in the Problems header.
     fn update_task_line(&mut self) {
-        self.problems.roots = self.explorer.as_ref().map(|e| e.roots().to_vec()).unwrap_or_default();
+        let roots: &[PathBuf] = self.explorer.as_ref().map_or(&[], |e| e.roots());
+        if self.problems.roots.as_slice() != roots {
+            self.problems.roots = roots.to_vec();
+        }
         self.problems.task_line = match (self.tasks.status(), self.tasks.last) {
             (Some(s), _) => s,
             (None, Some((kind, ok, took))) => {
@@ -4310,6 +4532,9 @@ impl State {
         view.wrap = self.settings.editor.word_wrap;
         view.show_inlay_hints = self.settings.editor.inlay_hints;
         view.show_code_lens = self.settings.editor.code_lens;
+        view.bracket_colors = self.settings.editor.bracket_colors;
+        view.indent_guides = self.settings.editor.indent_guides;
+        view.color_preview = self.settings.editor.color_preview;
         view.scale = self.renderer.scale_factor();
         if !view.doc.indent_detected() {
             view.doc.indent_unit = self.settings.indent_unit();
@@ -5174,7 +5399,8 @@ impl State {
         if self.git.repo.is_none() || self.git.busy.is_some() {
             return;
         }
-        let visible = self.panel_shown(Panel::Git);
+        // The explorer shows git colors too, so it keeps the status fresh as well.
+        let visible = self.panel_shown(Panel::Git) || self.panel_shown(Panel::Explorer);
         let due = |last: Option<Instant>, every: Duration| last.is_none_or(|t| now.duration_since(t) >= every);
         let upstream = self.git.status.as_ref().is_some_and(|s| s.has_upstream);
         if upstream && due(self.git.last_fetch, git_panel::FETCH_INTERVAL) {
@@ -5201,7 +5427,12 @@ impl State {
                     self.git.refresh_status();
                 }
                 R::Discarded(Err(e)) => self.show(format!("Discard failed: {e}")),
-                R::Status(Ok(_)) => {}
+                R::Status(Ok(status)) => {
+                    // Changed files show in git colors in the explorer.
+                    if let (Some(repo), Some(ex)) = (self.git.repo.clone(), &mut self.explorer) {
+                        ex.set_git_status(repo.root(), &status.changes);
+                    }
+                }
                 R::Status(Err(e)) => log::warn!("git status: {e}"),
                 R::Committed(Ok(summary)) => {
                     self.git.message.clear();
@@ -6351,6 +6582,14 @@ impl State {
                 }
             }
             ResetLayout => self.reset_layout(),
+            PickColor => match self.editor().color_at_cursor() {
+                Some((s, e, c)) => {
+                    let (x, y) = self.cursor_screen();
+                    self.open_color_pick(s, e, c, x, y);
+                }
+                None => self.show("No color at the cursor (#RRGGBB, #RGB or rgb(…))"),
+            },
+            Layouts => self.open_layouts(),
             Split { vertical } => self.split_editor(vertical),
             FocusOtherHalf => self.focus_other_half(),
             CloseSplit => self.close_split(),
@@ -7004,6 +7243,15 @@ impl State {
 
     /// Mouse on the theme list: a click keeps the theme, a click elsewhere goes back.
     fn theme_list_click(&mut self, x: f32, y: f32) -> bool {
+        // The layout list works with the mouse too.
+        if let Overlay::Layouts(menu) = &self.overlay {
+            match menu.row_at(x, y).and_then(|i| menu.items.get(i).map(|(_, v)| v.clone())) {
+                Some(v) => self.apply_layout_choice(v),
+                None => self.overlay = Overlay::None,
+            }
+            self.window.request_redraw();
+            return true;
+        }
         let Overlay::Themes(menu) = &self.overlay else { return false };
         match menu.row_at(x, y) {
             Some(i) => {
@@ -7076,7 +7324,7 @@ impl State {
         let (x, y) = (self.mouse.x, self.mouse.y);
         self.latency.input();
         self.window.request_redraw();
-        if self.theme_list_click(x, y) {
+        if self.theme_list_click(x, y) || self.color_pick_click(x, y) {
             return;
         }
 
@@ -7291,6 +7539,13 @@ impl State {
         if self.git_peek.is_some() && self.git_peek_click(x, y) {
             return;
         }
+        if button == MouseButton::Left
+            && self.diff.is_none()
+            && let Some((s, e, c)) = self.editor().color_at(x, y)
+        {
+            self.open_color_pick(s, e, c, x, y + self.font.line_h);
+            return;
+        }
         if self.diff.is_none()
             && let Some(line) = self.editor().git_mark_at(x, y)
         {
@@ -7446,9 +7701,14 @@ impl State {
         let (spans, tab_spans) = tab_bar_spans(&self.tabs, self.active, self.layout.tabs.x, cw, &self.theme);
         self.tab_spans = tab_spans;
         let attrs = Attrs::new().family(Family::Name(&self.family));
+        let extra = chrome::size_key(self.layout.tabs.x, self.ui_font.size);
         if let (Some(sp), Some(t2)) = (&mut self.split, self.layout.tabs2) {
             let (labels, spans2) = tab_bar_spans(&sp.tabs, sp.active, t2.x, cw, &self.theme);
             sp.tab_spans = spans2;
+            // Only shaped again when the labels changed.
+            let key = chrome::spans_key(labels.iter().map(|(t, c)| (t.as_str(), *c)), extra ^ 1);
+            if key != self.tab_bar_keys.1 {
+            self.tab_bar_keys.1 = key;
             sp.tab_bar.set_rich_text(
                 labels.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
                 &attrs,
@@ -7456,7 +7716,13 @@ impl State {
                 None,
             );
             sp.tab_bar.shape_until_scroll(self.renderer.font_system(), false);
+            }
         }
+        let key = chrome::spans_key(spans.iter().map(|(t, c)| (t.as_str(), *c)), extra);
+        if key == self.tab_bar_keys.0 {
+            return;
+        }
+        self.tab_bar_keys.0 = key;
         self.tab_bar.set_rich_text(
             spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
             &attrs,
@@ -7532,16 +7798,26 @@ impl State {
         let pos_len = left.find("   ").unwrap_or(left.len());
         let left_parts = if self.diff.is_none() && left.starts_with("Ln ") { vec![(StatusItem::GotoLine, 0..pos_len)] } else { Vec::new() };
         let attrs = Attrs::new().family(Family::Name(&self.family));
-        let fs = self.renderer.font_system();
-        self.status_left.set_text(&left, &attrs, Shaping::Advanced, None);
-        self.status_left.shape_until_scroll(fs, false);
-        self.status_right.set_text(&right, &attrs, Shaping::Advanced, None);
-        self.status_right.shape_until_scroll(fs, false);
-        self.status_left_items = item_spans(&self.status_left, &left_parts);
-        self.status_right_items = item_spans(&self.status_right, &parts);
         let ai_label = self.ai.label();
-        self.status_ai.set_text(&ai_label, &attrs, Shaping::Advanced, None);
-        self.status_ai.shape_until_scroll(fs, false);
+        let fs = self.renderer.font_system();
+        // Shaped only when a text changed (most frames change nothing here).
+        if left != self.status_texts.0 {
+            self.status_left.set_text(&left, &attrs, Shaping::Advanced, None);
+            self.status_left.shape_until_scroll(fs, false);
+            self.status_left_items = item_spans(&self.status_left, &left_parts);
+            self.status_texts.0 = left;
+        }
+        if right != self.status_texts.1 {
+            self.status_right.set_text(&right, &attrs, Shaping::Advanced, None);
+            self.status_right.shape_until_scroll(fs, false);
+            self.status_right_items = item_spans(&self.status_right, &parts);
+            self.status_texts.1 = right;
+        }
+        if ai_label != self.status_texts.2 {
+            self.status_ai.set_text(&ai_label, &attrs, Shaping::Advanced, None);
+            self.status_ai.shape_until_scroll(fs, false);
+            self.status_texts.2 = ai_label;
+        }
     }
 
     fn update_popup(&mut self) -> bool {
@@ -7617,11 +7893,12 @@ impl State {
             | Overlay::Update(m)
             | Overlay::ConfirmDelete(m, _)
             | Overlay::ConfirmDiscard(m, ..)
+            | Overlay::Layouts(m)
             | Overlay::ConfirmClose(m) => {
                 m.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
             Overlay::ExplorerPrompt { prompt, .. } => prompt.prepare(self.renderer.font_system(), &self.theme, &self.family),
-            Overlay::Watch(prompt) | Overlay::ApiKey(prompt) | Overlay::RenameTerminal(prompt, _) => {
+            Overlay::Watch(prompt) | Overlay::ApiKey(prompt) | Overlay::RenameTerminal(prompt, _) | Overlay::LayoutName(prompt) => {
                 prompt.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
             _ => {}
@@ -7966,6 +8243,7 @@ impl State {
                 | Overlay::Update(m)
                 | Overlay::ConfirmDelete(m, _)
                 | Overlay::ConfirmDiscard(m, ..)
+                | Overlay::Layouts(m)
                 | Overlay::ConfirmClose(m) => {
                     let (x, y) = match (&self.overlay, self.theme_anchor) {
                         (Overlay::Themes(_), Some(at)) => at,
@@ -7986,7 +8264,11 @@ impl State {
                         None => prompt.draw_dialog(theme, self.ui_font, window, scale, &mut overlay_cards, &mut overlay, &mut overlay_text),
                     }
                 }
-                Overlay::NewBranch(prompt) | Overlay::Watch(prompt) | Overlay::ApiKey(prompt) | Overlay::RenameTerminal(prompt, _) => {
+                Overlay::NewBranch(prompt)
+                | Overlay::Watch(prompt)
+                | Overlay::ApiKey(prompt)
+                | Overlay::RenameTerminal(prompt, _)
+                | Overlay::LayoutName(prompt) => {
                     prompt.draw_dialog(theme, self.ui_font, window, scale, &mut overlay_cards, &mut overlay, &mut overlay_text)
                 }
                 _ => {}
@@ -7994,6 +8276,31 @@ impl State {
         }
         if let Overlay::Context(menu) = &self.overlay {
             menu.draw(theme, scale, &mut overlay_cards, &mut overlay, &mut overlay_text);
+        }
+        // The color picker: a card with a grid of colors.
+        if let Overlay::ColorPick(p) = &self.overlay {
+            let cell = (self.ui_font.line_h * 1.25).round();
+            let pad = self.ui_font.cell_w;
+            let head = (self.ui_font.line_h * 1.6).round();
+            let w = (colors::COLS as f32 * cell + 2.0 * pad).max(p.header.layout_runs().next().map_or(0.0, |r| r.line_w) + 2.0 * pad);
+            let h = head + colors::ROWS as f32 * cell + pad;
+            let (ww, wh) = (l.status.w, l.status.y);
+            let x = p.at.0.min(ww - w - 4.0).max(0.0);
+            let y = if p.at.1 + h > wh { (p.at.1 - h - self.font.line_h * 1.5).max(0.0) } else { p.at.1 };
+            let r = (8.0 * scale).round();
+            overlay_cards.push(RoundRect::shadow(x, y, w, h, Rgba(0, 0, 0, if theme.dark { 0x90 } else { 0x40 }), r, (12.0 * scale).round()));
+            overlay_cards.push(RoundRect::new(x, y, w, h, theme.popup_border, r));
+            overlay_cards.push(RoundRect::new(x + 1.0, y + 1.0, w - 2.0, h - 2.0, theme.popup_bg, r - 1.0));
+            overlay_text.push(TextBlock { buffer: &p.header, x: x + pad, y: y + (head - self.ui_font.line_h) / 2.0, color: theme.panel_text, clip: None });
+            let (gx, gy) = (x + pad, y + head);
+            p.cells.set((gx, gy, cell));
+            let (mx, my) = (self.mouse.x, self.mouse.y);
+            for (i, c) in p.palette.iter().enumerate() {
+                let (cx, cy) = (gx + (i % colors::COLS) as f32 * cell, gy + (i / colors::COLS) as f32 * cell);
+                let hover = mx >= cx && mx < cx + cell && my >= cy && my < cy + cell;
+                let inset = if hover { 0.0 } else { 2.0 * scale };
+                overlay_cards.push(RoundRect::new(cx + inset, cy + inset, cell - 2.0 * inset, cell - 2.0 * inset, *c, (3.0 * scale).round()));
+            }
         }
         // The committed version of a changed block, under it.
         if let Some(p) = &self.git_peek

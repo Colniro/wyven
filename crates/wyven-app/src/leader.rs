@@ -60,6 +60,10 @@ pub enum Action {
     ToggleCodeLens,
     /// Panels back to their first places and sizes.
     ResetLayout,
+    /// The color picker for the color at the cursor (CSS, HTML, XAML).
+    PickColor,
+    /// Saved panel layouts: switch, save the current one, delete.
+    Layouts,
     /// Two editors side by side (`vertical`) or stacked.
     Split { vertical: bool },
     FocusOtherHalf,
@@ -178,6 +182,7 @@ const CODE: &[Item] = &[
     item('a', "quick actions", Run(Command::QuickActions)),
     item('o', "organize usings / imports", Run(Command::OrganizeUsings)),
     item('e', "next error", Run(Command::NextProblem)),
+    item('k', "pick color at cursor", PickColor),
 ];
 
 const WINDOW: &[Item] = &[
@@ -186,6 +191,7 @@ const WINDOW: &[Item] = &[
     item('o', "other half (or ←↑→↓)", FocusOtherHalf),
     item('c', "close split", CloseSplit),
     item('r', "reset panel layout", ResetLayout),
+    item('l', "layouts: switch / save …", Layouts),
 ];
 
 const VIEW: &[Item] = &[

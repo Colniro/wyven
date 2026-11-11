@@ -46,9 +46,14 @@ pub struct Explorer {
     family: String,
     buffer: Buffer,
     header: Buffer,
-    /// The × behind each folder row.
+    /// The × behind each folder row, and the git letter behind changed files.
     close: Buffer,
     dirty: bool,
+    icon_family: String,
+    /// Changed files (git): path → kind; folders holding changes.
+    /// (Keys: lowercase paths – git and the explorer may spell a path differently on Windows.)
+    git: std::collections::HashMap<String, wyven_git::ChangeKind>,
+    git_dirs: HashSet<String>,
 }
 
 impl Explorer {
@@ -60,7 +65,11 @@ impl Explorer {
         buffer.set_wrap(Wrap::None);
         header.set_wrap(Wrap::None);
         close.set_wrap(Wrap::None);
+        let icon_family = crate::chrome::icon_family(fs);
         let mut ex = Self {
+            icon_family,
+            git: Default::default(),
+            git_dirs: HashSet::new(),
             expanded: HashSet::from([root.clone()]),
             roots: vec![root],
             title: None,
@@ -371,40 +380,84 @@ impl Explorer {
             return;
         }
         let visible = self.rows_visible();
-        let mut spans: Vec<(String, Rgba)> = Vec::new();
-        let mut closes = String::new();
+        // (text, color, icon font)
+        let mut spans: Vec<(String, Rgba, bool)> = Vec::new();
+        let mut closes: Vec<(String, Rgba)> = Vec::new();
+        use wyven_git::ChangeKind as K;
+        let git_color = |k: K| match k {
+            K::Added | K::Untracked => theme.git_added,
+            K::Deleted | K::Conflict => theme.git_deleted,
+            _ => theme.git_modified,
+        };
         for row in self.rows.iter().skip(self.scroll).take(visible) {
-            closes.push_str(if row.is_root { "×\n" } else { "\n" });
             if row.is_root {
+                closes.push((if self.multi() { "×\n" } else { "\n" }.into(), theme.panel_dim));
                 let marker = if row.expanded { "▾ " } else { "▸ " };
-                spans.push((marker.to_string(), theme.panel_dim));
-                spans.push((format!("{}\n", row.name.to_uppercase()), theme.panel_text));
+                spans.push((marker.to_string(), theme.panel_dim, false));
+                spans.push((format!("{}\n", row.name.to_uppercase()), theme.panel_text, false));
                 continue;
             }
             let indent = "  ".repeat(row.depth);
             if row.is_dir {
-                let marker = if row.expanded { "▾  " } else { "▸  " };
-                spans.push((format!("{indent}{marker}"), theme.panel_dim));
-                spans.push((format!("{}\n", row.name), theme.panel_text));
+                // Folders holding changes get a dot and a tinted name.
+                let changed = self.git_dirs.contains(&row.path.to_string_lossy().to_lowercase());
+                closes.push((if changed { "•\n".into() } else { "\n".into() }, theme.git_modified.with_alpha(0xC0)));
+                let marker = if row.expanded { "▾ " } else { "▸ " };
+                spans.push((format!("{indent}{marker}"), theme.panel_dim, false));
+                let icon = if row.expanded { crate::chrome::ICON_FOLDER_OPEN } else { crate::chrome::ICON_FOLDER };
+                spans.push((icon.to_string(), crate::chrome::panel_color(crate::dock::Panel::Search, theme.dark), true));
+                let color = if changed { theme.git_modified.with_alpha(0xE0) } else { theme.panel_text };
+                spans.push((format!(" {}\n", row.name), color, false));
             } else {
-                // A colored badge for the file type, the open file in the accent color.
-                let (badge, badge_color) = crate::chrome::file_badge(&row.name, theme.dark);
-                let color = if Some(row.path.as_path()) == active { theme.accent } else { theme.panel_text };
-                spans.push((indent, theme.panel_dim));
-                spans.push((format!("{badge} "), badge_color));
-                spans.push((format!("{}\n", row.name), color));
+                // An icon in the file type's color; the open file in the accent color, changed
+                // files in git colors with their letter at the right.
+                let (icon, icon_color) = crate::chrome::file_icon(&row.name, theme.dark);
+                let kind = self.git.get(&row.path.to_string_lossy().to_lowercase()).copied();
+                let color = match kind {
+                    _ if Some(row.path.as_path()) == active => theme.accent,
+                    Some(k) => git_color(k),
+                    None => theme.panel_text,
+                };
+                closes.push((kind.map_or("\n".into(), |k| format!("{}\n", k.letter())), kind.map_or(theme.panel_dim, git_color)));
+                spans.push((format!("{indent}  "), theme.panel_dim, false));
+                spans.push((icon.to_string(), icon_color, true));
+                spans.push((format!(" {}\n", row.name), color, false));
             }
         }
+        let icons = Attrs::new().family(Family::Name(&self.icon_family));
         self.buffer.set_rich_text(
-            spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
+            spans.iter().map(|(t, c, icon)| (t.as_str(), if *icon { icons.clone() } else { attrs.clone() }.color(c.to_glyphon()))),
             &attrs,
             Shaping::Advanced,
             None,
         );
         self.buffer.shape_until_scroll(fs, false);
-        self.close.set_text(&closes, &attrs, Shaping::Advanced, None);
+        self.close.set_rich_text(closes.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))), &attrs, Shaping::Advanced, None);
         self.close.shape_until_scroll(fs, false);
         self.dirty = false;
+    }
+
+    /// The changed files of the repository (paths relative to `root`), for colored names.
+    pub fn set_git_status(&mut self, root: &Path, changes: &[wyven_git::Change]) {
+        let key = |p: &Path| p.to_string_lossy().to_lowercase();
+        let root_key = key(root);
+        let mut git = std::collections::HashMap::new();
+        let mut dirs = HashSet::new();
+        for c in changes {
+            let p = root.join(c.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            for a in p.ancestors().skip(1) {
+                let k = key(a);
+                if k.len() <= root_key.len() || !dirs.insert(k) {
+                    break;
+                }
+            }
+            git.insert(key(&p), c.kind);
+        }
+        if git != self.git || dirs != self.git_dirs {
+            self.git = git;
+            self.git_dirs = dirs;
+            self.dirty = true;
+        }
     }
 
     /// Forces a re-render (e.g. when the active file changed).
@@ -441,10 +494,9 @@ impl Explorer {
             clip,
         });
         text.push(TextBlock { buffer: &self.buffer, x: a.x + pad, y: top, color: theme.panel_text, clip });
-        if self.multi() {
-            let x = a.x + a.w - pad * 2.0;
-            text.push(TextBlock { buffer: &self.close, x, y: top, color: theme.panel_dim, clip });
-        }
+        // × of workspace folders, git letters of changed files.
+        let x = a.x + a.w - pad * 2.0;
+        text.push(TextBlock { buffer: &self.close, x, y: top, color: theme.panel_dim, clip });
     }
 }
 

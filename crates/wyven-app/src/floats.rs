@@ -34,11 +34,12 @@ fn title(panels: &[Panel]) -> String {
 impl State {
     /// Opens and closes OS windows so there is one for every floating pane.
     pub(crate) fn sync_floats(&mut self, event_loop: &ActiveEventLoop) {
-        let wanted: Vec<dock::Floating> = self.dock.floating.clone();
-        let same = self.floats.len() == wanted.len() && self.floats.iter().zip(&wanted).all(|(w, f)| w.panels == f.panels);
+        let same = self.floats.len() == self.dock.floating.len()
+            && self.floats.iter().zip(&self.dock.floating).all(|(w, f)| w.panels == f.panels);
         if same {
             return;
         }
+        let wanted: Vec<dock::Floating> = self.dock.floating.clone();
         let mut old = std::mem::take(&mut self.floats);
         let mut new = Vec::new();
         for f in &wanted {
@@ -135,7 +136,7 @@ impl State {
                     let r = &mut self.dock.floating[fi].rect;
                     r[2] = size.width as i32;
                     r[3] = size.height as i32;
-                    self.dock.save();
+                    self.save_layout_soon();
                 }
                 self.floats[wi].window.request_redraw();
             }
@@ -144,7 +145,7 @@ impl State {
                     let r = &mut self.dock.floating[fi].rect;
                     r[0] = p.x;
                     r[1] = p.y;
-                    self.dock.save();
+                    self.save_layout_soon();
                 }
             }
             WindowEvent::ScaleFactorChanged { .. } => self.floats[wi].window.request_redraw(),

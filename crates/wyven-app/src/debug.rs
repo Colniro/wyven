@@ -209,6 +209,8 @@ pub struct Debugger {
     list_y: f32,
     /// Shaped lines after wrapping: (logical line, top) – a long row takes several.
     runs: Vec<(usize, f32)>,
+    /// Fingerprint of the shaped text (skip shaping when unchanged).
+    shaped_key: u64,
 }
 
 /// Logical lines above the rows (status and key help).
@@ -222,6 +224,7 @@ impl Debugger {
         let (tx, rx) = mpsc::channel();
         Self {
             runs: Vec::new(),
+            shaped_key: 0,
             phase: Phase::Idle,
             client: None,
             child: None,
@@ -864,15 +867,19 @@ impl Debugger {
             spans.push((format!("{text}\n"), color));
         }
         let width = (self.area.w - 2.0 * self.font.cell_w).max(self.font.cell_w * 4.0);
-        self.buffer.set_size(Some(width), None);
-        self.buffer.set_rich_text(
-            spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
-            &attrs,
-            Shaping::Advanced,
-            None,
-        );
-        self.buffer.shape_until_scroll(fs, false);
-        self.runs = self.buffer.layout_runs().map(|r| (r.line_i, r.line_top)).collect();
+        let key = crate::chrome::spans_key(spans.iter().map(|(t, c)| (t.as_str(), *c)), crate::chrome::size_key(width, self.font.size));
+        if key != self.shaped_key {
+            self.shaped_key = key;
+            self.buffer.set_size(Some(width), None);
+            self.buffer.set_rich_text(
+                spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
+                &attrs,
+                Shaping::Advanced,
+                None,
+            );
+            self.buffer.shape_until_scroll(fs, false);
+            self.runs = self.buffer.layout_runs().map(|r| (r.line_i, r.line_top)).collect();
+        }
         let top_y = self.area.y + self.font.line_h * 0.2;
         let first = self.runs.iter().find(|(l, _)| *l >= header_lines).map_or(header_lines as f32 * self.font.line_h, |r| r.1);
         self.list_y = top_y + first;

@@ -64,6 +64,8 @@ pub struct ProblemsPanel {
     top: Buffer,
     list: Buffer,
     list_y: f32,
+    /// Fingerprints of the shaped header and list (skip shaping when unchanged).
+    keys: [u64; 2],
 }
 
 impl ProblemsPanel {
@@ -91,6 +93,7 @@ impl ProblemsPanel {
             top,
             list,
             list_y: 0.0,
+            keys: [0; 2],
         }
     }
 
@@ -288,8 +291,13 @@ impl ProblemsPanel {
         if focused {
             top.push(("   (Tab switches · Enter opens)".into(), theme.panel_dim));
         }
-        self.top.set_rich_text(top.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))), &attrs, Shaping::Advanced, None);
-        self.top.shape_until_scroll(fs, false);
+        let extra = crate::chrome::size_key(self.area.w, self.font.size);
+        let k = crate::chrome::spans_key(top.iter().map(|(t, c)| (t.as_str(), *c)), extra);
+        if k != self.keys[0] {
+            self.keys[0] = k;
+            self.top.set_rich_text(top.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))), &attrs, Shaping::Advanced, None);
+            self.top.shape_until_scroll(fs, false);
+        }
 
         let vis = self.visible_rows();
         let mut spans: Vec<(String, Rgba)> = Vec::new();
@@ -338,8 +346,12 @@ impl ProblemsPanel {
                 }
             }
         }
-        self.list.set_rich_text(spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))), &attrs, Shaping::Advanced, None);
-        self.list.shape_until_scroll(fs, false);
+        let k = crate::chrome::spans_key(spans.iter().map(|(t, c)| (t.as_str(), *c)), extra);
+        if k != self.keys[1] {
+            self.keys[1] = k;
+            self.list.set_rich_text(spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))), &attrs, Shaping::Advanced, None);
+            self.list.shape_until_scroll(fs, false);
+        }
     }
 
     pub fn draw<'a>(&'a mut self, theme: &Theme, focused: bool, under: &mut Vec<Quad>, text: &mut Vec<TextBlock<'a>>) {

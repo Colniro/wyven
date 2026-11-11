@@ -353,15 +353,19 @@ impl Document {
                 let n = inner.chars().count();
                 return (Change { start: r.from(), end: r.to(), text: format!("{c}{inner}{cl}") }, n + 1);
             }
-            // Step over a closing character that is already there.
-            if is_closer && next == Some(c) {
+            // Step over a closing character that is already there (a quote only at the end of a
+            // string: before `"abc"` a typed quote is a new one).
+            let at_string_end = !quote || prev.is_some_and(|p| !p.is_whitespace() && !matches!(p, '(' | '[' | '{' | ',' | '='));
+            if is_closer && next == Some(c) && at_string_end {
                 return (Change { start: r.from(), end: r.from(), text: String::new() }, 1);
             }
             let Some(cl) = close else { return plain };
             let free_after = next.is_none_or(|n| n.is_whitespace() || matches!(n, ')' | ']' | '}' | ';' | ',' | '.' | ':' | '>'));
             // A quote right after a letter is an apostrophe (don't), not a string.
             let word_before = prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == c);
-            if !free_after || (quote && word_before) {
+            // Rust lifetimes and generics: <'a>, &'a.
+            let lifetime = c == '\'' &&matches!(prev, Some('<' | '&'));
+            if !free_after || (quote && word_before) || lifetime {
                 return plain;
             }
             (Change { start: r.from(), end: r.to(), text: format!("{c}{cl}") }, 1)
@@ -1167,6 +1171,9 @@ mod tests {
         d.set_selection(Selection::single(Range::new(4, 6)));
         d.type_char("\"");
         assert_eq!(d.text().to_string(), "say \"hi\"");
+        // A quote before an existing string starts a new one; lifetimes get no pair.
+        assert_eq!(typed("x = \"abc\"", 4, "\""), ("x = \"\"abc\"".into(), 5));
+        assert_eq!(typed("fn f<>", 5, "'"), ("fn f<'>".into(), 6));
         // Backspace in an empty pair removes both.
         let mut d = Document::from_str("f()");
         d.set_cursor(2);

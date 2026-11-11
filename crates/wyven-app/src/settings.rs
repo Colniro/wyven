@@ -35,6 +35,12 @@ indent = "spaces"
 auto_complete = true
 # Type ( [ { " ' and the closing partner appears too
 auto_close = true
+# Brackets in colors by nesting depth
+bracket_colors = true
+# Thin lines at each indentation level
+indent_guides = true
+# Small squares showing colors written in CSS, HTML and XAML (click one to pick another color)
+color_preview = true
 # Save changed files by themselves shortly after you stop typing
 auto_save = true
 # How long to wait after the last change, in milliseconds
@@ -176,6 +182,9 @@ pub struct EditorSettings {
     pub auto_complete: bool,
     pub auto_save: bool,
     pub auto_close: bool,
+    pub bracket_colors: bool,
+    pub indent_guides: bool,
+    pub color_preview: bool,
     pub auto_save_delay_ms: u64,
     pub hover: bool,
     pub minimap: String,
@@ -215,7 +224,7 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_close: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_close: true, bracket_colors: true, indent_guides: true, color_preview: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
     }
 }
 

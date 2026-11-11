@@ -58,6 +58,10 @@ Benutzerhandbuch (englisch): [docs/guide.md](docs/guide.md), Plugins: [docs/plug
   - Eigene Plugins: Crate `wyven-plugin` einbinden, `Plugin` implementieren, `export_plugin!(MeinPlugin)`, dann `cargo build --release --target wasm32-unknown-unknown`. Beispiel: [`plugins/text-tools`](plugins/text-tools) (Zeilen sortieren, Groß/Klein, Wörter zählen, Leerzeichen am Zeilenende beim Speichern entfernen). Die Schnittstelle (JSON über `wyven_alloc`/`wyven_handle`) ist in `crates/wyven-plugin/src/lib.rs` beschrieben und geht auch aus anderen Sprachen.
 - **Theme-Auswahl in den Einstellungen** als Dropdown mit allen Themes (auch installierten VS-Code-Themes); Darüberfahren oder Pfeiltasten zeigen eine Vorschau, Klick übernimmt.
 - **Tabs zwischen geteilten Hälften ziehen**: Einen Editor-Tab auf die andere Hälfte ziehen verschiebt ihn dorthin (der letzte Tab einer Hälfte hebt die Teilung auf).
+- **Explorer mit Symbolen**: Ordner- und Dateisymbole in der Farbe des Dateityps; geänderte Dateien in Git-Farben mit Buchstabe (M, U …) rechts, Ordner mit Änderungen mit Punkt.
+- **Benannte Layouts** (`Alt → w → l`): die aktuelle Fensteranordnung unter einem Namen speichern („Coding“, „Debugging“ …) und per Klick oder Enter umschalten; `Entf` löscht eines.
+- **Farbvorschau** in CSS, HTML und XAML: ein kleines Quadrat vor `#1E90FF`, `#fff`, `rgb(…)`; ein Klick darauf (oder `Alt → c → k`) öffnet eine Farbpalette, ein Klick ersetzt die Farbe.
+- **Klammerpaare in Farben** nach Verschachtelung (Gold, Orchidee, Blau; ohne Gegenstück rot) und **Einrückungslinien** (beides abschaltbar).
 - **Startseite** statt eines leeren „Untitled“-Tabs: Neue Datei, Datei/Ordner öffnen, Suchfeld, Einstellungen, Tastenkürzel, die letzten Projekte und ein paar Tipps; einfach lostippen startet eine neue Datei.
 - **Dateien und Ordner ins Fenster ziehen**: Dateien öffnen sich als Tabs, Ordner kommen in den Workspace.
 - **Schließen mit ungespeicherten Dateien** fragt in einem kleinen Dialog: alle speichern und schließen, ohne Speichern schließen oder abbrechen.

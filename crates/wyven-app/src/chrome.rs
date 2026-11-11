@@ -62,6 +62,24 @@ pub fn panel_color(p: Panel, dark: bool) -> Rgba {
     if dark { d } else { l }
 }
 
+/// A fingerprint of colored text (and `extra`, e.g. width and font size): when it is the same
+/// as last frame, the text need not be shaped again.
+pub fn spans_key<'a>(spans: impl IntoIterator<Item = (&'a str, Rgba)>, extra: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    extra.hash(&mut h);
+    for (t, c) in spans {
+        t.hash(&mut h);
+        (c.0, c.1, c.2, c.3).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Width and font size as one number for [`spans_key`].
+pub fn size_key(width: f32, size: f32) -> u64 {
+    ((width.to_bits() as u64) << 32) | size.to_bits() as u64
+}
+
 /// Color of a leader group in the key popup (by its letter).
 pub fn group_color(group: &str, dark: bool) -> Rgba {
     let p = match group {
@@ -104,6 +122,25 @@ pub fn file_badge(name: &str, dark: bool) -> (&'static str, Rgba) {
         _ => ("··", pick((0x7A, 0x82, 0x8F), (0x80, 0x86, 0x90))),
     }
 }
+
+/// An icon for a file in the explorer (Segoe Fluent Icons) and its color.
+pub fn file_icon(name: &str, dark: bool) -> (char, Rgba) {
+    let (_, color) = file_badge(name, dark);
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let icon = match ext.as_str() {
+        "cs" | "csx" | "rs" | "js" | "mjs" | "cjs" | "jsx" | "ts" | "mts" | "cts" | "tsx" | "py" | "html" | "htm" | "css"
+        | "scss" | "less" | "xaml" | "axaml" | "ps1" | "psm1" | "sh" | "bat" | "cmd" => '\u{E943}', // code
+        "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp" => '\u{EB9F}', // picture
+        "json" | "jsonc" | "toml" | "csproj" | "sln" | "slnx" | "props" | "targets" | "config" | "xml" | "lock" | "yml" | "yaml" => '\u{E713}', // settings
+        "gitignore" | "gitattributes" => ICON_GIT,
+        "md" | "markdown" | "txt" | "log" => '\u{E8A5}', // document
+        _ => '\u{E7C3}', // page
+    };
+    (icon, color)
+}
+
+pub const ICON_FOLDER: char = '\u{E8B7}';
+pub const ICON_FOLDER_OPEN: char = '\u{E838}';
 
 /// A one-line text buffer (for icons and labels drawn at changing places).
 pub fn label(fs: &mut FontSystem, text: &str, family: &str, size: f32, line_h: f32) -> Buffer {

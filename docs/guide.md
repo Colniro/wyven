@@ -162,6 +162,13 @@ Change bars in the gutter, the Git panel (`Alt g g`) with commit message and cha
 side-by-side diffs (`Alt g d`, `F8` jumps between changes), sync, branches and blame. Everything
 runs in the background with the `git` you have installed.
 
+## Layouts, colors, brackets
+
+`Alt w l` lists saved layouts: switch with Enter or a click, save the current arrangement under a
+name, `Del` deletes one. In CSS, HTML and XAML a small square shows each color (`#1E90FF`, `#fff`,
+`rgb(…)`); click it (or `Alt c k`) for a palette. Brackets are colored by depth and indentation
+levels have thin guides (settings "Bracket pair colors", "Indent guides", "Color preview").
+
 ## Start page, dropping files, closing
 
 Without an open file Wyven shows a start page: new file, open file or folder, settings, shortcuts,

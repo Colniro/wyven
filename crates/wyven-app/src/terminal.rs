@@ -110,6 +110,9 @@ pub struct TerminalPanel {
     labels: Vec<Buffer>,
     close_icon: Buffer,
     pub list_hover: Option<usize>,
+    /// The texts the list labels and the header were shaped from.
+    label_names: Vec<String>,
+    header_text: String,
     ui: FontMetrics,
     shell: String,
     args: Vec<String>,
@@ -145,6 +148,8 @@ impl TerminalPanel {
             labels: Vec::new(),
             close_icon,
             list_hover: None,
+            label_names: Vec::new(),
+            header_text: String::new(),
             ui: ui_font,
             shell: default_shell(),
             args: Vec::new(),
@@ -174,6 +179,7 @@ impl TerminalPanel {
         self.header.set_metrics(Metrics::new(ui_font.size, ui_font.line_h));
         self.ui = ui_font;
         self.labels.clear();
+        self.header_text.clear();
         self.resize_term();
     }
 
@@ -220,7 +226,6 @@ impl TerminalPanel {
         for (i, t) in self.terms.iter_mut().enumerate() {
             out.extend(t.poll().into_iter().map(|e| (i, e)));
         }
-        self.labels.clear();
         self.dirty = true;
         out
     }
@@ -470,8 +475,9 @@ impl TerminalPanel {
     /// Re-reads the screen if something changed.
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, focused: bool) {
         let attrs = Attrs::new().family(Family::Name(&self.family));
-        if self.labels.len() != self.terms.len() {
-            let names: Vec<String> = (0..self.terms.len()).map(|i| format!("{}  {}", i + 1, self.name(i))).collect();
+        let names: Vec<String> = (0..self.terms.len()).map(|i| format!("{}  {}", i + 1, self.name(i))).collect();
+        if self.labels.len() != self.terms.len() || names != self.label_names {
+            self.label_names = names.clone();
             let m = Metrics::new(self.ui.size * 0.95, self.ui.line_h);
             self.labels = names
                 .iter()
@@ -490,8 +496,12 @@ impl TerminalPanel {
             _ => self.shell.clone(),
         };
         let hint = if focused { "   (Alt → t closes · Ctrl+Shift+C/V copy/paste)" } else { "" };
-        self.header.set_text(&format!("{title}{hint}"), &attrs, Shaping::Advanced, None);
-        self.header.shape_until_scroll(fs, false);
+        let header = format!("{title}{hint}");
+        if header != self.header_text || self.labels.is_empty() {
+            self.header.set_text(&header, &attrs, Shaping::Advanced, None);
+            self.header.shape_until_scroll(fs, false);
+            self.header_text = header;
+        }
         if !self.dirty {
             return;
         }

@@ -123,7 +123,14 @@ pub struct Home {
 }
 
 impl Home {
-    const LEFT: Home = Home { with: None, side: Side::Left, editor: true, size: 0.0 };
+    /// Where a panel opens that has never been placed: Terminal and Problems below the
+    /// editor, the others in the side bar.
+    fn first(p: Panel) -> Home {
+        match p {
+            Panel::Terminal | Panel::Problems => Home { with: None, side: Side::Bottom, editor: true, size: 0.3 },
+            _ => Home { with: None, side: Side::Left, editor: true, size: 0.0 },
+        }
+    }
 }
 
 /// Where a dragged panel goes.
@@ -176,6 +183,40 @@ impl Default for Dock {
 
 fn layout_path() -> Option<PathBuf> {
     crate::config::config_dir().map(|d| d.join("layout.json"))
+}
+
+/// Saved, named layouts ("Coding", "Debugging" …): `%APPDATA%\Wyven\layouts\<name>.json`.
+fn layouts_dir() -> Option<PathBuf> {
+    crate::config::config_dir().map(|d| d.join("layouts"))
+}
+
+/// A file name from a layout name (letters, digits, space, - and _ only).
+fn layout_file(name: &str) -> Option<PathBuf> {
+    let clean: String = name.trim().chars().filter(|c| c.is_alphanumeric() || " -_".contains(*c)).collect();
+    (!clean.trim().is_empty()).then(|| layouts_dir().map(|d| d.join(format!("{}.json", clean.trim()))))?
+}
+
+/// The names of the saved layouts, sorted.
+pub fn named_layouts() -> Vec<String> {
+    let Some(dir) = layouts_dir() else { return Vec::new() };
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .map(|r| {
+            r.flatten()
+                .filter_map(|e| {
+                    let p = e.path();
+                    (p.extension().is_some_and(|x| x == "json")).then(|| p.file_stem().map(|s| s.to_string_lossy().into_owned())).flatten()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort_by_key(|n| n.to_lowercase());
+    names
+}
+
+pub fn delete_layout(name: &str) {
+    if let Some(p) = layout_file(name) {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 /// One placed pane of a layout: its path, rectangle, panels and the shown one.
@@ -333,6 +374,25 @@ impl Dock {
         dock
     }
 
+    /// Saves this layout under a name (to switch back to it later).
+    pub fn save_named(&self, name: &str) -> Result<String, String> {
+        let path = layout_file(name).ok_or("Use letters, digits, spaces, - or _ for the name")?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        std::fs::write(&path, json).map_err(|e| e.to_string())?;
+        Ok(path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+    }
+
+    /// A saved layout by name.
+    pub fn load_named(name: &str) -> Option<Self> {
+        let text = std::fs::read_to_string(layout_file(name)?).ok()?;
+        let mut dock: Dock = serde_json::from_str(&text).ok()?;
+        dock.repair();
+        Some(dock)
+    }
+
     pub fn save(&self) {
         let Some(path) = layout_path() else { return };
         if let Some(dir) = path.parent() {
@@ -429,7 +489,7 @@ impl Dock {
                 f.active = f.panels.iter().position(|&q| q == p).unwrap_or(0);
             }
             Place::Closed => {
-                let home = self.homes.iter().find(|(q, _)| *q == p).map(|(_, h)| *h).unwrap_or(Home::LEFT);
+                let home = self.homes.iter().find(|(q, _)| *q == p).map(|(_, h)| *h).unwrap_or_else(|| Home::first(p));
                 let into = home.with.and_then(|w| match self.place(w) {
                     Place::Docked(path) => Some(DockTarget::Into(path)),
                     _ => None,
@@ -503,7 +563,7 @@ impl Dock {
         match self.place(p) {
             Place::Docked(path) => Some(self.side_of_path(&path)),
             Place::Floating(_) => None,
-            Place::Closed => Some(self.homes.iter().find(|(q, _)| *q == p).map_or(Side::Left, |(_, h)| h.side)),
+            Place::Closed => Some(self.homes.iter().find(|(q, _)| *q == p).map_or_else(|| Home::first(p).side, |(_, h)| h.side)),
         }
     }
 

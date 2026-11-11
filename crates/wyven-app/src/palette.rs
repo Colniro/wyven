@@ -87,6 +87,8 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("View: Toggle Explorer", "Alt e", Ld(L::ToggleExplorer)),
         ("View: Toggle Terminal", "Alt t", Ld(L::ToggleTerminal)),
         ("Terminal: New Terminal", "+ in the header", Ld(L::NewTerminal)),
+        ("Window: Layouts (switch / save) …", "Alt w l", Ld(L::Layouts)),
+        ("Code: Pick Color at Cursor", "Alt c k", Ld(L::PickColor)),
         ("Task: Build", "Ctrl+Shift+B", Ld(L::Task(crate::tasks::TaskKind::Build))),
         ("Task: Test", "Alt r t", Ld(L::Task(crate::tasks::TaskKind::Test))),
         ("Task: Run in Terminal", "Alt r r", Ld(L::Task(crate::tasks::TaskKind::Run))),

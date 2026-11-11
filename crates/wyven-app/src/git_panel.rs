@@ -80,6 +80,8 @@ pub struct GitPanel {
     top: Buffer,
     list: Buffer,
     list_y: f32,
+    /// Fingerprints of the shaped texts (top, branch, sync, commit, heading, list).
+    keys: [u64; 6],
     /// Shaped lines of the list after wrapping: (logical line = row - scroll, top).
     list_runs: Vec<(usize, f32)>,
     /// Shaped labels: branch, sync, commit button, changes heading, icons (open, discard).
@@ -117,6 +119,7 @@ impl GitPanel {
         let (branch_buf, sync_buf, commit_buf, heading_buf) = (mk(fs), mk(fs), mk(fs), mk(fs));
         Self {
             list_runs: Vec::new(),
+            keys: [0; 6],
             branch_buf,
             sync_buf,
             commit_buf,
@@ -412,12 +415,22 @@ impl GitPanel {
 
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, focused: bool) {
         let attrs = Attrs::new().family(Family::Name(&self.family));
-        let set = |b: &mut Buffer, fs: &mut FontSystem, spans: &[(String, Rgba)]| {
+        let width = (self.area.w - 2.0 * self.font.cell_w).max(self.font.cell_w * 4.0);
+        let extra = crate::chrome::size_key(width, self.font.size);
+        // Shapes only what changed since the last frame.
+        let set = |b: &mut Buffer, key: &mut u64, fs: &mut FontSystem, spans: &[(String, Rgba)]| {
+            let k = crate::chrome::spans_key(spans.iter().map(|(t, c)| (t.as_str(), *c)), extra);
+            if *key == k {
+                return;
+            }
+            *key = k;
             b.set_rich_text(spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))), &attrs, Shaping::Advanced, None);
             b.shape_until_scroll(fs, false);
         };
-        let width = (self.area.w - 2.0 * self.font.cell_w).max(self.font.cell_w * 4.0);
         // Text continues on the next line instead of being cut off.
+        if self.keys[0] != 0 && self.top.wrap() != if self.repo.is_none() { Wrap::WordOrGlyph } else { Wrap::None } {
+            self.keys[0] = 0;
+        }
         self.top.set_wrap(if self.repo.is_none() { Wrap::WordOrGlyph } else { Wrap::None });
         self.top.set_size(if self.repo.is_none() { Some(width) } else { None }, None);
         self.list.set_wrap(Wrap::WordOrGlyph);
@@ -428,7 +441,7 @@ impl GitPanel {
                     ("No git repository in this folder.\n".to_string(), theme.panel_text),
                     ("In the terminal: git init\n".to_string(), theme.panel_dim),
                 ];
-                set(&mut self.top, fs, &top);
+                set(&mut self.top, &mut self.keys[0], fs, &top);
             }
             (Some(_), status) => {
                 let (branch, sync) = match status {
@@ -436,8 +449,8 @@ impl GitPanel {
                     Some(s) => (s.branch.clone(), "Publish".into()),
                     None => ("…".into(), String::new()),
                 };
-                set(&mut self.branch_buf, fs, &[(format!("⎇ {branch}  ˅"), theme.accent)]);
-                set(&mut self.sync_buf, fs, &[(format!("⟳ {}", if sync.is_empty() { "Sync".into() } else { sync }), theme.panel_text)]);
+                set(&mut self.branch_buf, &mut self.keys[1], fs, &[(format!("⎇ {branch}  ˅"), theme.accent)]);
+                set(&mut self.sync_buf, &mut self.keys[2], fs, &[(format!("⟳ {}", if sync.is_empty() { "Sync".into() } else { sync }), theme.panel_text)]);
                 // Shorter texts when the panel is narrow.
                 let cells = ((self.area.w - 2.0 * self.font.cell_w) / self.font.cell_w) as usize;
                 let (msg, color) = if self.message.is_empty() {
@@ -445,7 +458,7 @@ impl GitPanel {
                 } else {
                     (self.message.clone(), if focused { theme.tab_text_active } else { theme.panel_text })
                 };
-                set(&mut self.top, fs, &[(msg, color)]);
+                set(&mut self.top, &mut self.keys[0], fs, &[(msg, color)]);
                 let n = self.change_count();
                 let label = match &self.busy {
                     Some(b) => b.clone(),
@@ -453,8 +466,8 @@ impl GitPanel {
                     None if cells >= 20 => format!("✓ Commit {n} change{}", if n == 1 { "" } else { "s" }),
                     None => format!("✓ Commit ({n})"),
                 };
-                set(&mut self.commit_buf, fs, &[(label, theme.panel_text)]);
-                set(&mut self.heading_buf, fs, &[(format!("CHANGES  {n}"), theme.panel_dim)]);
+                set(&mut self.commit_buf, &mut self.keys[3], fs, &[(label, theme.panel_text)]);
+                set(&mut self.heading_buf, &mut self.keys[4], fs, &[(format!("CHANGES  {n}"), theme.panel_dim)]);
             }
         }
 
@@ -476,7 +489,7 @@ impl GitPanel {
                 spans.push((if dir.is_empty() { "\n".into() } else { format!("  {dir}\n") }, theme.panel_dim));
             }
         }
-        set(&mut self.list, fs, &spans);
+        set(&mut self.list, &mut self.keys[5], fs, &spans);
         self.list_runs = self.list.layout_runs().map(|r| (r.line_i, r.line_top)).collect();
     }
 

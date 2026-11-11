@@ -430,6 +430,69 @@ pub struct EditorView {
     /// CodeLens rows, sorted by line; shown when `show_code_lens`.
     lenses: Vec<CodeLens>,
     pub show_code_lens: bool,
+    /// Brackets colored by nesting depth.
+    pub bracket_colors: bool,
+    /// Thin lines at each indentation level.
+    pub indent_guides: bool,
+    /// Small squares showing colors written in CSS, HTML and XAML.
+    pub color_preview: bool,
+    /// Bracket depth at the start of each line (for the document version), up to some line.
+    bracket_depths: Option<(u64, Vec<i32>)>,
+}
+
+/// Bracket colors by depth (gold, orchid, blue – like VS Code), dark and light.
+fn bracket_color(depth: i32, dark: bool) -> Rgba {
+    const DARK: [Rgba; 3] = [Rgba(0xFF, 0xD7, 0x00, 0xFF), Rgba(0xDA, 0x70, 0xD6, 0xFF), Rgba(0x17, 0x9F, 0xFF, 0xFF)];
+    const LIGHT: [Rgba; 3] = [Rgba(0x9A, 0x7B, 0x00, 0xFF), Rgba(0xA0, 0x30, 0x9C, 0xFF), Rgba(0x0B, 0x6B, 0xB8, 0xFF)];
+    let i = depth.rem_euclid(3) as usize;
+    if dark { DARK[i] } else { LIGHT[i] }
+}
+
+/// Bracket depth at the start of each line `0..=upto`: strings ("…", '…', `…`), line comments
+/// (// and #) and block comments are skipped, so brackets in them do not count.
+fn bracket_depths(rope: &Rope, upto: usize) -> Vec<i32> {
+    let upto = upto.min(rope.len_lines().saturating_sub(1));
+    let mut out = Vec::with_capacity(upto + 1);
+    let mut depth = 0i32;
+    let mut block = false;
+    for line in 0..=upto {
+        out.push(depth);
+        if line == upto {
+            break;
+        }
+        let mut quote: Option<char> = None;
+        let mut prev = '\0';
+        let mut chars = rope.line(line).chars().peekable();
+        while let Some(c) = chars.next() {
+            if block {
+                if prev == '*' && c == '/' {
+                    block = false;
+                }
+            } else if let Some(q) = quote {
+                if c == q && prev != '\\' {
+                    quote = None;
+                }
+            } else {
+                match c {
+                    '/' if chars.peek() == Some(&'/') => break,
+                    '/' if chars.peek() == Some(&'*') => {
+                        block = true;
+                        chars.next();
+                        prev = '\0';
+                        continue;
+                    }
+                    '"' | '`' => quote = Some(c),
+                    // A quote after a letter is an apostrophe (or a Rust lifetime).
+                    '\'' if !prev.is_alphanumeric() && prev != '<' && prev != '&' => quote = Some(c),
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            prev = if prev == '\\' && c == '\\' { '\0' } else { c };
+        }
+    }
+    out
 }
 
 impl EditorView {
@@ -507,6 +570,10 @@ impl EditorView {
             show_inlay_hints: false,
             lenses: Vec::new(),
             show_code_lens: false,
+            bracket_colors: true,
+            indent_guides: true,
+            color_preview: true,
+            bracket_depths: None,
         };
         view.refresh_disk_mtime();
         view
@@ -533,6 +600,9 @@ impl EditorView {
         v.wrap = self.wrap;
         v.show_inlay_hints = self.show_inlay_hints;
         v.show_code_lens = self.show_code_lens;
+        v.bracket_colors = self.bracket_colors;
+        v.indent_guides = self.indent_guides;
+        v.color_preview = self.color_preview;
         v.scale = self.scale;
         v.git_base = self.git_base.clone();
         v.mirror_from(self);
@@ -1322,6 +1392,47 @@ impl EditorView {
 
     /// The line whose number was clicked (for toggling a breakpoint), if (x, y) is on a
     /// line number.
+    /// Files where colors in the code get a preview square.
+    fn shows_colors(&self) -> bool {
+        matches!(self.language_name(), "CSS" | "HTML")
+            || self.doc.path().and_then(|p| p.extension()).is_some_and(|e| {
+                let e = e.to_string_lossy().to_ascii_lowercase();
+                matches!(e.as_str(), "css" | "scss" | "less" | "xaml" | "axaml" | "svg" | "html" | "htm" | "vue")
+            })
+    }
+
+    /// The color preview square under the mouse: the color's char range and value.
+    pub fn color_at(&self, x: f32, y: f32) -> Option<(usize, usize, Rgba)> {
+        if !self.color_preview || !self.shows_colors() || !self.text_contains(x, y) {
+            return None;
+        }
+        let row = ((y - self.area.y) / self.font.line_h) as usize;
+        let (line, kind) = self.row_map().at(row)?;
+        if kind != RowKind::Text {
+            return None;
+        }
+        let rope = self.doc.text();
+        let chars: Vec<char> = rope.line(line).chars().collect();
+        let text: String = chars.iter().collect();
+        let col = ((x - (self.text_x() - self.scroll_x)) / self.font.cell_w).floor() as isize;
+        let start = rope.line_to_char(line);
+        crate::colors::find(&text).into_iter().find_map(|(s, e, c)| {
+            let square = self.visual_col(line, s) as isize - 1;
+            (s > 0 && chars[s - 1].is_whitespace() && col == square).then_some((start + s, start + e, c))
+        })
+    }
+
+    /// The color under (or right after) the cursor, for "pick color".
+    pub fn color_at_cursor(&self) -> Option<(usize, usize, Rgba)> {
+        let rope = self.doc.text();
+        let head = self.doc.selection().primary().head;
+        let line = rope.char_to_line(head);
+        let start = rope.line_to_char(line);
+        let text: String = rope.line(line).chars().collect();
+        let col = head - start;
+        crate::colors::find(&text).into_iter().find(|&(s, e, _)| col >= s && col <= e).map(|(s, e, c)| (start + s, start + e, c))
+    }
+
     /// A git change bar at the left edge of the text under the mouse: the line it belongs to
     /// (`usize::MAX`: lines deleted at the very top).
     pub fn git_mark_at(&self, x: f32, y: f32) -> Option<usize> {
@@ -1740,6 +1851,21 @@ impl EditorView {
         });
         let ghost_extra = ghost.as_ref().map_or(0, |(_, _, t)| t.matches('\n').count());
 
+        // Bracket depth at the start of each visible line (large files: no bracket colors).
+        let pair_colors = self.bracket_colors && rope.len_chars() < 3_000_000;
+        let line_depth: Vec<i32> = if pair_colors {
+            let last = lines.last().copied().unwrap_or(0);
+            let version = self.doc.version();
+            let fresh = self.bracket_depths.as_ref().is_some_and(|(v, d)| *v == version && d.len() > last);
+            if !fresh {
+                self.bracket_depths = Some((version, bracket_depths(rope, last + 200)));
+            }
+            let depths = &self.bracket_depths.as_ref().expect("just computed").1;
+            lines.iter().map(|&l| depths.get(l).copied().unwrap_or(0)).collect()
+        } else {
+            Vec::new()
+        };
+        let dark = theme.dark;
         // Build colored runs for the visible lines; tabs become spaces so the grid holds.
         let tab_width = self.doc.tab_width;
         let mut runs: Vec<(String, Rgba)> = Vec::new();
@@ -1761,7 +1887,8 @@ impl EditorView {
                 None => Vec::new(),
             };
             let mut span_i = 0;
-            for &line in &lines[seg..seg_end] {
+            for (li, &line) in lines[seg..seg_end].iter().enumerate() {
+            let mut depth = line_depth.get(seg + li).copied().unwrap_or(0);
             // CodeLens row above the line, indented like it.
             if let Some(title) = lens_title(line) {
                 let indent: String = rope
@@ -1825,10 +1952,22 @@ impl EditorView {
                 while span_i < spans.len() && spans[span_i].end <= byte {
                     span_i += 1;
                 }
-                let color = spans
-                    .get(span_i)
-                    .filter(|s| s.start <= byte)
-                    .map_or(theme.text, |s| theme.highlight(s.highlight));
+                let hl = spans.get(span_i).filter(|s| s.start <= byte).map(|s| s.highlight);
+                let mut color = hl.map_or(theme.text, |h| theme.highlight(h));
+                // Bracket pairs in colors by depth (not inside strings and comments).
+                if pair_colors && !matches!(hl, Some(wyven_syntax::Highlight::String | wyven_syntax::Highlight::Comment)) {
+                    match ch {
+                        '(' | '[' | '{' => {
+                            color = bracket_color(depth, dark);
+                            depth += 1;
+                        }
+                        ')' | ']' | '}' => {
+                            depth -= 1;
+                            color = if depth < 0 { theme.error } else { bracket_color(depth, dark) };
+                        }
+                        _ => {}
+                    }
+                }
                 if ch == '\t' {
                     let n = tab_width - col % tab_width;
                     push(&" ".repeat(n), color);
@@ -2061,6 +2200,68 @@ impl EditorView {
             }
             if let Some((x, w)) = clip(text_x + col as f32 * cw - cursor_w / 2.0, cursor_w) {
                 over.push(Quad { x, y: row_y(row), w, h: lh, color: theme.cursor });
+            }
+        }
+
+        // Indent guides: a thin line at each indentation level (blank lines continue them).
+        if self.indent_guides {
+            let unit = if self.doc.indent_unit == "\t" { self.doc.tab_width } else { self.doc.indent_unit.len().max(1) };
+            let indent_of = |line: usize| -> Option<usize> {
+                let mut cols = 0;
+                for c in rope.line(line).chars() {
+                    match c {
+                        ' ' => cols += 1,
+                        '\t' => cols += self.doc.tab_width - cols % self.doc.tab_width,
+                        '\r' | '\n' => return None,
+                        _ => return Some(cols),
+                    }
+                }
+                None
+            };
+            let guide = theme.gutter_text.with_alpha(0x38);
+            let w = scale.round().max(1.0);
+            for &line in &lines {
+                let Some(row) = row_of(line) else { continue };
+                let cols = indent_of(line).unwrap_or_else(|| {
+                    // A blank line: as deep as the shallower of its neighbours.
+                    let up = (line.saturating_sub(100)..line).rev().find_map(indent_of).unwrap_or(0);
+                    let down = (line + 1..(line + 100).min(rope.len_lines())).find_map(indent_of).unwrap_or(0);
+                    up.min(down)
+                });
+                let h = lh * (1 + map.wrap_rows(line)) as f32;
+                for k in 0..cols / unit {
+                    let x = text_x + (k * unit) as f32 * cw;
+                    if x >= text_left && x < text_right {
+                        under.push(Quad { x, y: row_y(row), w, h, color: guide });
+                    }
+                }
+            }
+        }
+
+        // Colors written in the code: a small square in front (or a line under them).
+        if self.color_preview && self.shows_colors() {
+            for &line in &lines {
+                let chars: Vec<char> = rope.line(line).chars().collect();
+                let text: String = chars.iter().collect();
+                for (s, e, c) in crate::colors::find(&text) {
+                    let Some((row, col)) = map.place(line, self.visual_col(line, s)) else { continue };
+                    let y = row_y(row);
+                    if y < sticky_bottom {
+                        continue;
+                    }
+                    let x = text_x + col as f32 * cw;
+                    if s > 0 && chars[s - 1].is_whitespace() {
+                        let size = (lh * 0.6).min(cw * 0.95).round();
+                        let sx = (x - cw + (cw - size) / 2.0).round();
+                        let sy = (y + (lh - size) / 2.0).round();
+                        if sx >= text_left && sx + size <= text_right {
+                            over.push(Quad { x: sx - 1.0, y: sy - 1.0, w: size + 2.0, h: size + 2.0, color: theme.text.with_alpha(0x90) });
+                            over.push(Quad { x: sx, y: sy, w: size, h: size, color: c });
+                        }
+                    } else if let Some((ux, uw)) = clip(x, (e - s) as f32 * cw) {
+                        over.push(Quad { x: ux, y: y + lh - (2.0 * scale).round(), w: uw, h: (2.0 * scale).round(), color: c });
+                    }
+                }
             }
         }
 
@@ -2464,6 +2665,12 @@ mod tests {
 
     fn from(top: usize) -> Vec<usize> {
         (top..top + 10).collect()
+    }
+
+    #[test]
+    fn bracket_depth_skips_strings_and_comments() {
+        let rope = wyven_buffer::Rope::from_str("fn a() {\n  let s = \"(\"; // (\n  /* { */ if x { y(); }\n}\n");
+        assert_eq!(super::bracket_depths(&rope, 4), vec![0, 1, 1, 1, 0]);
     }
 
     #[test]
