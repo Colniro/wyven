@@ -70,7 +70,8 @@ impl Welcome {
         self.title.set_text("Wyven", &bold, Shaping::Advanced, None);
         self.title.shape_until_scroll(fs, false);
         self.subtitle.set_metrics(Metrics::new(self.ui.size, self.ui.line_h));
-        self.subtitle.set_text("Start typing for a new file, or pick something below.", &attrs, Shaping::Advanced, None);
+        let subtitle = format!("Version {}  ·  Start typing for a new file, or pick something below.", env!("CARGO_PKG_VERSION"));
+        self.subtitle.set_text(&subtitle, &attrs, Shaping::Advanced, None);
         self.subtitle.shape_until_scroll(fs, false);
 
         use crate::leader::Action as L;
