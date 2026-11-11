@@ -28,6 +28,8 @@ pub enum Action {
     OpenSettings,
     /// Loads the plugins folder again.
     ReloadPlugins,
+    /// Looks for a new Wyven version now.
+    CheckUpdates,
     ShowPlugins,
     OpenPluginsFolder,
     /// settings.toml itself.

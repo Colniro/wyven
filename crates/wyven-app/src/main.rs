@@ -36,6 +36,7 @@ mod theme;
 mod vscode_theme;
 mod workspace;
 mod plugins;
+mod update;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -81,6 +82,7 @@ enum UserEvent {
     Debug,
     Ai,
     Claude,
+    Update,
 }
 
 /// Startup profiling: logs elapsed time and RAM after each startup stage.
@@ -198,6 +200,8 @@ enum Overlay {
     Rename { prompt: menu::Prompt, pos: usize },
     /// Branch picker (items: branch names, `null` = create a new branch).
     Branches(menu::Menu),
+    /// "Wyven x.y is available – install?"
+    Update(menu::Menu),
     /// The color theme picker (state in `State::theme_picker`).
     Themes(menu::Menu),
     /// Name for a new branch.
@@ -331,6 +335,11 @@ struct State {
     settings_page: settings_page::SettingsPage,
     theme_picker: Option<ThemePicker>,
     plugins: plugins::Plugins,
+    /// A running update check or download.
+    update_rx: Option<std::sync::mpsc::Receiver<update::UpdateEvent>>,
+    /// The newer version on offer, and whether the check was asked for.
+    update_offer: Option<update::Manifest>,
+    update_manual: bool,
     /// The `.code-workspace` file the workspace came from (folders are written back to it).
     workspace_file: Option<PathBuf>,
     /// The file Git last followed (the panel shows the repository of the active file).
@@ -366,8 +375,10 @@ impl ApplicationHandler<UserEvent> for App {
             ));
         }
         // Created hidden and shown after the first frame: no white flash while the GPU starts.
+        let icon = winit::window::Icon::from_rgba(include_bytes!("../../../assets/icon-64.rgba").to_vec(), 64, 64).ok();
         let mut attrs = Window::default_attributes()
             .with_title("Wyven")
+            .with_window_icon(icon)
             .with_visible(false)
             .with_inner_size(LogicalSize::new(w, h));
         if let Some(p) = position {
@@ -518,7 +529,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         if let Some(state) = &mut self.state {
             match event {
                 UserEvent::Lsp => state.lsp_poll(),
@@ -531,6 +542,15 @@ impl ApplicationHandler<UserEvent> for App {
                 UserEvent::Debug => state.debug_poll(),
                 UserEvent::Ai => state.ai_poll(),
                 UserEvent::Claude => state.claude_poll(),
+                UserEvent::Update => {
+                    if state.update_poll() {
+                        state.debugger.stop();
+                        for server in state.servers.values_mut() {
+                            server.shutdown();
+                        }
+                        event_loop.exit();
+                    }
+                }
             }
         }
     }
@@ -765,6 +785,9 @@ impl State {
             settings_page,
             theme_picker: None,
             plugins: plugins::Plugins::new(),
+            update_rx: None,
+            update_offer: None,
+            update_manual: false,
             workspace_file: None,
             git_followed: None,
             proxy,
@@ -782,6 +805,7 @@ impl State {
         state.relayout();
         state.start_claude_bridge();
         state.reload_plugins(false);
+        state.check_updates(false);
         if let Some(e) = theme_error {
             state.show(e);
         }
@@ -1652,6 +1676,10 @@ impl State {
                 self.theme_picker_key(event, &key);
                 return;
             }
+            Overlay::Update(_) => {
+                self.update_key(&key);
+                return;
+            }
             Overlay::References(_) => {
                 self.references_key(&key);
                 return;
@@ -2405,6 +2433,103 @@ impl State {
     }
 
     /// Re-reads settings.toml and applies what changed. A broken file keeps the old settings.
+    /// Looks for a newer version (`manual`: now, and say the result; else at most daily).
+    fn check_updates(&mut self, manual: bool) {
+        let source = self.settings.update.url.trim().to_string();
+        if source.is_empty() {
+            if manual {
+                self.show("No update address set: Settings (Alt → ,) → Updates");
+            }
+            return;
+        }
+        if !manual && (!self.settings.update.check || !update::due()) {
+            return;
+        }
+        if manual {
+            self.show("Checking for updates …");
+        }
+        self.update_manual = manual;
+        let proxy = self.proxy.clone();
+        self.update_rx = Some(update::check(source, manual, move || {
+            let _ = proxy.send_event(UserEvent::Update);
+        }));
+    }
+
+    /// Results of the update thread. Returns true when Wyven should close for the installer.
+    fn update_poll(&mut self) -> bool {
+        let Some(rx) = &self.update_rx else { return false };
+        let events: Vec<update::UpdateEvent> = rx.try_iter().collect();
+        let mut quit = false;
+        for ev in events {
+            match ev {
+                update::UpdateEvent::Checked { found: Some(m), .. } => {
+                    let notes = if m.notes.trim().is_empty() { String::new() } else { format!(" – {}", m.notes.trim()) };
+                    let title = format!("Wyven {} is available (you have {}){notes}", m.version, update::CURRENT);
+                    let items = vec![
+                        (format!("Install {} now (Wyven restarts)", m.version), wyven_lsp::Value::Bool(true)),
+                        ("Later".to_string(), wyven_lsp::Value::Bool(false)),
+                    ];
+                    let fs = self.renderer.font_system();
+                    self.overlay = Overlay::Update(menu::Menu::new(fs, self.ui_font, &title, items));
+                    self.update_offer = Some(m);
+                }
+                update::UpdateEvent::Checked { found: None, manual } => {
+                    if manual {
+                        self.show(format!("Wyven is up to date ({})", update::CURRENT));
+                    }
+                }
+                update::UpdateEvent::Ready(path) => match update::run_installer(&path) {
+                    Ok(()) => quit = true,
+                    Err(e) => self.show(e),
+                },
+                update::UpdateEvent::Failed(e) => {
+                    log::warn!("update: {e}");
+                    if self.update_manual || self.update_offer.is_some() {
+                        self.show(format!("Update: {e}"));
+                    }
+                }
+            }
+        }
+        self.window.request_redraw();
+        quit
+    }
+
+    fn update_key(&mut self, key: &Key) {
+        let Overlay::Update(menu) = &mut self.overlay else { return };
+        let choice = match key {
+            Key::Named(NamedKey::Escape) => Some(false),
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.move_selection(-1);
+                None
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                menu.move_selection(1);
+                None
+            }
+            Key::Named(NamedKey::Enter) => menu.selected().and_then(|v| v.as_bool()),
+            Key::Character(c) if c.as_str() == "1" => Some(true),
+            Key::Character(c) if c.as_str() == "2" => Some(false),
+            _ => None,
+        };
+        let Some(install) = choice else { return };
+        self.overlay = Overlay::None;
+        let Some(m) = self.update_offer.clone() else { return };
+        if !install {
+            self.update_offer = None;
+            return;
+        }
+        if self.tabs.iter().any(|t| t.doc.is_dirty() && t.doc.path().is_some()) {
+            self.show("Save your files first, then: Help: Check for Updates");
+            return;
+        }
+        self.show(format!("Downloading Wyven {} …", m.version));
+        let source = self.settings.update.url.trim().to_string();
+        let proxy = self.proxy.clone();
+        self.update_rx = Some(update::download(source, m, move || {
+            let _ = proxy.send_event(UserEvent::Update);
+        }));
+    }
+
     /// Loads the plugins folder (again) and puts their commands into the search field.
     fn reload_plugins(&mut self, report: bool) {
         let errors = self.plugins.load_all();
@@ -4025,6 +4150,7 @@ impl State {
             Later(msg) => self.show(msg),
             OpenSettings => self.open_settings_page(),
             ReloadPlugins => self.reload_plugins(true),
+            CheckUpdates => self.check_updates(true),
             ShowPlugins => {
                 let list = self.plugins.summary();
                 let dir = plugins::dir().map(|d| d.display().to_string()).unwrap_or_default();
@@ -4906,7 +5032,8 @@ impl State {
             | Overlay::DebugProjects(m)
             | Overlay::Processes(m)
             | Overlay::References(m)
-            | Overlay::Themes(m) => {
+            | Overlay::Themes(m)
+            | Overlay::Update(m) => {
                 m.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
             Overlay::Watch(prompt) | Overlay::ApiKey(prompt) => {
@@ -5094,7 +5221,8 @@ impl State {
                 | Overlay::DebugProjects(m)
                 | Overlay::Processes(m)
                 | Overlay::References(m)
-                | Overlay::Themes(m) => {
+                | Overlay::Themes(m)
+                | Overlay::Update(m) => {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }

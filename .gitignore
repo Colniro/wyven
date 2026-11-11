@@ -1,2 +1,4 @@
 target/
 *.log
+dist/
+docs/wyven-setup.exe

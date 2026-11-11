@@ -76,6 +76,13 @@ shell = ""
 args = []
 # Height of the terminal in percent of the window
 height = 35
+
+[update]
+# Where Wyven looks for new versions: the address of update.json (https://… or a folder path
+# like '\\server\wyven\update.json'). Empty = no update checks.
+url = ""
+# Check automatically (at most once a day). "Help: Check for Updates" always works.
+check = true
 "#;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -87,6 +94,20 @@ pub struct Settings {
     pub ui: UiSettings,
     pub terminal: TerminalSettings,
     pub ai: AiSettings,
+    pub update: UpdateSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateSettings {
+    pub url: String,
+    pub check: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { url: String::new(), check: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -162,6 +183,7 @@ impl Default for Settings {
             ui: UiSettings::default(),
             terminal: TerminalSettings::default(),
             ai: AiSettings::default(),
+            update: UpdateSettings::default(),
         }
     }
 }

@@ -16,6 +16,16 @@ Mit einem Ordner öffnet sich dieser als Projekt, mit einer Datei die Datei samt
 `cargo run` (ohne `--release`) baut schneller nach Änderungen, läuft aber langsamer und zeigt ein Konsolenfenster mit Logs.
 Die fertige Exe liegt nach dem Bauen unter `target\release\wyven.exe`.
 
+## Installer und Updates
+
+```powershell
+powershell -File scripts\release.ps1 -Notes "Was neu ist"
+```
+
+baut `dist\wyven-setup-<version>.exe` (Inno Setup 6, installiert ohne Adminrechte nach `%LOCALAPPDATA%\Programs\Wyven`, mit Startmenü, „Open with Wyven“ im Explorer, optional `wyven` im PATH und `.code-workspace`-Verknüpfung) und `dist\update.json` (Version, Installer, SHA-256).
+Zum Veröffentlichen beide Dateien an einen Ort legen (Webserver, GitHub-Release, Netzlaufwerk) und dessen `update.json`-Adresse in den Einstellungen unter *Updates* eintragen. Wyven prüft dann höchstens einmal am Tag, fragt vor dem Installieren, prüft die Prüfsumme und startet neu; „Help: Check for Updates“ prüft sofort.
+Benutzerhandbuch (englisch): [docs/guide.md](docs/guide.md), Plugins: [docs/plugins.md](docs/plugins.md). `docs/` ist zugleich die Website (für GitHub Pages: Quelle „docs“-Ordner); das Icon erzeugt `python assets/make_icon.py`.
+
 ## Was schon geht
 
 - **Suchen in der Datei** (wie Visual Studio): `Strg+F` öffnet das Suchfeld oben rechts (mit Auswahl oder Wort unter dem Cursor vorbelegt), `Strg+H` zusätzlich Ersetzen.

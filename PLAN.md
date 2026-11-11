@@ -120,7 +120,8 @@ Cargo-Workspace, Fenster, wgpu-Rendering, Text auf dem Bildschirm, Benchmarks f�
 ~~Andockbare Panels~~ ✅, ~~grafische Einstellungsseite~~ ✅, ~~Import von VS-Code-Themes~~ ✅, ~~Multi-Root-Workspaces~~ ✅, ~~WASM-Plugin-System~~ ✅.
 
 **Phase 5 – Veröffentlichung**
-Installer (Windows MSI/winget, Linux AppImage/Flatpak), Auto-Update, Doku, Website.
+~~Installer für Windows (Inno Setup)~~ ✅, ~~Auto-Update~~ ✅, ~~Doku~~ ✅, ~~Website (vorbereitet für GitHub Pages)~~ ✅.
+Noch offen, sobald es ein öffentliches Repository gibt: veröffentlichen (Releases, Website online, winget-Eintrag) und Linux-Pakete (AppImage/Flatpak, brauchen einen Linux-Build).
 
 ## 7. Name
 

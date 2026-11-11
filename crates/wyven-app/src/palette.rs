@@ -120,6 +120,7 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Preferences: Open Settings", "Alt ,", Ld(L::OpenSettings)),
         ("Preferences: Open Settings File (settings.toml)", "", Ld(L::OpenSettingsFile)),
         ("Help: All Keyboard Shortcuts", "Alt h", Ld(L::CheatSheet)),
+        ("Help: Check for Updates", "", Ld(L::CheckUpdates)),
         ("Plugins: Show Installed Plugins", "", Ld(L::ShowPlugins)),
         ("Plugins: Reload Plugins", "", Ld(L::ReloadPlugins)),
         ("Plugins: Open Plugins Folder", "", Ld(L::OpenPluginsFolder)),

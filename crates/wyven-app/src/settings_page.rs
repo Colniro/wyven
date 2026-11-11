@@ -45,6 +45,7 @@ const F: Option<&str> = Some("font");
 const U: Option<&str> = Some("ui");
 const A: Option<&str> = Some("ai");
 const T: Option<&str> = Some("terminal");
+const UP: Option<&str> = Some("update");
 
 pub const ITEMS: &[Item] = &[
     item("Appearance", None, "theme", "Color theme", "Alt → v → c picks any theme, installed VS Code themes included (with preview). Alt → v → t switches dark/light.",
@@ -77,6 +78,9 @@ pub const ITEMS: &[Item] = &[
     item("Terminal", T, "shell", "Shell", "For example cmd.exe, pwsh.exe or the path to Git's bash.exe. Applies to new terminals.",
          Kind::Text { empty: "automatic (PowerShell)" }),
     item("Terminal", T, "height", "Bottom panel height", "In percent of the window (dragging its edge overrides it).", num(15.0, 85.0, 5.0, 0)),
+    item("Updates", UP, "url", "Update address", "Where update.json is: https://… or a folder path. Empty = no update checks.",
+         Kind::Text { empty: "none (no update checks)" }),
+    item("Updates", UP, "check", "Check automatically", "At most once a day; Wyven always asks before installing. \"Help: Check for Updates\" checks now.", Kind::Toggle),
 ];
 
 /// The current value as shown and edited (strings without quotes).
@@ -107,6 +111,8 @@ pub fn value_of(s: &Settings, item: &Item) -> String {
         (A, "delay_ms") => s.ai.delay_ms.to_string(),
         (T, "shell") => s.terminal.shell.clone(),
         (T, "height") => fmt(s.terminal.height, 0),
+        (UP, "url") => s.update.url.clone(),
+        (UP, "check") => s.update.check.to_string(),
         _ => String::new(),
     }
 }
