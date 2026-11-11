@@ -309,7 +309,8 @@ impl crate::State {
 
     /// Alt → a → c: Claude Code in Wyven's terminal (it connects by itself there).
     pub(crate) fn launch_claude_code(&mut self) {
-        self.terminal_visible = true;
+        self.dock.show(crate::dock::Panel::Terminal);
+        self.dock.save();
         self.focus = crate::Focus::Terminal;
         self.relayout();
         if self.terminal.term.is_none() {

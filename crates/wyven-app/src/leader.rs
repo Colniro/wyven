@@ -31,6 +31,8 @@ pub enum Action {
     ToggleStickyScroll,
     ToggleInlayHints,
     ToggleCodeLens,
+    /// Panels back to their first places and sizes.
+    ResetLayout,
     /// Alt → m: live preview of a Markdown file next to it.
     MarkdownPreview,
     AiToggle,
@@ -140,6 +142,7 @@ const WINDOW: &[Item] = &[
     item('v', "split vertically", Later("Split views come in phase 2")),
     item('h', "split horizontally", Later("Split views come in phase 2")),
     item('c', "close split", Later("Split views come in phase 2")),
+    item('r', "reset panel layout", ResetLayout),
 ];
 
 const VIEW: &[Item] = &[

@@ -22,18 +22,23 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyven.exe`.
   - `Enter` / `F3` nächster Treffer, `Shift+Enter` / `Shift+F3` vorheriger, `Tab` wechselt zwischen Suchen und Ersetzen, `Esc` schließt.
   - `Alt+C` Groß/Klein, `Alt+W` ganzes Wort, `Alt+E` regulärer Ausdruck (Ersetzen mit `$1`, `$2` …), `Alt+R` ersetzt den Treffer, `Alt+A` alle (ein Rückgängig-Schritt).
   - Alle Treffer sind im Editor hinterlegt, der aktuelle kräftiger.
-- **Suchen im Projekt**: `Strg+Shift+F` (oder `Alt → s`) zeigt die Suche links statt des Explorers; `Strg+Shift+H` mit Ersetzen.
+- **Andockbare Panels**: Explorer, Suche, Git, Debug und Terminal liegen in drei Bereichen um den Editor: links, rechts und unten.
+  - Jeder Bereich zeigt oben eine Leiste mit seinen Panels als Tabs; ein Klick wechselt das Panel.
+  - Einen Tab mit der Maus ziehen verschiebt das Panel: auf die Tab-Leiste eines Bereichs, an den linken oder rechten Fensterrand oder nach unten. Der Zielbereich leuchtet beim Ziehen auf.
+  - Die Kante zwischen Bereich und Editor ziehen ändert die Größe.
+  - Anordnung, Größen und was offen ist, merkt sich Wyven in `%APPDATA%\Wyven\layout.json` (für alle Projekte). `Alt → w → r` stellt die ursprüngliche Anordnung wieder her.
+- **Suchen im Projekt**: `Strg+Shift+F` (oder `Alt → s`) zeigt die Suche im Bereich des Suche-Panels (anfangs links); `Strg+Shift+H` mit Ersetzen.
   - Sucht beim Tippen im Hintergrund, beachtet `.gitignore`, überspringt `bin`/`obj` und Binärdateien. Gleiche Optionen wie oben.
   - `↑`/`↓` + `Enter` oder Klick öffnet den Treffer. `Alt+A` ersetzt im ganzen Projekt: offene Dateien werden im Editor geändert (Rückgängig möglich), alle anderen sofort gespeichert.
 
-- **Terminal** unter dem Editor: `Alt → t` öffnet es (beim ersten Mal startet die Shell im Projektordner), springt hinein oder schließt es. Start direkt mit Terminal: `wyven <Ordner> --terminal`.
+- **Terminal** (anfangs unter dem Editor): `Alt → t` öffnet es (beim ersten Mal startet die Shell im Projektordner), springt hinein oder schließt es. Start direkt mit Terminal: `wyven <Ordner> --terminal`.
   - Alle Tasten gehen an die Shell, auch `Esc`, `Strg+C` und `Strg+V`. So laufen auch Programme wie Claude Code oder `dotnet watch` darin. `Alt` antippen öffnet weiterhin das Leader-Menü.
   - Kopieren/Einfügen: `Strg+Shift+C` / `Strg+Shift+V`, Auswahl mit der Maus. Mausrad scrollt zurück (bis 5000 Zeilen).
   - Volle Farben (256 und True Color), Shell und Höhe in `settings.toml` unter `[terminal]`. Standard: PowerShell 7, sonst Windows PowerShell.
 
 - **Git** (nutzt das installierte `git`, alles läuft im Hintergrund):
   - **Balken im Zeilenrand**: grün neu, blau geändert, rote Marke für gelöschte Zeilen, verglichen mit dem letzten Commit und beim Tippen aktualisiert.
-  - **Git-Panel** links statt des Explorers (`Alt → g → g`): Branch, ↑/↓ gegenüber dem Server, Commit-Nachricht und alle geänderten Dateien. Nachricht eintippen, `Strg+Enter` committet **alles** (vorher werden offene Dateien gespeichert). `↑`/`↓` + `Enter` oder Klick zeigt den Diff einer Datei, `Esc` zurück zum Explorer.
+  - **Git-Panel** (anfangs links neben dem Explorer, `Alt → g → g`): Branch, ↑/↓ gegenüber dem Server, Commit-Nachricht und alle geänderten Dateien. Nachricht eintippen, `Strg+Enter` committet **alles** (vorher werden offene Dateien gespeichert). `↑`/`↓` + `Enter` oder Klick zeigt den Diff einer Datei, `Esc` zurück zum Explorer.
   - **Diff nebeneinander** (`Alt → g → d` für die aktuelle Datei): links der letzte Commit, rechts der aktuelle Stand, beide scrollen gemeinsam. `F8` / `Shift+F8` springen zur nächsten/vorigen Änderung, `Esc` schließt.
   - **Sync** (`Alt → g → s`): pull, dann push. Ein neuer Branch wird beim ersten Sync veröffentlicht. Alle 3 Minuten wird im Hintergrund `fetch` ausgeführt.
   - **Branches**: `Alt → g → b` wechseln (Ziffer oder Enter), `Alt → g → n` neuen Branch anlegen und wechseln.

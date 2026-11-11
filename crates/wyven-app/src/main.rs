@@ -12,6 +12,7 @@ mod claude;
 mod completion;
 mod config;
 mod debug;
+mod dock;
 mod diff_view;
 mod editor;
 mod explorer;
@@ -159,13 +160,15 @@ enum Focus {
     Debug,
 }
 
-/// What the left sidebar shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Sidebar {
-    Explorer,
-    Search,
-    Git,
-    Debug,
+use dock::{Area, Panel};
+
+/// A panel tab being dragged with the mouse.
+struct PanelDrag {
+    panel: Panel,
+    from: (f32, f32),
+    /// Far enough from the press to count as a drag (else it was a click).
+    moved: bool,
+    target: Option<(Area, usize)>,
 }
 
 enum Overlay {
@@ -205,12 +208,14 @@ struct Mouse {
 /// Screen layout, recomputed on resize, font change and when the explorer is toggled.
 #[derive(Default, Clone, Copy)]
 struct Layout {
-    explorer: Option<Rect>,
+    /// The dock areas (with their panel tab strip), when open.
+    left: Option<Rect>,
+    right: Option<Rect>,
+    bottom: Option<Rect>,
     tabs: Rect,
     editor: Rect,
     /// Markdown preview, right of the editor.
     preview: Option<Rect>,
-    terminal: Option<Rect>,
     status: Rect,
 }
 
@@ -235,7 +240,14 @@ struct State {
     tab_spans: Vec<(f32, f32)>,
 
     explorer: Option<Explorer>,
-    explorer_visible: bool,
+    /// Where the panels are docked and which ones show.
+    dock: dock::Dock,
+    dock_bar: dock::DockBar,
+    panel_drag: Option<PanelDrag>,
+    /// The dock area whose edge is being dragged to resize it.
+    resizing: Option<Area>,
+    /// The mouse cursor shape last set (arrow or resize arrows).
+    cursor_resize: Option<Area>,
     focus: Focus,
 
     overlay: Overlay,
@@ -278,11 +290,11 @@ struct State {
     settings: settings::Settings,
     settings_mtime: Option<std::time::SystemTime>,
     terminal: terminal::TerminalPanel,
-    terminal_visible: bool,
+    /// The shell was started once (a saved layout can show the terminal at startup).
+    terminal_started: bool,
     find: find::FindBar,
     find_labels: find::ToggleLabels,
     search: search_panel::SearchPanel,
-    sidebar: Sidebar,
     git: git_panel::GitPanel,
     debugger: debug::Debugger,
     /// Breakpoints of files that are not open (open tabs keep their own).
@@ -418,6 +430,22 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 state.mouse.x = x;
                 state.mouse.y = y;
+                if let Some(area) = state.resizing {
+                    state.resize_area(area, x, y);
+                }
+                if state.panel_drag.is_some() {
+                    state.panel_drag_move(x, y);
+                }
+                // Resize arrows over the edge of a dock area.
+                let edge = state.resizing.or_else(|| state.splitter_at(x, y));
+                if edge != state.cursor_resize {
+                    state.cursor_resize = edge;
+                    state.window.set_cursor(match edge {
+                        Some(Area::Bottom) => winit::window::CursorIcon::RowResize,
+                        Some(_) => winit::window::CursorIcon::ColResize,
+                        None => winit::window::CursorIcon::Default,
+                    });
+                }
                 state.hover_rest = (!state.mouse.dragging).then(|| (Instant::now(), x, y));
                 if state.terminal.selecting {
                     let (row, col) = state.terminal.cell_at(x, y);
@@ -625,6 +653,7 @@ impl State {
         let popup = Popup::new(fs, ui_font);
         let palette = Palette::new(fs, ui_font);
         let terminal_panel = terminal::TerminalPanel::new(fs, font, ui_font, family.clone());
+        let dock_bar = dock::DockBar::new(fs, ui_font, family.clone());
         let find_bar = find::FindBar::new(fs, ui_font);
         let initial_theme = Theme::by_name(&settings.theme).unwrap_or_else(Theme::dark);
         let find_labels = find::ToggleLabels::new(fs, ui_font, &family, &initial_theme);
@@ -657,7 +686,11 @@ impl State {
             tab_bar,
             tab_spans: Vec::new(),
             explorer: None,
-            explorer_visible: true,
+            dock: dock::Dock::load(),
+            dock_bar,
+            panel_drag: None,
+            resizing: None,
+            cursor_resize: None,
             focus: Focus::Editor,
             overlay: Overlay::None,
             popup,
@@ -682,11 +715,10 @@ impl State {
             settings,
             settings_mtime: settings::modified(),
             terminal: terminal_panel,
-            terminal_visible: false,
+            terminal_started: false,
             find: find_bar,
             find_labels,
             search,
-            sidebar: Sidebar::Explorer,
             git,
             debugger,
             breakpoint_store: debug::Breakpoints::new(),
@@ -733,53 +765,231 @@ impl State {
         let (w, h) = (w as f32, h as f32);
         let status_h = (self.ui_font.line_h * 1.25).round();
         let tabs_h = (self.ui_font.line_h * 1.6).round();
-        let explorer_w = if (self.explorer.is_some() || self.sidebar != Sidebar::Explorer) && self.explorer_visible {
-            (self.settings.ui.explorer_width * self.ui_font.cell_w).min(w * 0.4).round()
-        } else {
-            0.0
-        };
         let body_h = h - status_h;
-        let terminal_h = if self.terminal_visible {
-            (body_h * self.settings.terminal.height / 100.0).round().max(self.font.line_h * 4.0)
+        let cell = self.ui_font.cell_w;
+        let side_w = |me: &Self, a: Area| -> f32 {
+            if !me.area_open(a) {
+                return 0.0;
+            }
+            let cells = me.dock.area(a).size.unwrap_or(me.settings.ui.explorer_width);
+            (cells * cell).clamp(cell * 12.0, w * 0.45).round()
+        };
+        let left_w = side_w(self, Area::Left);
+        let right_w = side_w(self, Area::Right).min(w - left_w - cell * 20.0).max(0.0);
+        let center_w = w - left_w - right_w;
+        let bottom_h = if self.area_open(Area::Bottom) {
+            let pct = self.dock.area(Area::Bottom).size.unwrap_or(self.settings.terminal.height);
+            (body_h * pct / 100.0)
+                .round()
+                .max(self.font.line_h * 4.0)
+                .min(body_h - tabs_h - self.font.line_h * 3.0)
         } else {
             0.0
         };
-        let editor_h = body_h - tabs_h - terminal_h;
+        let editor_h = body_h - tabs_h - bottom_h;
         // The Markdown preview takes the right half of the editor.
-        let full_w = w - explorer_w;
-        let preview_w = if self.preview_visible() { (full_w / 2.0).round() } else { 0.0 };
+        let preview_w = if self.preview_visible() { (center_w / 2.0).round() } else { 0.0 };
         self.layout = Layout {
-            explorer: (explorer_w > 0.0).then_some(Rect { x: 0.0, y: 0.0, w: explorer_w, h: body_h }),
-            tabs: Rect { x: explorer_w, y: 0.0, w: w - explorer_w, h: tabs_h },
-            editor: Rect { x: explorer_w, y: tabs_h, w: full_w - preview_w, h: editor_h },
+            left: (left_w > 0.0).then_some(Rect { x: 0.0, y: 0.0, w: left_w, h: body_h }),
+            right: (right_w > 0.0).then_some(Rect { x: w - right_w, y: 0.0, w: right_w, h: body_h }),
+            bottom: (bottom_h > 0.0).then_some(Rect { x: left_w, y: body_h - bottom_h, w: center_w, h: bottom_h }),
+            tabs: Rect { x: left_w, y: 0.0, w: center_w, h: tabs_h },
+            editor: Rect { x: left_w, y: tabs_h, w: center_w - preview_w, h: editor_h },
             preview: (preview_w > 0.0)
-                .then_some(Rect { x: explorer_w + full_w - preview_w, y: tabs_h, w: preview_w, h: editor_h }),
-            terminal: (terminal_h > 0.0)
-                .then_some(Rect { x: explorer_w, y: tabs_h + editor_h, w: w - explorer_w, h: terminal_h }),
+                .then_some(Rect { x: left_w + center_w - preview_w, y: tabs_h, w: preview_w, h: editor_h }),
             status: Rect { x: 0.0, y: body_h, w, h: status_h },
         };
-        if let Some(r) = self.layout.terminal {
-            self.terminal.set_area(r);
+        // Each panel draws below the tab strip of its area.
+        for p in Panel::ALL {
+            let Some(r) = self.layout_area(self.dock.area_of(p)) else { continue };
+            let c = dock::content(r, self.ui_font);
+            match p {
+                Panel::Explorer => {
+                    if let Some(ex) = &mut self.explorer {
+                        ex.set_area(c);
+                    }
+                }
+                Panel::Search => self.search.set_area(c),
+                Panel::Git => self.git.set_area(c),
+                Panel::Debug => self.debugger.set_area(c),
+                Panel::Terminal => self.terminal.set_area(c),
+            }
         }
+        let strips: Vec<(Area, Rect, Vec<Panel>)> = Area::ALL
+            .into_iter()
+            .filter_map(|a| self.layout_area(a).map(|r| (a, r, self.dock.area(a).panels.clone())))
+            .collect();
+        self.dock_bar.place(&strips);
         let area = self.layout.editor;
         let scale = self.renderer.scale_factor();
         for t in &mut self.tabs {
             t.set_area(area);
             t.scale = scale;
         }
-        if let (Some(ex), Some(r)) = (&mut self.explorer, self.layout.explorer) {
-            ex.set_area(r);
-        }
-        if let Some(r) = self.layout.explorer {
-            self.search.set_area(r);
-            self.git.set_area(r);
-            self.debugger.set_area(r);
-        }
         if let Some(d) = &mut self.diff {
             d.set_area(area);
         }
         if let (Some(p), Some(r)) = (&mut self.preview, self.layout.preview) {
             p.set_area(r);
+        }
+        self.window.request_redraw();
+    }
+
+    fn layout_area(&self, a: Area) -> Option<Rect> {
+        match a {
+            Area::Left => self.layout.left,
+            Area::Right => self.layout.right,
+            Area::Bottom => self.layout.bottom,
+        }
+    }
+
+    /// The Explorer has nothing to show without an open folder.
+    fn panel_available(&self, p: Panel) -> bool {
+        p != Panel::Explorer || self.explorer.is_some()
+    }
+
+    fn area_open(&self, a: Area) -> bool {
+        let s = self.dock.area(a);
+        s.visible && s.active.is_some_and(|p| self.panel_available(p))
+    }
+
+    /// The panel is on screen.
+    fn panel_shown(&self, p: Panel) -> bool {
+        self.dock.shown(p) && self.layout_area(self.dock.area_of(p)).is_some()
+    }
+
+    fn focused_panel(&self) -> Option<Panel> {
+        match self.focus {
+            Focus::Explorer => Some(Panel::Explorer),
+            Focus::Search => Some(Panel::Search),
+            Focus::Git => Some(Panel::Git),
+            Focus::Debug => Some(Panel::Debug),
+            Focus::Terminal => Some(Panel::Terminal),
+            Focus::Editor => None,
+        }
+    }
+
+    /// Saves the panel layout and lays the window out again.
+    fn dock_changed(&mut self) {
+        self.dock.save();
+        self.relayout();
+    }
+
+    /// Shows a panel and moves the focus there (click on its tab).
+    fn activate_panel(&mut self, p: Panel) {
+        match p {
+            Panel::Explorer => {
+                if self.explorer.is_none() {
+                    self.show("No folder open: Alt → p → o opens one.");
+                    return;
+                }
+                self.dock.show(p);
+                self.focus = Focus::Explorer;
+            }
+            Panel::Search => {
+                if self.search.has_root() {
+                    self.dock.show(p);
+                    self.focus = Focus::Search;
+                } else {
+                    self.open_search_panel(false);
+                }
+            }
+            Panel::Git => self.show_git_panel(),
+            Panel::Debug => self.show_debug_panel(true),
+            Panel::Terminal => {
+                self.dock.show(p);
+                self.focus = Focus::Terminal;
+                if self.terminal.term.is_none() {
+                    self.relayout();
+                    self.start_terminal();
+                }
+            }
+        }
+        self.dock_changed();
+    }
+
+    /// Alt → w → r: everything back to where it was at first.
+    fn reset_layout(&mut self) {
+        self.dock = dock::Dock::default();
+        if self.focused_panel().is_some_and(|p| !self.dock.shown(p)) {
+            self.focus = Focus::Editor;
+        }
+        self.dock_changed();
+        self.show("Panel layout reset");
+    }
+
+    /// The dock area whose inner edge is under the mouse (to resize it).
+    fn splitter_at(&self, x: f32, y: f32) -> Option<Area> {
+        let grab = 4.0 * self.renderer.scale_factor();
+        let near = |a: f32, b: f32| (a - b).abs() <= grab;
+        if let Some(r) = self.layout.left
+            && near(x, r.x + r.w)
+            && y >= r.y
+            && y < r.y + r.h
+        {
+            return Some(Area::Left);
+        }
+        if let Some(r) = self.layout.right
+            && near(x, r.x)
+            && y >= r.y
+            && y < r.y + r.h
+        {
+            return Some(Area::Right);
+        }
+        if let Some(r) = self.layout.bottom
+            && near(y, r.y)
+            && x >= r.x
+            && x < r.x + r.w
+        {
+            return Some(Area::Bottom);
+        }
+        None
+    }
+
+    /// Dragging an area's edge: sides in UI cells, the bottom in percent of the window.
+    fn resize_area(&mut self, a: Area, x: f32, y: f32) {
+        let (w, _) = self.renderer.size();
+        let w = w as f32;
+        let body_h = self.layout.status.y;
+        let cell = self.ui_font.cell_w;
+        let size = match a {
+            Area::Left => (x.clamp(cell * 12.0, w * 0.45)) / cell,
+            Area::Right => ((w - x).clamp(cell * 12.0, w * 0.45)) / cell,
+            Area::Bottom => ((body_h - y) / body_h * 100.0).clamp(10.0, 80.0),
+        };
+        self.dock.area_mut(a).size = Some((size * 10.0).round() / 10.0);
+        self.relayout();
+    }
+
+    /// Mouse moves while a panel tab is held: start the drag, follow the drop target.
+    fn panel_drag_move(&mut self, x: f32, y: f32) {
+        let strips: Vec<(Area, Rect)> = Area::ALL
+            .into_iter()
+            .filter_map(|a| {
+                self.layout_area(a).map(|r| (a, Rect { x: r.x, y: r.y, w: r.w, h: dock::strip_h(self.ui_font) }))
+            })
+            .collect();
+        let body = Rect { x: 0.0, y: 0.0, w: self.layout.status.w, h: self.layout.status.y };
+        let Some(d) = &mut self.panel_drag else { return };
+        let dist = ((x - d.from.0).powi(2) + (y - d.from.1).powi(2)).sqrt();
+        if !d.moved && dist < 6.0 * self.renderer.scale_factor() {
+            return;
+        }
+        d.moved = true;
+        d.target = dock::drop_target(x, y, body, &self.dock_bar.spans, &strips);
+        self.window.request_redraw();
+    }
+
+    /// Mouse released after dragging a panel tab.
+    fn panel_drop(&mut self) {
+        let Some(d) = self.panel_drag.take() else { return };
+        if !d.moved {
+            return;
+        }
+        if let Some((area, index)) = d.target {
+            self.dock.move_panel(d.panel, area, index);
+            self.dock_changed();
+            self.activate_panel(d.panel);
         }
         self.window.request_redraw();
     }
@@ -857,6 +1067,7 @@ impl State {
         self.search.set_font(ui);
         self.git.set_font(ui);
         self.debugger.set_font(ui);
+        self.dock_bar.set_font(self.renderer.font_system(), ui);
         // The diff view keeps its own fonts; reopening is cheaper than re-measuring it.
         self.diff = None;
         let m = Metrics::new(ui.size, ui.line_h);
@@ -891,7 +1102,7 @@ impl State {
         let fs = self.renderer.font_system();
         let ex = Explorer::new(path.clone(), fs, self.ui_font, self.family.clone());
         self.explorer = Some(ex);
-        self.explorer_visible = true;
+        self.dock.show(Panel::Explorer);
         config::remember_project(&path);
         self.index.rebuild(&path);
         self.git.open_repo(&path);
@@ -1237,21 +1448,21 @@ impl State {
 
         let mods = self.modifiers;
         self.tooltip = None;
-        if self.focus == Focus::Terminal && self.terminal_visible {
+        if self.focus == Focus::Terminal && self.panel_shown(Panel::Terminal) {
             self.terminal_key(event);
             return;
         }
-        if self.focus == Focus::Search && self.explorer_visible && self.sidebar == Sidebar::Search {
+        if self.focus == Focus::Search && self.panel_shown(Panel::Search) {
             self.search_key(event);
             return;
         }
-        if self.focus == Focus::Git && self.explorer_visible && self.sidebar == Sidebar::Git {
+        if self.focus == Focus::Git && self.panel_shown(Panel::Git) {
             self.git_key(event);
             return;
         }
         // F-keys (step, continue) work everywhere, also with the debug panel focused.
         let is_fkey = matches!(key, Key::Named(NamedKey::F5 | NamedKey::F9 | NamedKey::F10 | NamedKey::F11));
-        if self.focus == Focus::Debug && self.explorer_visible && self.sidebar == Sidebar::Debug && !is_fkey {
+        if self.focus == Focus::Debug && self.panel_shown(Panel::Debug) && !is_fkey {
             let action = self.debugger.key(event);
             self.apply_debug_panel_action(action);
             return;
@@ -2029,21 +2240,22 @@ impl State {
 
     /// Alt → t: opens the terminal (starting the shell the first time), focuses it, or closes it.
     fn toggle_terminal(&mut self) {
-        if self.terminal_visible && self.focus == Focus::Terminal {
-            self.terminal_visible = false;
+        if self.panel_shown(Panel::Terminal) && self.focus == Focus::Terminal {
+            self.dock.hide(Panel::Terminal);
             self.focus = Focus::Editor;
-            self.relayout();
+            self.dock_changed();
             return;
         }
-        self.terminal_visible = true;
+        self.dock.show(Panel::Terminal);
         self.focus = Focus::Terminal;
-        self.relayout();
+        self.dock_changed();
         if self.terminal.term.is_none() {
             self.start_terminal();
         }
     }
 
     fn start_terminal(&mut self) {
+        self.terminal_started = true;
         let cwd = self
             .project_root()
             .map(Path::to_path_buf)
@@ -2158,8 +2370,7 @@ impl State {
         };
         let prefill = find::FindBar::prefill_from(&self.editor().doc);
         self.search.show(&root, replace, prefill);
-        self.sidebar = Sidebar::Search;
-        self.explorer_visible = true;
+        self.dock.show(Panel::Search);
         self.focus = Focus::Search;
         self.relayout();
     }
@@ -2190,14 +2401,18 @@ impl State {
         }
     }
 
-    /// Back from the search or git panel to the explorer.
+    /// Esc in the search, git or debug panel: back to the Explorer if it shares the area,
+    /// else the area closes.
     fn close_sidebar_panel(&mut self) {
-        self.sidebar = Sidebar::Explorer;
-        self.focus = Focus::Editor;
-        if self.explorer.is_none() {
-            self.explorer_visible = false;
+        let p = self.focused_panel().unwrap_or(Panel::Search);
+        let area = self.dock.area_of(p);
+        if self.dock.area(area).panels.contains(&Panel::Explorer) && self.explorer.is_some() {
+            self.dock.show(Panel::Explorer);
+        } else {
+            self.dock.hide(p);
         }
-        self.relayout();
+        self.focus = Focus::Editor;
+        self.dock_changed();
     }
 
     fn open_search_result(&mut self, path: PathBuf, line: usize, column: usize, len: usize) {
@@ -2321,7 +2536,7 @@ impl State {
         if self.git.repo.is_none() || self.git.busy.is_some() {
             return;
         }
-        let visible = self.explorer_visible && self.sidebar == Sidebar::Git;
+        let visible = self.panel_shown(Panel::Git);
         let due = |last: Option<Instant>, every: Duration| last.is_none_or(|t| now.duration_since(t) >= every);
         let upstream = self.git.status.as_ref().is_some_and(|s| s.has_upstream);
         if upstream && due(self.git.last_fetch, git_panel::FETCH_INTERVAL) {
@@ -2445,8 +2660,7 @@ impl State {
     }
 
     fn show_git_panel(&mut self) {
-        self.sidebar = Sidebar::Git;
-        self.explorer_visible = true;
+        self.dock.show(Panel::Git);
         self.focus = Focus::Git;
         if self.git.repo.is_some() {
             self.git.refresh_status();
@@ -2856,8 +3070,7 @@ impl State {
     }
 
     fn show_debug_panel(&mut self, focus: bool) {
-        self.sidebar = Sidebar::Debug;
-        self.explorer_visible = true;
+        self.dock.show(Panel::Debug);
         if focus {
             self.focus = Focus::Debug;
         }
@@ -3239,29 +3452,27 @@ impl State {
         match action {
             Group(_) => {}
             ToggleExplorer => {
-                if self.sidebar != Sidebar::Explorer && self.explorer_visible {
-                    self.sidebar = Sidebar::Explorer;
-                    self.focus = Focus::Explorer;
-                    self.relayout();
-                    return;
-                }
-                self.sidebar = Sidebar::Explorer;
                 if self.explorer.is_none() {
                     self.show("No folder open: Alt → p → o opens one.");
                     return;
                 }
-                self.explorer_visible = !self.explorer_visible;
-                self.focus = if self.explorer_visible { Focus::Explorer } else { Focus::Editor };
-                self.relayout();
+                if self.panel_shown(Panel::Explorer) {
+                    self.dock.hide(Panel::Explorer);
+                    self.focus = Focus::Editor;
+                } else {
+                    self.dock.show(Panel::Explorer);
+                    self.focus = Focus::Explorer;
+                }
+                self.dock_changed();
             }
             FocusExplorer => {
-                self.sidebar = Sidebar::Explorer;
                 if self.explorer.is_some() {
-                    self.explorer_visible = true;
+                    self.dock.show(Panel::Explorer);
                     self.focus = Focus::Explorer;
-                    self.relayout();
+                    self.dock_changed();
                 }
             }
+            ResetLayout => self.reset_layout(),
             OpenFolder => self.pick_folder(),
             RecentProjects => {
                 let list = config::recent_projects();
@@ -3716,6 +3927,10 @@ impl State {
         if !pressed {
             self.mouse.dragging = false;
             self.mouse.minimap_drag = None;
+            if self.resizing.take().is_some() {
+                self.dock.save();
+            }
+            self.panel_drop();
             if self.terminal.selecting {
                 self.terminal.selecting = false;
                 // A click without dragging selects nothing.
@@ -3755,8 +3970,19 @@ impl State {
             self.ai_toggle();
             return;
         }
+        if button == MouseButton::Left {
+            if let Some(area) = self.splitter_at(x, y) {
+                self.resizing = Some(area);
+                return;
+            }
+            if let Some(tab) = self.dock_bar.hit(x, y) {
+                self.panel_drag = Some(PanelDrag { panel: tab.panel, from: (x, y), moved: false, target: None });
+                self.activate_panel(tab.panel);
+                return;
+            }
+        }
         let t = self.layout.tabs;
-        if y >= t.y && y < t.y + t.h && x >= t.x {
+        if y >= t.y && y < t.y + t.h && x >= t.x && x < t.x + t.w {
             if let Some(i) = self.tab_spans.iter().position(|&(a, b)| x >= a && x < b) {
                 match button {
                     MouseButton::Middle => self.close_tab(i),
@@ -3770,7 +3996,7 @@ impl State {
             return;
         }
 
-        if self.terminal_visible && self.terminal.contains(x, y) {
+        if self.panel_shown(Panel::Terminal) && self.terminal.contains(x, y) {
             self.focus = Focus::Terminal;
             if button == MouseButton::Left {
                 let (row, col) = self.terminal.cell_at(x, y);
@@ -3787,7 +4013,7 @@ impl State {
             self.focus = Focus::Editor;
             return;
         }
-        if self.sidebar == Sidebar::Search && self.explorer_visible && self.search.contains(x, y) {
+        if self.panel_shown(Panel::Search) && self.search.contains(x, y) {
             self.focus = Focus::Search;
             if button == MouseButton::Left {
                 let action = self.search.click(y);
@@ -3795,7 +4021,7 @@ impl State {
             }
             return;
         }
-        if self.sidebar == Sidebar::Git && self.explorer_visible && self.git.contains(x, y) {
+        if self.panel_shown(Panel::Git) && self.git.contains(x, y) {
             self.focus = Focus::Git;
             if button == MouseButton::Left {
                 let action = self.git.click(y);
@@ -3803,7 +4029,7 @@ impl State {
             }
             return;
         }
-        if self.sidebar == Sidebar::Debug && self.explorer_visible && self.debugger.contains(x, y) {
+        if self.panel_shown(Panel::Debug) && self.debugger.contains(x, y) {
             self.focus = Focus::Debug;
             if button == MouseButton::Left {
                 let action = self.debugger.click(y);
@@ -3816,8 +4042,9 @@ impl State {
                 self.focus = Focus::Editor;
                 return;
             }
+        let explorer_shown = self.panel_shown(Panel::Explorer);
         if let Some(ex) = &mut self.explorer
-            && self.explorer_visible && self.sidebar == Sidebar::Explorer && ex.contains(x, y) {
+            && explorer_shown && ex.contains(x, y) {
                 self.focus = Focus::Explorer;
                 if button == MouseButton::Left
                     && let Some(i) = ex.row_at(y)
@@ -3894,7 +4121,7 @@ impl State {
             }
         };
         let (x, y) = (self.mouse.x, self.mouse.y);
-        if self.terminal_visible && self.terminal.contains(x, y) {
+        if self.panel_shown(Panel::Terminal) && self.terminal.contains(x, y) {
             if let Some(t) = &self.terminal.term {
                 t.scroll(dy.round() as i32);
             }
@@ -3902,17 +4129,17 @@ impl State {
             self.window.request_redraw();
             return;
         }
-        if self.sidebar == Sidebar::Search && self.explorer_visible && self.search.contains(x, y) {
+        if self.panel_shown(Panel::Search) && self.search.contains(x, y) {
             self.search.scroll_by(-dy.round() as isize);
             self.window.request_redraw();
             return;
         }
-        if self.sidebar == Sidebar::Git && self.explorer_visible && self.git.contains(x, y) {
+        if self.panel_shown(Panel::Git) && self.git.contains(x, y) {
             self.git.scroll_by(-dy.round() as isize);
             self.window.request_redraw();
             return;
         }
-        if self.sidebar == Sidebar::Debug && self.explorer_visible && self.debugger.contains(x, y) {
+        if self.panel_shown(Panel::Debug) && self.debugger.contains(x, y) {
             self.debugger.scroll_by(-dy.round() as isize);
             self.window.request_redraw();
             return;
@@ -3923,8 +4150,9 @@ impl State {
                 self.window.request_redraw();
                 return;
             }
+        let explorer_shown = self.panel_shown(Panel::Explorer);
         if let Some(ex) = &mut self.explorer
-            && self.explorer_visible && self.sidebar == Sidebar::Explorer && ex.contains(x, y) {
+            && explorer_shown && ex.contains(x, y) {
                 ex.scroll_by(-dy.round() as isize);
                 self.window.request_redraw();
                 return;
@@ -3999,7 +4227,7 @@ impl State {
         if self.focus == Focus::Explorer {
             left.push_str("   ·   Explorer (Esc = back to the editor)");
         }
-        if self.focus == Focus::Terminal && self.terminal_visible {
+        if self.focus == Focus::Terminal && self.panel_shown(Panel::Terminal) {
             left = "Terminal".to_string();
         }
         if let Some(d) = &self.diff {
@@ -4067,6 +4295,9 @@ impl State {
     }
 
     fn redraw(&mut self) {
+        if !self.terminal_started && self.panel_shown(Panel::Terminal) {
+            self.start_terminal();
+        }
         self.claude_check_diff();
         self.claude_send_selection();
         if self.preview_visible() != self.layout.preview.is_some() {
@@ -4100,7 +4331,7 @@ impl State {
             }
             _ => {}
         }
-        if self.terminal_visible {
+        if self.panel_shown(Panel::Terminal) {
             let focused = self.focus == Focus::Terminal;
             let fs = self.renderer.font_system();
             self.terminal.prepare(fs, &self.theme, focused);
@@ -4117,15 +4348,15 @@ impl State {
                 ex.prepare(self.renderer.font_system(), theme, active_path.as_deref());
             }
         }
-        if self.sidebar == Sidebar::Search && self.explorer_visible {
+        if self.panel_shown(Panel::Search) {
             let focused = self.focus == Focus::Search;
             self.search.prepare(self.renderer.font_system(), &self.theme, focused);
         }
-        if self.sidebar == Sidebar::Git && self.explorer_visible {
+        if self.panel_shown(Panel::Git) {
             let focused = self.focus == Focus::Git;
             self.git.prepare(self.renderer.font_system(), &self.theme, focused);
         }
-        if self.sidebar == Sidebar::Debug && self.explorer_visible {
+        if self.panel_shown(Panel::Debug) {
             let focused = self.focus == Focus::Debug;
             let bps = self.all_breakpoints();
             self.debugger.prepare(self.renderer.font_system(), &self.theme, focused, &bps);
@@ -4143,6 +4374,13 @@ impl State {
             self.tabs[active].find_current = None;
         }
 
+        // Which panels show (before the panels hand out their text for this frame).
+        let shown = Panel::ALL.map(|p| self.panel_shown(p));
+        let focused_panel = self.focused_panel();
+        let strips: Vec<(Area, Rect, Option<Panel>)> = Area::ALL
+            .into_iter()
+            .filter_map(|a| self.layout_area(a).map(|r| (a, r, self.dock.area(a).active)))
+            .collect();
         let theme = &self.theme;
         let scale = self.renderer.scale_factor();
         let l = self.layout;
@@ -4152,17 +4390,34 @@ impl State {
         let mut text: Vec<TextBlock<'_>> = Vec::with_capacity(8);
         let mut overlay_text: Vec<TextBlock<'_>> = Vec::new();
 
-        if self.explorer_visible && self.sidebar == Sidebar::Search {
+        if shown[1] {
             self.search.draw(theme, self.focus == Focus::Search, &mut under, &mut text);
-        } else if self.explorer_visible && self.sidebar == Sidebar::Git {
+        }
+        if shown[2] {
             self.git.draw(theme, self.focus == Focus::Git, &mut under, &mut text);
-        } else if self.explorer_visible && self.sidebar == Sidebar::Debug {
+        }
+        if shown[3] {
             self.debugger.draw(theme, self.focus == Focus::Debug, &mut under, &mut text);
-        } else if let (Some(ex), true) = (&self.explorer, self.explorer_visible) {
+        }
+        if let (Some(ex), true) = (&self.explorer, shown[0]) {
             ex.draw(theme, self.focus == Focus::Explorer, &mut under, &mut text);
         }
-        if let Some(r) = l.explorer {
+        if let Some(r) = l.left {
             under.push(Quad { x: r.x + r.w - 1.0, y: r.y, w: 1.0, h: r.h, color: theme.divider });
+        }
+        if let Some(r) = l.right {
+            under.push(Quad { x: r.x, y: r.y, w: 1.0, h: r.h, color: theme.divider });
+        }
+        self.dock_bar.draw(theme, scale, &strips, focused_panel, &mut under, &mut text);
+        if let Some((area, _)) = self.panel_drag.as_ref().filter(|d| d.moved).and_then(|d| d.target) {
+            let body = Rect { x: 0.0, y: 0.0, w: l.status.w, h: l.status.y };
+            let open = match area {
+                Area::Left => l.left,
+                Area::Right => l.right,
+                Area::Bottom => l.bottom,
+            };
+            let z = dock::drop_zone(area, body, open);
+            overlay.push(Quad { x: z.x, y: z.y, w: z.w, h: z.h, color: theme.accent.with_alpha(0x38) });
         }
 
         // Tab bar.
@@ -4190,7 +4445,7 @@ impl State {
         if let Some(p) = &self.preview {
             p.draw(theme, scale, &mut under, &mut text);
         }
-        if self.terminal_visible {
+        if shown[4] {
             let focused = self.focus == Focus::Terminal;
             self.terminal.draw(theme, focused, scale, &mut under, &mut over, &mut text);
         }

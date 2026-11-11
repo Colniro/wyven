@@ -80,6 +80,7 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("View: Toggle Sticky Scroll", "Alt v s", Ld(L::ToggleStickyScroll)),
         ("View: Toggle Inlay Hints", "Alt v i", Ld(L::ToggleInlayHints)),
         ("View: Markdown Preview", "Alt m", Ld(L::MarkdownPreview)),
+        ("View: Reset Panel Layout", "Alt w r", Ld(L::ResetLayout)),
         ("AI: Claude Code in the Terminal", "Alt a c", Ld(L::ClaudeCode)),
         ("View: Toggle CodeLens", "Alt v l", Ld(L::ToggleCodeLens)),
         ("Go to: All References", "Shift+F12", K(C::FindReferences)),

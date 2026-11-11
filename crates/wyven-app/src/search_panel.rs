@@ -124,6 +124,11 @@ impl SearchPanel {
     }
 
     /// Opens the panel, optionally with a prefilled query (selection or word).
+    /// Was opened for a folder before (a click on its tab can just show it again).
+    pub fn has_root(&self) -> bool {
+        self.root.is_some()
+    }
+
     pub fn show(&mut self, root: &Path, with_replace: bool, prefill: Option<String>) {
         self.root = Some(root.to_path_buf());
         self.replace_open |= with_replace;

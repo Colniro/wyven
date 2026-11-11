@@ -229,9 +229,9 @@ impl TerminalPanel {
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, focused: bool) {
         let attrs = Attrs::new().family(Family::Name(&self.family));
         let title = match &self.term {
-            Some(t) if t.exited => "TERMINAL  ·  process exited – Enter restarts it".to_string(),
-            Some(t) if !t.title.is_empty() => format!("TERMINAL  ·  {}", t.title),
-            _ => format!("TERMINAL  ·  {}", self.shell),
+            Some(t) if t.exited => "process exited – Enter restarts it".to_string(),
+            Some(t) if !t.title.is_empty() => t.title.clone(),
+            _ => self.shell.clone(),
         };
         let hint = if focused { "   (Alt → t closes · Ctrl+Shift+C/V copy/paste)" } else { "" };
         self.header.set_text(&format!("{title}{hint}"), &attrs, Shaping::Advanced, None);
