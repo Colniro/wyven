@@ -67,6 +67,8 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 |---|---|
 | `F12` / `Strg+Klick` | Gehe zu Definition |
 | `Shift+F12` | Alle Referenzen |
+| `Strg+F12` | Gehe zu Implementierung (wie VS) |
+| `F2` / `Entf` / `Strg+N` / `Strg+Shift+N` | Im Explorer: umbenennen / in den Papierkorb / neue Datei / neuer Ordner |
 | `Strg+Enter` / `Esc` | Im Diff von Claude Code: Änderung annehmen / ablehnen |
 | `Strg+Tab` | Zuletzt benutzte Datei; gedrückt halten zeigt die Liste (wie VS) |
 | `Strg+W` | Tab schließen |
@@ -102,14 +104,24 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 | `d` | **d**ebug | `d` Panel · `r` starten/fortsetzen · `s` beenden · `b` Breakpoint umschalten · `w` Watch hinzufügen · `a` an Prozess anhängen (z. B. Godot) |
 | `j` | **j**ump | `d` Definition · `i` Implementierung · `r` Referenzen · `s` Symbol in Datei · `l` Zeile |
 | `c` | **c**ode | `r` umbenennen · `f` formatieren · `a` Quick Actions · `o` Usings ordnen · `e` nächster Fehler |
-| `f` | **f**ile | `n` new file · `o` open file · `s` save as · `r` rename · `c` close all |
+| `f` | **f**ile | `n` new file · `o` open file · `s` save as · `r` umbenennen · `d` in den Papierkorb · `f` neue Datei im Explorer-Ordner · `k` neuer Ordner · `c` close all |
 | `p` | **p**roject | `o` Ordner öffnen · `r` zuletzt geöffnet (Projekt-Wechsler) · `a` Ordner zum Workspace hinzufügen · `f` Workspace-Datei öffnen · `w` Workspace speichern unter |
-| `w` | **w**indow | `v` rechts teilen · `h` unten teilen · `←↑→↓` Fokus wechseln · `c` Teilung schließen · `r` Panel-Anordnung zurücksetzen |
+| `w` | **w**indow | `v` rechts teilen · `h` unten teilen · `o` / `←↑→↓` andere Hälfte · `c` Teilung schließen · `r` Panel-Anordnung zurücksetzen |
 | `v` | **v**iew | `m` Minimap (Blöcke / Leiste / aus) · `s` Sticky Scroll an/aus · `i` Inlay Hints · `l` CodeLens · `c` Farbschema wählen · `t` hell/dunkel · `w` Zeilenumbruch · `z` Zen-Modus · `f` Faltung am Cursor · `a` alles falten/öffnen · `d` auf Definitionen falten · `e` alles öffnen |
 | `a` | **a**i | `t` Vorschläge an/aus · `m` Modell wechseln (Haiku/Sonnet) · `k` API-Key setzen · `c` Claude Code im Terminal öffnen |
 | `m` | **m**arkdown | Vorschau ein/aus |
 | `,` | Einstellungen | Einstellungsseite öffnen |
 | `h` | **h**elp | Spickzettel mit allen Kürzeln |
+
+## Maus
+
+| Aktion | Wirkung |
+|---|---|
+| Klick auf ein Symbol der Aktivitätsleiste | Panel öffnen; nochmal: schließen |
+| Klick auf × im Tab / mittlere Maustaste | Tab schließen |
+| Rechtsklick auf Explorer-Eintrag, Tab oder Text | Kontextmenü |
+| Panel-Kopf oder Editor-Tab ziehen | Andock-Kompass: links / rechts / unten / als Tab bzw. Editor teilen (`Strg` = nicht andocken) |
+| Kante zwischen zwei Bereichen ziehen | Größe ändern |
 
 ## Lernhilfen
 
@@ -119,22 +131,20 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 
 ## Eigene Belegung: `keymap.toml`
 
-Liegt im Wyven-Konfigurationsordner. Es stehen nur Abweichungen vom Standard drin:
+Liegt im Wyven-Konfigurationsordner (`%APPDATA%\Wyven\keymap.toml`, öffnen mit „Preferences: Open Keymap File“). Es stehen nur Abweichungen vom Standard drin; beim ersten Öffnen legt Wyven die Datei mit einer Liste aller Befehlsnamen an. Speichern in Wyven wendet sie sofort an.
 
 ```toml
 # Direktes Kürzel ändern
 [keys]
-"ctrl+shift+d" = "edit.duplicate_line"
+"ctrl+shift+d" = "view.toggle_word_wrap"
 "f12" = "none"                  # Kürzel entfernen
 
-# Leader-Menü erweitern
+# Leader-Menü erweitern (Alt → g → x)
 [leader.g]
-"s" = "git.stash"
-
-# Nur in bestimmten Situationen
-[keys.when.terminal]
-"ctrl+v" = "terminal.paste"
+"x" = "git.sync"
 ```
+
+Befehlsnamen entstehen aus den Titeln im Suchfeld: „View: Toggle Word Wrap“ → `view.toggle_word_wrap`. Belegbar ist alles, was im Suchfeld unter `>` steht, auch Befehle von Plugins.
 
 Kürzel beziehen sich auf die **angezeigte Taste** (das Zeichen auf der Taste), nicht auf ihre Position. So steht in Doku und Spickzettel immer das, was auf deiner Tastatur aufgedruckt ist.
 

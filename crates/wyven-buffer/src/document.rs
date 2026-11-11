@@ -139,6 +139,26 @@ impl Document {
         Ok(())
     }
 
+    /// Takes over the text and saved state of another view of the same file (split view).
+    /// Its own undo history is dropped: it would not fit the new text.
+    pub fn mirror_from(&mut self, other: &Document) {
+        self.rope = other.rope.clone();
+        self.line_ending = other.line_ending;
+        self.bom = other.bom;
+        self.version = other.version;
+        self.saved_version = other.saved_version;
+        self.path = other.path.clone();
+        self.history = History::default();
+        self.edits.clear();
+        let len = self.rope.len_chars();
+        self.selection = self.selection.map(|r| Range { anchor: r.anchor.min(len), head: r.head.min(len), goal: r.goal });
+    }
+
+    /// The file was renamed or moved on disk: just remember the new path.
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = Some(path);
+    }
+
     pub fn save_as(&mut self, path: PathBuf) -> io::Result<()> {
         self.path = Some(path);
         self.save()
@@ -873,6 +893,21 @@ fn detect_indent(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mirror_takes_text_and_saved_state() {
+        let mut a = Document::from_str("hello world");
+        a.set_cursor(11);
+        a.insert("!");
+        let mut b = Document::from_str("hello");
+        b.set_cursor(5);
+        b.mirror_from(&a);
+        assert_eq!(b.text().to_string(), "hello world!");
+        assert_eq!(b.version(), a.version());
+        assert_eq!(b.is_dirty(), a.is_dirty());
+        assert_eq!(b.selection().primary().head, 5, "own cursor stays");
+        assert!(!b.undo(), "no foreign history");
+    }
 
     fn doc(text: &str, ranges: &[(usize, usize)]) -> Document {
         let mut d = Document::from_str(text);

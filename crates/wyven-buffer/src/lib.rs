@@ -15,5 +15,5 @@ mod transaction;
 pub use document::{CommentMode, Direction, Document, LineEnding, Movement};
 pub use ropey::{Rope, RopeSlice};
 pub use selection::{Range, Selection};
-pub use text::{char_to_display_col, display_col_to_char, line_len_chars};
+pub use text::{char_to_display_col, char_width, display_col_to_char, line_len_chars};
 pub use transaction::{Assoc, Change, TextEdit, Transaction};

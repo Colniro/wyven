@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use wyven_buffer::{char_to_display_col, display_col_to_char, line_len_chars, Document, Rope, TextEdit};
+use wyven_buffer::{char_to_display_col, char_width, display_col_to_char, line_len_chars, Document, Rope, TextEdit};
 use wyven_render::{Attrs, Buffer, Family, FontSystem, Metrics, Quad, Rgba, Shaping, TextBlock, Wrap};
 use wyven_syntax::{flatten, language_for_path, Syntax};
 
@@ -39,6 +39,8 @@ struct CacheKey {
     fold_gen: u64,
     gutter_hover: bool,
     marks_gen: u64,
+    /// Wrap width in cells (0 = no word wrap).
+    wrap: usize,
 }
 
 /// How the minimap on the right is shown (`[editor] minimap` in settings.toml, Alt → v → m).
@@ -245,8 +247,25 @@ pub enum RowKind {
     /// The CodeLens row above a line.
     Lens,
     Text,
+    /// Continuation row `n` (1, 2 …) of a wrapped line.
+    Wrap(usize),
     /// A further line of a multi-line AI suggestion below a line.
     Ghost,
+}
+
+/// Where a line wraps: the char index and screen column each continuation row starts at, and
+/// the indentation of continuation rows (in cells).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LineWrap {
+    pub breaks: Vec<(usize, usize)>,
+    pub indent: usize,
+}
+
+impl LineWrap {
+    /// Screen column where row `sub` (0 = the first) starts, and its indentation.
+    fn row_start(&self, sub: usize) -> (usize, usize) {
+        if sub == 0 { (0, 0) } else { (self.breaks[sub - 1].1, self.indent) }
+    }
 }
 
 /// Which document lines are on screen and in which rows (CodeLens rows above a line and the
@@ -257,6 +276,8 @@ pub struct RowMap {
     pub rows: Vec<usize>,
     above: Vec<usize>,
     below: Vec<usize>,
+    /// Word wrap of each line (empty when it fits or wrapping is off).
+    wraps: Vec<LineWrap>,
 }
 
 impl RowMap {
@@ -274,11 +295,50 @@ impl RowMap {
             if row == text {
                 return Some((line, RowKind::Text));
             }
+            let wraps = self.wraps[i].breaks.len();
+            if row > text && row <= text + wraps {
+                return Some((line, RowKind::Wrap(row - text)));
+            }
             if row > text && row <= text + self.below[i] {
                 return Some((line, RowKind::Ghost));
             }
         }
         None
+    }
+
+    fn wrap_of(&self, line: usize) -> Option<&LineWrap> {
+        self.lines.binary_search(&line).ok().map(|i| &self.wraps[i])
+    }
+
+    /// Continuation rows of a shown line.
+    pub fn wrap_rows(&self, line: usize) -> usize {
+        self.wrap_of(line).map_or(0, |w| w.breaks.len())
+    }
+
+    /// Screen row and column of screen column `vcol` of `line` (wrapping included).
+    pub fn place(&self, line: usize, vcol: usize) -> Option<(usize, usize)> {
+        let i = self.lines.binary_search(&line).ok()?;
+        let w = &self.wraps[i];
+        let sub = w.breaks.iter().take_while(|b| b.1 <= vcol).count();
+        let (start, indent) = w.row_start(sub);
+        Some((self.rows[i] + sub, vcol - start + indent))
+    }
+
+    /// The pieces of the column span `start..end` of `line`, one per screen row:
+    /// (row, first column, end column) in screen columns.
+    pub fn segments(&self, line: usize, start: usize, end: usize) -> Vec<(usize, usize, usize)> {
+        let Some(i) = self.lines.binary_search(&line).ok() else { return Vec::new() };
+        let w = &self.wraps[i];
+        let mut out = Vec::new();
+        for sub in 0..=w.breaks.len() {
+            let (rs, indent) = w.row_start(sub);
+            let re = w.breaks.get(sub).map_or(usize::MAX, |b| b.1);
+            let (lo, hi) = (start.max(rs), end.min(re));
+            if hi > lo {
+                out.push((self.rows[i] + sub, lo - rs + indent, hi - rs + indent));
+            }
+        }
+        out
     }
 }
 
@@ -334,6 +394,8 @@ pub struct EditorView {
     mini_cache: Option<(MiniKey, Vec<MiniRun>)>,
     /// Sticky scroll on/off (`[editor] sticky_scroll`, Alt → v → s).
     pub sticky_scroll: bool,
+    /// Long lines continue in the next row (Alt → v → w).
+    pub wrap: bool,
     scopes: Vec<Scope>,
     scopes_version: Option<u64>,
     /// Scope headers currently stuck at the top.
@@ -422,6 +484,7 @@ impl EditorView {
             scale: 1.0,
             mini_cache: None,
             sticky_scroll: false,
+            wrap: false,
             scopes: Vec::new(),
             scopes_version: None,
             sticky: Vec::new(),
@@ -456,6 +519,46 @@ impl EditorView {
     /// Remembers the file's current modification time (after loading or saving).
     pub fn refresh_disk_mtime(&mut self) {
         self.disk_mtime = self.file_mtime();
+    }
+
+    /// Another view of the same document for the other half of a split, at the same place.
+    pub fn twin(&self, fs: &mut FontSystem) -> EditorView {
+        let mut v = EditorView::new(Document::default(), fs, self.font, self.family.clone());
+        v.doc.tab_width = self.doc.tab_width;
+        v.doc.indent_unit = self.doc.indent_unit.clone();
+        v.title = self.title.clone();
+        v.settings_page = self.settings_page;
+        v.minimap = self.minimap;
+        v.sticky_scroll = self.sticky_scroll;
+        v.wrap = self.wrap;
+        v.show_inlay_hints = self.show_inlay_hints;
+        v.show_code_lens = self.show_code_lens;
+        v.scale = self.scale;
+        v.git_base = self.git_base.clone();
+        v.mirror_from(self);
+        // After the text: on the empty document the cursor would be clamped to 0.
+        v.doc.set_selection(self.doc.selection().clone());
+        v.scroll_line = self.scroll_line;
+        v
+    }
+
+    /// Takes over the text of the other half's view of the same file (after an edit there).
+    pub fn mirror_from(&mut self, other: &EditorView) {
+        self.doc.mirror_from(&other.doc);
+        self.syntax = match (&other.syntax, self.doc.path()) {
+            (Some(_), Some(p)) => language_for_path(p).map(|cfg| Syntax::new(cfg, self.doc.text())),
+            (Some(s), None) => Some(Syntax::new(s.config(), self.doc.text())),
+            (None, _) => None,
+        };
+        self.diagnostics = other.diagnostics.clone();
+        self.inlay_hints = other.inlay_hints.clone();
+        self.lenses = other.lenses.clone();
+        self.git_marks_version = None;
+        self.folded.clear();
+        self.rebuild_hidden();
+        self.scroll_line = self.scroll_line.min(self.doc.text().len_lines().saturating_sub(1));
+        self.marks_gen += 1;
+        self.invalidate();
     }
 
     /// If the file changed on disk (another program, git, Claude Code) and has no unsaved
@@ -566,8 +669,10 @@ impl EditorView {
         let pos = pos.min(rope.len_chars());
         let line = rope.char_to_line(pos);
         let col = self.visual_col(line, pos - rope.line_to_char(line));
+        let map = self.row_map();
+        let (row, col) = map.place(line, col).map_or((None, col), |(r, c)| (Some(r), c));
         let x = self.text_x() - self.scroll_x + col as f32 * self.font.cell_w;
-        let rows = match self.row_map().row(line) {
+        let rows = match row {
             Some(r) => r as f32,
             None if line >= self.scroll_line => self.rows_between(self.scroll_line, line) as f32,
             None => -(self.rows_between(line, self.scroll_line) as f32),
@@ -582,6 +687,72 @@ impl EditorView {
         let rope = self.doc.text();
         let display = char_to_display_col(rope.line(line), ch, self.doc.tab_width);
         display + self.hints_on(line).iter().filter(|h| h.col < ch).map(InlayHint::width).sum::<usize>()
+    }
+
+    /// Screen column of every char of `line` and of its end (like `visual_col`, all at once).
+    fn vcols(&self, line: usize) -> Vec<usize> {
+        let rope = self.doc.text();
+        let len = line_len_chars(rope, line);
+        let hints = self.hints_on(line);
+        let (mut disp, mut hint_w, mut hi) = (0, 0, 0);
+        let mut out = Vec::with_capacity(len + 1);
+        for (i, c) in rope.line(line).chars().take(len).enumerate() {
+            while hi < hints.len() && hints[hi].col < i {
+                hint_w += hints[hi].width();
+                hi += 1;
+            }
+            out.push(disp + hint_w);
+            disp += char_width(c, disp, self.doc.tab_width);
+        }
+        while hi < hints.len() && hints[hi].col < len {
+            hint_w += hints[hi].width();
+            hi += 1;
+        }
+        out.push(disp + hint_w);
+        out
+    }
+
+    /// Cells per row when wrapping.
+    fn wrap_cols(&self) -> usize {
+        (((self.text_right() - self.text_x()) / self.font.cell_w).floor() as usize).saturating_sub(1).max(20)
+    }
+
+    /// Where `line` wraps (nothing when wrapping is off or the line fits). Breaks go before a
+    /// word; a word longer than the row is cut. Continuation rows keep the line's indentation.
+    pub fn line_wrap(&self, line: usize) -> LineWrap {
+        if !self.wrap {
+            return LineWrap::default();
+        }
+        let width = self.wrap_cols();
+        let v = self.vcols(line);
+        let len = v.len() - 1;
+        if v[len] <= width {
+            return LineWrap::default();
+        }
+        let chars: Vec<char> = self.doc.text().line(line).chars().take(len).collect();
+        let lead = chars.iter().take_while(|c| **c == ' ' || **c == '\t').count();
+        let indent = v[lead].min(width / 2);
+        let mut breaks = Vec::new();
+        let (mut start, mut start_v, mut avail) = (0, 0, width);
+        let mut i = 0;
+        while i < len {
+            if v[i + 1] - start_v > avail && i > start {
+                let k = (start + 1..=i)
+                    .rev()
+                    .find(|&k| k > lead && chars[k - 1] == ' ' && chars[k] != ' ')
+                    .unwrap_or(i);
+                breaks.push((k, v[k]));
+                start = k;
+                start_v = v[k];
+                avail = width - indent;
+                if breaks.len() >= 5000 {
+                    break;
+                }
+                continue;
+            }
+            i += 1;
+        }
+        LineWrap { breaks, indent }
     }
 
     /// The char of `line` closest to screen column `vcol`.
@@ -841,6 +1012,10 @@ impl EditorView {
     }
 
     pub fn scroll_x_by(&mut self, dx: f32) {
+        if self.wrap {
+            self.scroll_x = 0.0;
+            return;
+        }
         self.scroll_x = (self.scroll_x + dx).max(0.0);
     }
 
@@ -859,6 +1034,20 @@ impl EditorView {
         } else if self.rows_between(self.scroll_line, line) + margin >= rows {
             self.scroll_line = self.back_visible(line, rows - margin - 1);
         }
+        if self.wrap {
+            // Wrapped lines take several rows: scroll on until the cursor's row fits.
+            self.scroll_x = 0.0;
+            let col = self.visual_col(line, head - self.doc.text().line_to_char(line));
+            for _ in 0..rows.max(1) {
+                let map = self.row_map();
+                match map.place(line, col) {
+                    Some((r, _)) if r + margin < rows || self.scroll_line >= line => break,
+                    None if line < self.scroll_line => break,
+                    _ => self.scroll_line = self.forward_visible(self.scroll_line, 1),
+                }
+            }
+            return;
+        }
         let rope = self.doc.text();
 
         let col = self.visual_col(line, head - rope.line_to_char(line)) as f32;
@@ -875,13 +1064,24 @@ impl EditorView {
     pub fn hit_test(&self, x: f32, y: f32) -> usize {
         let rope = self.doc.text();
         let row = ((y - self.area.y) / self.font.line_h).floor().max(0.0) as usize;
-        let line = self
-            .line_at_row(row)
-            .or_else(|| self.screen_lines().last().copied())
-            .unwrap_or(0);
-        let col = ((x - self.text_x() + self.scroll_x) / self.font.cell_w)
+        let map = self.row_map();
+        let (line, kind) = map
+            .at(row)
+            .or_else(|| map.lines.last().map(|&l| (l, RowKind::Text)))
+            .unwrap_or((0, RowKind::Text));
+        let mut col = ((x - self.text_x() + self.scroll_x) / self.font.cell_w)
             .round()
             .max(0.0) as usize;
+        if let Some(w) = map.wrap_of(line).filter(|w| !w.breaks.is_empty()) {
+            let sub = if let RowKind::Wrap(n) = kind { n } else { 0 };
+            let (start, indent) = w.row_start(sub);
+            col = start + col.saturating_sub(indent);
+            // Past the end of a row: stay on it instead of jumping to the next one.
+            if let Some(next) = w.breaks.get(sub) {
+                col = col.min(next.1.saturating_sub(1));
+            }
+            return rope.line_to_char(line) + self.char_at_visual_col(line, col);
+        }
         if self.hints_on(line).is_empty() {
             return rope.line_to_char(line) + display_col_to_char(rope.line(line), col, self.doc.tab_width);
         }
@@ -933,7 +1133,7 @@ impl EditorView {
         let total_rows = self.rows();
         let ghost = self.ghost_rows();
         let doc_lines = self.doc.text().len_lines();
-        let mut map = RowMap { lines: Vec::new(), rows: Vec::new(), above: Vec::new(), below: Vec::new() };
+        let mut map = RowMap { lines: Vec::new(), rows: Vec::new(), above: Vec::new(), below: Vec::new(), wraps: Vec::new() };
         let mut used = 0;
         let mut l = self.scroll_line;
         while l < doc_lines && used < total_rows {
@@ -942,11 +1142,13 @@ impl EditorView {
                 continue;
             }
             let above = self.rows_above(l);
-            let below = self.rows_below(l, ghost);
+            let wrap = self.line_wrap(l);
+            let below = wrap.breaks.len() + self.rows_below(l, ghost);
             map.lines.push(l);
             map.rows.push(used + above);
             map.above.push(above);
             map.below.push(below);
+            map.wraps.push(wrap);
             used += above + 1 + below;
             l += 1;
         }
@@ -962,6 +1164,7 @@ impl EditorView {
 
     /// The document line shown in screen row `row` (lens and suggestion rows belong to their
     /// line).
+    #[cfg(test)]
     fn line_at_row(&self, row: usize) -> Option<usize> {
         self.row_map().at(row).map(|(line, _)| line)
     }
@@ -1147,6 +1350,7 @@ impl EditorView {
     }
 
     /// The document lines on screen, top first.
+    #[cfg(test)]
     fn screen_lines(&self) -> Vec<usize> {
         self.row_map().lines
     }
@@ -1445,12 +1649,14 @@ impl EditorView {
             fold_gen: self.fold_gen,
             gutter_hover: self.gutter_hover,
             marks_gen: self.marks_gen,
+            wrap: if self.wrap { self.wrap_cols() } else { 0 },
         };
         if self.cache.as_ref() == Some(&key) {
             return;
         }
 
-        let lines = self.screen_lines();
+        let row_map = self.row_map();
+        let lines = row_map.lines.clone();
         let lens_title = |line: usize| -> Option<&str> {
             if !self.show_code_lens {
                 return None;
@@ -1526,9 +1732,17 @@ impl EditorView {
                 }
             };
             let mut char_i = 0;
+            let wrap = row_map.wrap_of(line).cloned().unwrap_or_default();
+            let mut next_break = 0;
             for ch in rope.line(line).chars() {
                 if ch == '\n' || ch == '\r' {
                     break;
+                }
+                // Word wrap: the rest continues in the next row, indented.
+                if wrap.breaks.get(next_break).is_some_and(|b| b.0 == char_i) {
+                    push("\n", theme.text);
+                    push(&" ".repeat(wrap.indent), theme.text);
+                    next_break += 1;
                 }
                 if let Some((gc, gt)) = ghost_here
                     && gc == char_i
@@ -1613,6 +1827,11 @@ impl EditorView {
                 None => (line + 1).to_string(),
             };
             gutter.push((format!("{label:>digits$}\n"), color));
+            for _ in 0..row_map.wrap_rows(line) {
+                gutter.push(("\n".into(), color));
+                marks.push(("\n".into(), theme.text));
+                arrows.push('\n');
+            }
             if ghost.as_ref().is_some_and(|(g, _, _)| *g == line) {
                 for _ in 0..ghost_extra {
                     gutter.push(("\n".into(), color));
@@ -1690,7 +1909,7 @@ impl EditorView {
                 x: text_left,
                 y: row_y(row),
                 w: text_right - text_left,
-                h: lh,
+                h: lh * (1 + map.wrap_rows(cur_line)) as f32,
                 color: theme.current_line,
             });
         }
@@ -1706,7 +1925,8 @@ impl EditorView {
                 None
             };
             if let Some(color) = color {
-                under.push(Quad { x: text_left, y: row_y(row), w: text_right - text_left, h: lh, color });
+                let h = lh * (1 + map.wrap_rows(line)) as f32;
+                under.push(Quad { x: text_left, y: row_y(row), w: text_right - text_left, h, color });
             }
         }
 
@@ -1726,15 +1946,16 @@ impl EditorView {
             let (l0, c0) = col_of(s);
             let (l1, c1) = col_of(e);
             for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
-                let Some(row) = row_of(line) else { continue };
                 let start = if line == l0 { c0 } else { 0 };
                 let end = if line == l1 {
                     c1
                 } else {
                     self.visual_col(line, line_len_chars(rope, line))
                 };
-                if let Some((x, w)) = clip(text_x + start as f32 * cw, (end.max(start + 1) - start) as f32 * cw) {
-                    under.push(Quad { x, y: row_y(row), w, h: lh, color });
+                for (row, s, e) in map.segments(line, start, end.max(start + 1)) {
+                    if let Some((x, w)) = clip(text_x + s as f32 * cw, (e - s) as f32 * cw) {
+                        under.push(Quad { x, y: row_y(row), w, h: lh, color });
+                    }
                 }
             }
         }
@@ -1746,7 +1967,6 @@ impl EditorView {
             let (l0, c0) = col_of(r.from());
             let (l1, c1) = col_of(r.to());
             for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
-                let Some(row) = row_of(line) else { continue };
                 let start = if line == l0 { c0 } else { 0 };
                 let end = if line == l1 {
                     c1
@@ -1754,8 +1974,10 @@ impl EditorView {
                     let len = line_len_chars(rope, line);
                     self.visual_col(line, len) + 1
                 };
-                if let Some((x, w)) = clip(text_x + start as f32 * cw, (end - start) as f32 * cw) {
-                    under.push(Quad { x, y: row_y(row), w, h: lh, color: theme.selection });
+                for (row, s, e) in map.segments(line, start, end) {
+                    if let Some((x, w)) = clip(text_x + s as f32 * cw, (e - s) as f32 * cw) {
+                        under.push(Quad { x, y: row_y(row), w, h: lh, color: theme.selection });
+                    }
                 }
             }
         }
@@ -1764,7 +1986,7 @@ impl EditorView {
         let cursor_w = (2.0 * scale).round().max(1.0);
         for r in self.doc.selection().ranges() {
             let (line, col) = col_of(r.head);
-            let Some(row) = row_of(line) else { continue };
+            let Some((row, col)) = map.place(line, col) else { continue };
             if row_y(row) < sticky_bottom {
                 continue;
             }
@@ -1785,40 +2007,41 @@ impl EditorView {
             let (l0, c0) = col_of(d.start);
             let (l1, c1) = col_of(d.end.max(d.start + 1).min(rope.len_chars()));
             for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
-                let Some(row) = row_of(line) else { continue };
-                let s = if line == l0 { c0 } else { 0 };
-                let e = if line == l1 {
-                    c1.max(s + 1)
+                let s0 = if line == l0 { c0 } else { 0 };
+                let e0 = if line == l1 {
+                    c1.max(s0 + 1)
                 } else {
                     self.visual_col(line, line_len_chars(rope, line))
                 };
-                if row_y(row) < sticky_bottom {
-                    continue;
-                }
-                let base = row_y(row) + lh - 2.0 * step;
-                let x0 = text_x + s as f32 * cw;
-                let x1 = text_x + e as f32 * cw;
-                let mut x = x0;
-                let mut up = false;
-                while x < x1 {
-                    let w = step.min(x1 - x);
-                    if let Some((cx, cw2)) = clip(x, w) {
-                        let y = if up { base } else { base + step - thick };
-                        over.push(Quad { x: cx, y, w: cw2, h: thick, color });
-                        // Vertical connector so it reads as a wave.
-                        over.push(Quad { x: cx, y: base, w: thick, h: step, color });
+                for (row, s, e) in map.segments(line, s0, e0) {
+                    if row_y(row) < sticky_bottom {
+                        continue;
                     }
-                    x += step;
-                    up = !up;
+                    let base = row_y(row) + lh - 2.0 * step;
+                    let x0 = text_x + s as f32 * cw;
+                    let x1 = text_x + e as f32 * cw;
+                    let mut x = x0;
+                    let mut up = false;
+                    while x < x1 {
+                        let w = step.min(x1 - x);
+                        if let Some((cx, cw2)) = clip(x, w) {
+                            let y = if up { base } else { base + step - thick };
+                            over.push(Quad { x: cx, y, w: cw2, h: thick, color });
+                            // Vertical connector so it reads as a wave.
+                            over.push(Quad { x: cx, y: base, w: thick, h: step, color });
+                        }
+                        x += step;
+                        up = !up;
+                    }
                 }
             }
         }
 
         // A soft box behind each inlay hint.
         for &line in &lines {
-            let Some(row) = row_of(line) else { continue };
             for h in self.hints_on(line) {
                 let start = self.visual_col(line, h.col) + usize::from(h.pad_left);
+                let Some((row, start)) = map.place(line, start) else { continue };
                 let w = h.label.chars().count() as f32 * cw;
                 if let Some((x, w)) = clip(text_x + start as f32 * cw, w) {
                     let pad = (lh * 0.12).round();
@@ -1836,6 +2059,7 @@ impl EditorView {
             // Box behind the `…` of a folded line.
             if self.is_folded_start(line) {
                 let end_col = self.visual_col(line, line_len_chars(rope, line));
+                let (row, end_col) = map.place(line, end_col).unwrap_or((row, end_col));
                 let x = text_x + (end_col as f32 + 0.5) * cw;
                 if let Some((x, w)) = clip(x, 2.0 * cw) {
                     let pad = (lh * 0.15).round();
@@ -1852,7 +2076,8 @@ impl EditorView {
                 wyven_git::LineMark::Added | wyven_git::LineMark::Modified => {
                     if let Some(row) = row_of(line) {
                         let color = if mark == wyven_git::LineMark::Added { theme.git_added } else { theme.git_modified };
-                        under.push(Quad { x: bar_x, y: row_y(row), w: bar_w, h: lh, color });
+                        let h = lh * (1 + map.wrap_rows(line)) as f32;
+                        under.push(Quad { x: bar_x, y: row_y(row), w: bar_w, h, color });
                     }
                 }
                 wyven_git::LineMark::DeletedAfter => {
@@ -2186,6 +2411,35 @@ mod tests {
         let mut v = super::EditorView::virtual_doc("t", text, "a.cs", &mut fs, font, "monospace".into());
         v.set_area(super::Rect { x: 0.0, y: 0.0, w: 800.0, h: 400.0 });
         v
+    }
+
+    #[test]
+    fn long_lines_wrap_at_words_and_positions_follow() {
+        // 800 px wide, 8 px cells: about 90 cells of text per row.
+        let long = format!("    {}", "word ".repeat(40));
+        let mut v = view(&format!("{long}
+short
+"));
+        v.wrap = true;
+        let w = v.line_wrap(0);
+        assert!(!w.breaks.is_empty(), "the long line wraps");
+        assert_eq!(w.indent, 4, "continuation rows keep the indentation");
+        let rope = v.doc.text();
+        for &(k, _) in &w.breaks {
+            assert_eq!(rope.char(k - 1), ' ', "breaks go before a word");
+        }
+        let map = v.row_map();
+        assert_eq!(map.row(1), Some(1 + w.breaks.len()), "the next line moves down");
+        // A position after the first break lands in the second row, indented.
+        let (k, vk) = w.breaks[0];
+        assert_eq!(map.place(0, vk + 2), Some((1, 4 + 2)));
+        // Clicking there finds the same char again.
+        let (x, y) = v.screen_pos(k + 2);
+        assert_eq!(v.hit_test(x + 1.0, y + 1.0), k + 2);
+        // A selection over the break is split into one piece per row.
+        assert_eq!(map.segments(0, vk - 3, vk + 3).len(), 2);
+        v.wrap = false;
+        assert!(v.line_wrap(0).breaks.is_empty());
     }
 
     const CS: &str = "class A

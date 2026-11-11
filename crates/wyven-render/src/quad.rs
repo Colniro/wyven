@@ -58,11 +58,64 @@ pub struct Quad {
     pub color: Rgba,
 }
 
+/// A rounded rectangle; with `soft` > 0 its edge fades out over that many pixels (shadows).
+#[derive(Debug, Clone, Copy)]
+pub struct RoundRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub color: Rgba,
+    pub radius: f32,
+    pub soft: f32,
+    /// Greater than 0: only an outline this wide. Less than 0: everything inside the rectangle
+    /// but outside the rounded box (paints the corners away). 0: filled.
+    pub ring: f32,
+}
+
+impl RoundRect {
+    pub fn new(x: f32, y: f32, w: f32, h: f32, color: Rgba, radius: f32) -> Self {
+        Self { x, y, w, h, color, radius, soft: 0.0, ring: 0.0 }
+    }
+
+    /// A soft shadow around a box: `spread` pixels larger on every side, a bit lower.
+    pub fn shadow(x: f32, y: f32, w: f32, h: f32, color: Rgba, radius: f32, spread: f32) -> Self {
+        Self {
+            x: x - spread,
+            y: y - spread + spread * 0.4,
+            w: w + 2.0 * spread,
+            h: h + 2.0 * spread,
+            color,
+            radius: radius + spread,
+            soft: spread,
+            ring: 0.0,
+        }
+    }
+
+    /// An outline of `width` pixels along the rounded edge.
+    pub fn outline(x: f32, y: f32, w: f32, h: f32, color: Rgba, radius: f32, width: f32) -> Self {
+        Self { x, y, w, h, color, radius, soft: 0.0, ring: width }
+    }
+
+    /// Paints the four corners outside the rounded box with `color` (the background), so square
+    /// content inside looks rounded.
+    pub fn corner_mask(x: f32, y: f32, w: f32, h: f32, color: Rgba, radius: f32) -> Self {
+        Self { x, y, w, h, color, radius, soft: 0.0, ring: -1.0 }
+    }
+}
+
+/// One layer of rectangles, drawn in order.
+pub enum Layer<'a> {
+    Quads(&'a [Quad]),
+    Rounds(&'a [RoundRect]),
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Instance {
     rect: [f32; 4],
     color: [f32; 4],
+    params: [f32; 4],
 }
 
 impl Instance {
@@ -126,7 +179,7 @@ impl QuadPipeline {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: size_of::<Instance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4],
                 })],
             },
             fragment: Some(wgpu::FragmentState {
@@ -165,7 +218,7 @@ impl QuadPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         size: (u32, u32),
-        layers: &[&[Quad]],
+        layers: &[Layer<'_>],
     ) -> Vec<std::ops::Range<u32>> {
         let globals = [size.0 as f32, size.1 as f32, 0.0, 0.0];
         let bytes: Vec<u8> = globals.iter().flat_map(|f| f.to_ne_bytes()).collect();
@@ -175,10 +228,18 @@ impl QuadPipeline {
         let mut ranges = Vec::with_capacity(layers.len());
         for layer in layers {
             let start = self.scratch.len() as u32;
-            self.scratch.extend(layer.iter().map(|q| Instance {
-                rect: [q.x, q.y, q.w, q.h],
-                color: q.color.to_linear(),
-            }));
+            match layer {
+                Layer::Quads(quads) => self.scratch.extend(quads.iter().map(|q| Instance {
+                    rect: [q.x, q.y, q.w, q.h],
+                    color: q.color.to_linear(),
+                    params: [0.0; 4],
+                })),
+                Layer::Rounds(rounds) => self.scratch.extend(rounds.iter().map(|r| Instance {
+                    rect: [r.x, r.y, r.w, r.h],
+                    color: r.color.to_linear(),
+                    params: [r.radius, r.soft, r.ring, 0.0],
+                })),
+            }
             ranges.push(start..self.scratch.len() as u32);
         }
         if self.scratch.len() > self.capacity {

@@ -211,30 +211,86 @@ pub fn content(area: Rect, ui: FontMetrics) -> Rect {
     Rect { x: area.x, y: area.y + h, w: area.w, h: area.h - h }
 }
 
-/// A panel tab on screen.
+/// A panel tab on screen (in the left area only the shown panel's title: the activity bar
+/// switches there).
 #[derive(Debug, Clone, Copy)]
 pub struct TabSpan {
     pub area: Area,
     pub panel: Panel,
-    pub index: usize,
     pub x0: f32,
     pub x1: f32,
     pub y0: f32,
     pub y1: f32,
 }
 
-/// Draws the tab strips and knows where each tab is.
+/// An icon button in a panel header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderButton {
+    NewFile,
+    NewFolder,
+    Refresh,
+    CollapseAll,
+    /// Closes the area.
+    Close,
+}
+
+impl HeaderButton {
+    fn icon(self) -> char {
+        use crate::chrome::*;
+        match self {
+            HeaderButton::NewFile => ICON_NEW_FILE,
+            HeaderButton::NewFolder => ICON_NEW_FOLDER,
+            HeaderButton::Refresh => ICON_REFRESH,
+            HeaderButton::CollapseAll => ICON_COLLAPSE,
+            HeaderButton::Close => ICON_CLOSE,
+        }
+    }
+
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            HeaderButton::NewFile => "New File (Ctrl+N)",
+            HeaderButton::NewFolder => "New Folder (Ctrl+Shift+N)",
+            HeaderButton::Refresh => "Refresh",
+            HeaderButton::CollapseAll => "Collapse Folders",
+            HeaderButton::Close => "Close",
+        }
+    }
+}
+
+/// What is under the mouse in a header.
+#[derive(Debug, Clone, Copy)]
+pub enum HeaderHit {
+    Tab(TabSpan),
+    Button(Area, Panel, HeaderButton),
+}
+
+/// Draws the headers of the dock areas and knows where tabs and buttons are.
 pub struct DockBar {
     labels: Vec<Buffer>,
     widths: [f32; 5],
+    icons: Vec<(HeaderButton, Buffer)>,
     pub spans: Vec<TabSpan>,
+    pub buttons: Vec<(Area, Panel, HeaderButton, Rect)>,
+    pub hover: Option<(Area, HeaderButton)>,
     ui: FontMetrics,
     family: String,
+    icon_family: String,
 }
 
 impl DockBar {
     pub fn new(fs: &mut FontSystem, ui: FontMetrics, family: String) -> Self {
-        let mut bar = Self { labels: Vec::new(), widths: [0.0; 5], spans: Vec::new(), ui, family };
+        let icon_family = crate::chrome::icon_family(fs);
+        let mut bar = Self {
+            labels: Vec::new(),
+            widths: [0.0; 5],
+            icons: Vec::new(),
+            spans: Vec::new(),
+            buttons: Vec::new(),
+            hover: None,
+            ui,
+            family,
+            icon_family,
+        };
         bar.shape(fs);
         bar
     }
@@ -245,7 +301,7 @@ impl DockBar {
     }
 
     fn shape(&mut self, fs: &mut FontSystem) {
-        let attrs = Attrs::new().family(Family::Name(&self.family));
+        let attrs = Attrs::new().family(Family::Name(&self.family)).weight(wyven_render::Weight::SEMIBOLD);
         self.labels = Panel::ALL
             .iter()
             .enumerate()
@@ -258,28 +314,63 @@ impl DockBar {
                 b
             })
             .collect();
+        let size = (self.ui.size * 1.05).round();
+        self.icons = [HeaderButton::NewFile, HeaderButton::NewFolder, HeaderButton::Refresh, HeaderButton::CollapseAll, HeaderButton::Close]
+            .into_iter()
+            .map(|b| (b, crate::chrome::label(fs, &b.icon().to_string(), &self.icon_family, size, size * 1.2)))
+            .collect();
     }
 
-    /// Places the tabs of every open area (`areas`: area, its whole rectangle, its panels).
-    pub fn place(&mut self, areas: &[(Area, Rect, Vec<Panel>)]) {
+    fn buttons_for(area: Area, panel: Panel) -> Vec<HeaderButton> {
+        let mut list = match panel {
+            Panel::Explorer => vec![HeaderButton::NewFile, HeaderButton::NewFolder, HeaderButton::Refresh, HeaderButton::CollapseAll],
+            Panel::Git => vec![HeaderButton::Refresh],
+            _ => Vec::new(),
+        };
+        if area != Area::Left {
+            list.push(HeaderButton::Close);
+        }
+        list
+    }
+
+    /// Places tabs and buttons of every open area: area, its rectangle, its panels, the shown one.
+    pub fn place(&mut self, areas: &[(Area, Rect, Vec<Panel>, Option<Panel>)]) {
         self.spans.clear();
+        self.buttons.clear();
         let pad = self.ui.cell_w * 1.2;
         let h = strip_h(self.ui);
-        for (area, r, panels) in areas {
+        for (area, r, panels, active) in areas {
             let mut x = r.x + pad * 0.5;
-            for (index, &panel) in panels.iter().enumerate() {
+            for &panel in panels {
+                // The left area shows only its panel's title; the activity bar switches.
+                if *area == Area::Left && Some(panel) != *active {
+                    continue;
+                }
                 let w = self.widths[panel.index()] + 2.0 * pad;
-                self.spans.push(TabSpan { area: *area, panel, index, x0: x, x1: x + w, y0: r.y, y1: r.y + h });
+                self.spans.push(TabSpan { area: *area, panel, x0: x, x1: x + w, y0: r.y, y1: r.y + h });
                 x += w;
+            }
+            if let Some(p) = active {
+                let bw = (h * 0.95).round();
+                let mut bx = r.x + r.w - pad * 0.5;
+                for b in Self::buttons_for(*area, *p).into_iter().rev() {
+                    bx -= bw;
+                    self.buttons.push((*area, *p, b, Rect { x: bx, y: r.y + (h - bw) / 2.0, w: bw, h: bw }));
+                }
             }
         }
     }
 
-    pub fn hit(&self, x: f32, y: f32) -> Option<TabSpan> {
-        self.spans.iter().copied().find(|s| x >= s.x0 && x < s.x1 && y >= s.y0 && y < s.y1)
+    pub fn hit(&self, x: f32, y: f32) -> Option<HeaderHit> {
+        let inside = |r: &Rect| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        if let Some((a, p, b, _)) = self.buttons.iter().find(|(_, _, _, r)| inside(r)) {
+            return Some(HeaderHit::Button(*a, *p, *b));
+        }
+        self.spans.iter().copied().find(|s| x >= s.x0 && x < s.x1 && y >= s.y0 && y < s.y1).map(HeaderHit::Tab)
     }
 
-    /// Strip backgrounds, tabs (the shown one highlighted, with the accent when focused).
+    /// Header backgrounds, tabs (the shown one in its panel's color), buttons.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw<'a>(
         &'a self,
         theme: &Theme,
@@ -287,13 +378,14 @@ impl DockBar {
         areas: &[(Area, Rect, Option<Panel>)],
         focused: Option<Panel>,
         under: &mut Vec<Quad>,
+        cards: &mut Vec<wyven_render::RoundRect>,
         text: &mut Vec<TextBlock<'a>>,
     ) {
         let h = strip_h(self.ui);
         let pad = self.ui.cell_w * 1.2;
         for &(_, r, _) in areas {
             under.push(Quad { x: r.x, y: r.y, w: r.w, h, color: theme.panel_bg });
-            under.push(Quad { x: r.x, y: r.y + h - 1.0, w: r.w, h: 1.0, color: theme.divider });
+            under.push(Quad { x: r.x + pad * 0.5, y: r.y + h - 1.0, w: r.w - pad, h: 1.0, color: theme.divider });
         }
         let accent_h = (2.0 * scale).round();
         for s in &self.spans {
@@ -302,68 +394,43 @@ impl DockBar {
             if s.x0 >= r.x + r.w {
                 continue;
             }
-            if is_active {
-                let w = (s.x1.min(r.x + r.w)) - s.x0;
-                if focused == Some(s.panel) {
-                    under.push(Quad { x: s.x0, y: s.y1 - accent_h - 1.0, w, h: accent_h, color: theme.accent });
-                } else {
-                    under.push(Quad { x: s.x0, y: s.y1 - accent_h - 1.0, w, h: accent_h, color: theme.panel_dim });
-                }
+            let color = crate::chrome::panel_color(s.panel, theme.dark);
+            if is_active && s.area != Area::Left {
+                let w = (s.x1.min(r.x + r.w)) - s.x0 - pad;
+                let c = if focused == Some(s.panel) { color } else { color.with_alpha(0x90) };
+                cards.push(wyven_render::RoundRect::new(s.x0 + pad * 0.5, s.y1 - accent_h - 2.0, w, accent_h, c, accent_h / 2.0));
             }
+            let text_color = if s.area == Area::Left {
+                if focused == Some(s.panel) { color } else { theme.panel_text }
+            } else if is_active {
+                theme.panel_text
+            } else {
+                theme.panel_dim
+            };
             text.push(TextBlock {
                 buffer: &self.labels[s.panel.index()],
                 x: s.x0 + pad,
                 y: s.y0 + (h - self.ui.line_h) / 2.0,
-                color: if is_active { theme.panel_text } else { theme.panel_dim },
+                color: text_color,
                 clip: Some([r.x as i32, r.y as i32, (r.x + r.w) as i32, (r.y + h) as i32]),
             });
         }
-    }
-}
-
-/// Where a dragged panel would land: over a tab strip it goes between those tabs, near the
-/// left or right window edge or the bottom into that area (at the end).
-pub fn drop_target(
-    x: f32,
-    y: f32,
-    body: Rect,
-    spans: &[TabSpan],
-    strips: &[(Area, Rect)],
-) -> Option<(Area, usize)> {
-    for &(area, r) in strips {
-        if x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h {
-            let index = spans
-                .iter()
-                .filter(|s| s.area == area)
-                .find(|s| x < (s.x0 + s.x1) / 2.0)
-                .map_or_else(|| spans.iter().filter(|s| s.area == area).count(), |s| s.index);
-            return Some((area, index));
+        let size = (self.ui.size * 1.05).round();
+        for (area, _, b, r) in &self.buttons {
+            let Some((_, buf)) = self.icons.iter().find(|(k, _)| k == b) else { continue };
+            let hover = self.hover == Some((*area, *b));
+            if hover {
+                cards.push(wyven_render::RoundRect::new(r.x, r.y, r.w, r.h, theme.panel_text.with_alpha(0x22), (4.0 * scale).round()));
+            }
+            let w = buf.layout_runs().next().map_or(size, |run| run.line_w);
+            text.push(TextBlock {
+                buffer: buf,
+                x: (r.x + (r.w - w) / 2.0).round(),
+                y: (r.y + (r.h - size * 1.2) / 2.0).round(),
+                color: if hover { theme.panel_text } else { theme.panel_dim },
+                clip: None,
+            });
         }
-    }
-    if x < body.x || x >= body.x + body.w || y < body.y || y >= body.y + body.h {
-        return None;
-    }
-    let end = usize::MAX;
-    if x < body.x + body.w * 0.2 {
-        Some((Area::Left, end))
-    } else if x >= body.x + body.w * 0.8 {
-        Some((Area::Right, end))
-    } else if y >= body.y + body.h * 0.65 {
-        Some((Area::Bottom, end))
-    } else {
-        None
-    }
-}
-
-/// The rectangle that lights up for a drop target: the open area, or the zone it would take.
-pub fn drop_zone(area: Area, body: Rect, open: Option<Rect>) -> Rect {
-    if let Some(r) = open {
-        return r;
-    }
-    match area {
-        Area::Left => Rect { x: body.x, y: body.y, w: body.w * 0.2, h: body.h },
-        Area::Right => Rect { x: body.x + body.w * 0.8, y: body.y, w: body.w * 0.2, h: body.h },
-        Area::Bottom => Rect { x: body.x, y: body.y + body.h * 0.65, w: body.w, h: body.h * 0.35 },
     }
 }
 
@@ -404,19 +471,5 @@ mod tests {
         assert_eq!(d.left.panels, vec![Panel::Git, Panel::Explorer, Panel::Search, Panel::Debug]);
         assert_eq!(d.left.active, Some(Panel::Git));
         assert!(!d.right.visible);
-    }
-
-    #[test]
-    fn drop_targets_follow_the_cursor() {
-        let body = Rect { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
-        let span = |area, index, x0: f32, x1: f32| TabSpan { area, panel: Panel::Git, index, x0, x1, y0: 0.0, y1: 20.0 };
-        let spans = [span(Area::Left, 0, 0.0, 50.0), span(Area::Left, 1, 50.0, 100.0)];
-        let strips = [(Area::Left, Rect { x: 0.0, y: 0.0, w: 200.0, h: 20.0 })];
-        assert_eq!(drop_target(10.0, 10.0, body, &spans, &strips), Some((Area::Left, 0)));
-        assert_eq!(drop_target(80.0, 10.0, body, &spans, &strips), Some((Area::Left, 2)));
-        assert_eq!(drop_target(150.0, 10.0, body, &spans, &strips), Some((Area::Left, 2)));
-        assert_eq!(drop_target(900.0, 300.0, body, &spans, &strips), Some((Area::Right, usize::MAX)));
-        assert_eq!(drop_target(500.0, 700.0, body, &spans, &strips), Some((Area::Bottom, usize::MAX)));
-        assert_eq!(drop_target(500.0, 300.0, body, &spans, &strips), None);
     }
 }

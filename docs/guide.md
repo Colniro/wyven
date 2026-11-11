@@ -82,6 +82,12 @@ learn the keys by heart. The letters follow the English command names:
 | `Ctrl+K Ctrl+D` | format document |
 | `Ctrl+M Ctrl+M`, `Ctrl+M Ctrl+L`, `Ctrl+M Ctrl+O` | fold block, fold all, fold to definitions |
 | `Ctrl+Space`, `Ctrl+.` , `F2` | completion, quick actions, rename |
+| `Alt c o` | organize usings / imports |
+
+**Word wrap** (`Alt v w`) continues long lines in the next row at word boundaries, indented like
+the line. **Zen mode** (`Alt v z`) shows only the text, fullscreen; `Esc` twice leaves it.
+**Split** the editor with `Alt w v` (side by side) or `Alt w h` (stacked): each half has its own
+tabs, the same file can be open in both, `Alt w o` switches halves and `Alt w c` closes the split.
 
 Files are saved safely (written to a temporary file first) and keep their line endings. Files
 changed by other programs (git, formatters, Claude Code) reload automatically when they have no
@@ -93,13 +99,28 @@ unsaved changes.
   symbols in the file, `:` for a line number.
 - `Ctrl+F` / `Ctrl+H`: find / replace in the file (`Alt+C` case, `Alt+W` whole word, `Alt+E` regex).
 - `Ctrl+Shift+F` / `Ctrl+Shift+H`: search / replace in all files of the workspace.
-- `F12` / `Ctrl+Click`: go to definition; `Shift+F12`: all references.
+- `F12` / `Ctrl+Click`: go to definition; `Ctrl+F12`: implementations; `Shift+F12`: all references.
 
 ## Panels and layout
 
-Explorer, Search, Git, Debug and Terminal live in three areas around the editor: left, right and
-bottom. Each area shows its panels as tabs. **Drag a tab** to another area (the target lights up),
-**drag an area's edge** to resize it. The layout is remembered; `Alt w r` resets it.
+The window is made of rounded cards with a small gap between them; the card with the focus has a
+colored edge. The **activity bar** at the left edge holds colored icons for Explorer, Search, Git,
+Debug and Terminal (and Settings at the bottom): a click opens the panel next to it, another click
+closes it.
+
+Panels live in three areas around the editor: left, right and bottom. **Drag a panel's header**
+(or an editor tab) and a **docking compass** appears, like in Visual Studio: targets in the middle
+of the part under the mouse and at the window edges; the hovered target shades where the panel
+lands (left, right, bottom, or as a tab of that area). Dragging an editor tab splits the editor.
+Hold `Ctrl` to move without docking. **Drag the gap between areas** to resize them. The layout is
+remembered; `Alt w r` resets it.
+
+**Right-click** explorer entries (new file/folder, rename, delete, copy path, reveal in File
+Explorer, open in terminal), tabs (close others/to the right/all, split) and text (definition,
+references, rename, quick actions, cut/copy/paste). Tabs have a × (middle-click closes too).
+
+In the Explorer: `F2` renames (open tabs follow), `Del` moves to the recycle bin after asking,
+`Ctrl+N` / `Ctrl+Shift+N` create a file / folder in the selected folder.
 
 ## Workspaces with several folders
 
@@ -160,6 +181,10 @@ list previews each one, `Enter` keeps it, `Esc` goes back. Theme files can also 
 CodeLens, fonts and sizes.
 
 ## Settings
+
+Your own shortcuts go into `%APPDATA%\Wyven\keymap.toml` (*Preferences: Open Keymap File*
+creates it with a list of all command names): `[keys]` with `"ctrl+shift+d" = "view.toggle_word_wrap"`
+or `"f12" = "none"`, and `[leader.g]` with `"x" = "git.sync"` for `Alt g x`.
 
 `Alt ,` opens the settings page: all options in groups with a search field. Changes apply
 immediately and are written to `%APPDATA%\Wyven\settings.toml`, keeping its comments. You can edit

@@ -41,6 +41,8 @@ minimap = "blocks"
 # Keep the headers of the current namespace, class and method at the top while scrolling
 # (Alt → v → s switches and saves it here)
 sticky_scroll = true
+# Long lines continue in the next row instead of running off the screen (Alt → v → w)
+word_wrap = false
 # Gray hints in C# code: parameter names at calls and the types behind `var` (Alt → v → i)
 inlay_hints = true
 # "3 references" above classes and methods; a click lists them (Alt → v → l)
@@ -163,6 +165,7 @@ pub struct EditorSettings {
     pub hover: bool,
     pub minimap: String,
     pub sticky_scroll: bool,
+    pub word_wrap: bool,
     pub inlay_hints: bool,
     pub code_lens: bool,
 }
@@ -196,7 +199,7 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, hover: true, minimap: "blocks".into(), sticky_scroll: true, inlay_hints: true, code_lens: true }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
     }
 }
 

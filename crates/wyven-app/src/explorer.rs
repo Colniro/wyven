@@ -38,6 +38,8 @@ pub struct Explorer {
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
     pub selected: usize,
+    /// The row under the mouse.
+    pub hover: Option<usize>,
     scroll: usize,
     area: Rect,
     font: FontMetrics,
@@ -64,6 +66,7 @@ impl Explorer {
             title: None,
             rows: Vec::new(),
             selected: 0,
+            hover: None,
             scroll: 0,
             area: Rect::default(),
             font,
@@ -80,6 +83,11 @@ impl Explorer {
     /// The main folder (the first one).
     pub fn root(&self) -> &Path {
         &self.roots[0]
+    }
+
+    /// The row under the selection.
+    pub fn selected_row(&self) -> Option<&Row> {
+        self.rows.get(self.selected)
     }
 
     pub fn roots(&self) -> &[PathBuf] {
@@ -254,6 +262,14 @@ impl Explorer {
                 }
     }
 
+    /// Closes every folder (workspace folders stay open).
+    pub fn collapse_all(&mut self) {
+        self.expanded.retain(|p| self.roots.contains(p));
+        self.scroll = 0;
+        self.selected = 0;
+        self.refresh();
+    }
+
     fn set_expanded(&mut self, path: &Path, open: bool) {
         if open {
             self.expanded.insert(path.to_path_buf());
@@ -327,15 +343,18 @@ impl Explorer {
                 continue;
             }
             let indent = "  ".repeat(row.depth);
-            let (marker, color) = if row.is_dir {
-                (if row.expanded { "▾ " } else { "▸ " }, theme.panel_text)
-            } else if Some(row.path.as_path()) == active {
-                ("  ", theme.accent)
+            if row.is_dir {
+                let marker = if row.expanded { "▾  " } else { "▸  " };
+                spans.push((format!("{indent}{marker}"), theme.panel_dim));
+                spans.push((format!("{}\n", row.name), theme.panel_text));
             } else {
-                ("  ", theme.panel_text)
-            };
-            spans.push((format!("{indent}{marker}"), theme.panel_dim));
-            spans.push((format!("{}\n", row.name), color));
+                // A colored badge for the file type, the open file in the accent color.
+                let (badge, badge_color) = crate::chrome::file_badge(&row.name, theme.dark);
+                let color = if Some(row.path.as_path()) == active { theme.accent } else { theme.panel_text };
+                spans.push((indent, theme.panel_dim));
+                spans.push((format!("{badge} "), badge_color));
+                spans.push((format!("{}\n", row.name), color));
+            }
         }
         self.buffer.set_rich_text(
             spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
@@ -364,6 +383,10 @@ impl Explorer {
         let a = self.area;
         under.push(Quad { x: a.x, y: a.y, w: a.w, h: a.h, color: theme.panel_bg });
         let top = a.y + self.header_h();
+        if let Some(h) = self.hover.filter(|&h| h != self.selected && h >= self.scroll && h < self.scroll + self.rows_visible()) {
+            let y = top + (h - self.scroll) as f32 * self.font.line_h;
+            under.push(Quad { x: a.x, y, w: a.w, h: self.font.line_h, color: theme.row_selected_unfocused.with_alpha(0x90) });
+        }
         if self.selected >= self.scroll && self.selected < self.scroll + self.rows_visible() {
             let y = top + (self.selected - self.scroll) as f32 * self.font.line_h;
             let color = if focused { theme.row_selected } else { theme.row_selected_unfocused };

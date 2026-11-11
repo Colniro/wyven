@@ -50,6 +50,10 @@ pub enum Command {
     GotoDefinition,
     /// Shift+F12: all places that use the symbol at the cursor.
     FindReferences,
+    /// Ctrl+F12: classes that implement the interface/method at the cursor.
+    GotoImplementation,
+    /// Alt → c → o: remove unused usings/imports and sort them.
+    OrganizeUsings,
     Format,
     /// Strg+K Strg+I: information about the symbol under the cursor.
     QuickInfo,
@@ -165,6 +169,7 @@ impl Keymap {
                 NamedKey::F11 if shift => Debug(DebugCmd::StepOut),
                 NamedKey::F11 => Debug(DebugCmd::StepInto),
                 NamedKey::F12 if shift => FindReferences,
+                NamedKey::F12 if ctrl => GotoImplementation,
                 NamedKey::F12 => GotoDefinition,
                 NamedKey::F2 => Rename,
                 NamedKey::F8 => NextProblem,

@@ -61,6 +61,8 @@ pub struct Theme {
     pub diff_filler: Rgba,
     /// Background of the line where the debugger is paused.
     pub debug_line: Rgba,
+    /// Behind the cards (the gaps between panels and editors, the activity and status bar).
+    pub frame: Rgba,
     /// Dark background (decides derived colors and the terminal's default palette).
     pub dark: bool,
     /// Terminal colors from a VS Code theme (black, red, … bright white).
@@ -115,6 +117,7 @@ impl Theme {
             diff_added: Rgba(0x40, 0xA0, 0x50, 0x40),
             diff_filler: Rgba(0x00, 0x00, 0x00, 0x40),
             debug_line: Rgba(0xE8, 0xB0, 0x3A, 0x40),
+            frame: Rgba::rgb(0x0D, 0x0F, 0x13),
             dark: true,
             ansi: None,
             // Inspired by Visual Studio's dark theme.
@@ -172,6 +175,7 @@ impl Theme {
             diff_added: Rgba(0x80, 0xE0, 0x90, 0x60),
             diff_filler: Rgba(0x00, 0x00, 0x00, 0x14),
             debug_line: Rgba(0xF5, 0xC0, 0x40, 0x70),
+            frame: Rgba::rgb(0xE3, 0xE6, 0xEB),
             dark: false,
             ansi: None,
             // Inspired by Visual Studio's light theme.

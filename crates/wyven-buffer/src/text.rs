@@ -14,7 +14,8 @@ pub fn line_len_chars(rope: &Rope, line: usize) -> usize {
     }
 }
 
-fn char_width(c: char, col: usize, tab_width: usize) -> usize {
+/// Screen cells of `c` at column `col` (tabs to the next stop, wide chars two).
+pub fn char_width(c: char, col: usize, tab_width: usize) -> usize {
     match c {
         '\t' => tab_width - col % tab_width,
         c => c.width().unwrap_or(0).max(1),

@@ -10,7 +10,11 @@
 mod ai;
 mod claude;
 mod completion;
+mod chrome;
+mod compass;
 mod config;
+mod ctxmenu;
+mod custom_keys;
 mod debug;
 mod dock;
 mod diff_view;
@@ -53,7 +57,7 @@ use winit::window::{Window, WindowId};
 use wyven_buffer::{Document, Movement};
 use wyven_render::{
     measure_cell_width, pick_monospace_family, Attrs, Buffer, Family, FontSystem, Metrics, Quad,
-    Renderer, Rgba, Scene, Shaping, TextBlock, Wrap,
+    Renderer, Rgba, RoundRect, Scene, Shaping, TextBlock, Wrap,
 };
 
 use editor::{EditorView, FontMetrics, Rect};
@@ -116,12 +120,16 @@ fn main() {
     config::migrate_old_config_dir();
     install_crash_log();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // wyven [folder, file or .code-workspace] [--terminal] [--git] [--diff] [--goto=LINE] [--preview] [--settings]
+    // wyven [folder, file or .code-workspace] [--terminal] [--git] [--diff] [--goto=LINE] [--preview] [--settings] [--zen] [--split]
     let mut path = None;
     let (mut open_terminal, mut open_git, mut open_diff) = (false, false, false);
     let mut goto_line: Option<usize> = None;
     let mut open_preview = false;
     let mut open_settings = false;
+    let mut open_zen = false;
+    let mut open_split = false;
+    let mut open_popup: Option<String> = None;
+    let mut demo: Option<String> = None;
     for arg in std::env::args_os().skip(1) {
         if arg == "--terminal" {
             open_terminal = true;
@@ -133,6 +141,16 @@ fn main() {
             open_preview = true;
         } else if arg == "--settings" {
             open_settings = true;
+        } else if arg == "--zen" {
+            open_zen = true;
+        } else if arg == "--split" {
+            open_split = true;
+        } else if arg == "--compass" || arg == "--menu" {
+            // Screenshots: a running drag with the compass, or a right-click menu.
+            demo = arg.to_str().map(str::to_string);
+        } else if let Some(g) = arg.to_str().and_then(|a| a.strip_prefix("--popup=")) {
+            // Shows a leader menu right away (for screenshots of the key popup).
+            open_popup = Some(g.to_string());
         } else if let Some(n) = arg.to_str().and_then(|a| a.strip_prefix("--goto=")) {
             goto_line = n.parse().ok();
         } else if path.is_none() {
@@ -144,7 +162,7 @@ fn main() {
         .expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
-    let mut app = App { path, open_terminal, open_git, open_diff, goto_line, open_preview, open_settings, state: None, proxy };
+    let mut app = App { path, open_terminal, open_git, open_diff, goto_line, open_preview, open_settings, open_zen, open_split, open_popup, demo, state: None, proxy };
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
@@ -156,6 +174,10 @@ struct App {
     goto_line: Option<usize>,
     open_preview: bool,
     open_settings: bool,
+    open_zen: bool,
+    open_split: bool,
+    open_popup: Option<String>,
+    demo: Option<String>,
     state: Option<State>,
     proxy: EventLoopProxy<UserEvent>,
 }
@@ -172,6 +194,15 @@ enum Focus {
 
 use dock::{Area, Panel};
 
+/// File operations in the explorer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplorerOp {
+    Rename,
+    Delete,
+    NewFile,
+    NewFolder,
+}
+
 /// The theme picker: every theme (label, settings name), the filter typed so far, and the
 /// theme to go back to on Esc.
 struct ThemePicker {
@@ -180,13 +211,67 @@ struct ThemePicker {
     before: String,
 }
 
-/// A panel tab being dragged with the mouse.
+/// The second editor half. The half with the focus is always `State::tabs`; this holds the
+/// other one (switching focus swaps them), so every command simply works on the focused half.
+struct Split {
+    /// Side by side (true) or stacked.
+    vertical: bool,
+    tabs: Vec<EditorView>,
+    active: usize,
+    mru: Vec<usize>,
+    /// The focused half is the left/top one.
+    focused_first: bool,
+    tab_bar: Buffer,
+    tab_spans: Vec<(f32, f32)>,
+}
+
+/// Colored tab labels and the x range of each tab.
+type TabBar = (Vec<(String, Rgba)>, Vec<(f32, f32)>);
+
+/// Cells at the end of a tab for its close button.
+const TAB_CLOSE_CELLS: usize = 4;
+
+/// The close button of a tab spanning `x0..x1` (cell width `cw`): its x range.
+fn tab_close_span((_, x1): (f32, f32), cw: f32) -> (f32, f32) {
+    (x1 - cw * (TAB_CLOSE_CELLS as f32 - 0.6), x1 - cw * 0.9)
+}
+
+/// Labels and screen spans of a tab bar.
+fn tab_bar_spans(tabs: &[EditorView], active: usize, x0: f32, cw: f32, theme: &Theme) -> TabBar {
+    let mut x = x0;
+    let (mut labels, mut spans) = (Vec::new(), Vec::new());
+    for (i, t) in tabs.iter().enumerate() {
+        // "  C# Program.cs    ": badge, name, and room for the close button (drawn on top).
+        let name = t.file_name();
+        let (badge, badge_color) = chrome::file_badge(&name, theme.dark);
+        let text_color = if i == active { theme.tab_text_active } else { theme.tab_text };
+        let cells = 2 + 2 + 1 + name.chars().count() + TAB_CLOSE_CELLS;
+        let w = cells as f32 * cw;
+        spans.push((x, x + w));
+        x += w;
+        labels.push(("  ".to_string(), text_color));
+        labels.push((badge.to_string(), if i == active { badge_color } else { badge_color.with_alpha(0xB0) }));
+        labels.push((format!(" {name}{}", " ".repeat(TAB_CLOSE_CELLS)), text_color));
+    }
+    (labels, spans)
+}
+
+/// What is being dragged with the mouse.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Dragged {
+    Panel(Panel),
+    /// An editor tab (index in the focused half).
+    Tab(usize),
+}
+
+/// A panel or editor tab being dragged: where the press was, whether it moved enough to count
+/// as a drag, the compass targets and the one under the mouse.
 struct PanelDrag {
-    panel: Panel,
+    what: Dragged,
     from: (f32, f32),
-    /// Far enough from the press to count as a drag (else it was a click).
     moved: bool,
-    target: Option<(Area, usize)>,
+    targets: Vec<compass::Target>,
+    target: Option<compass::Target>,
 }
 
 enum Overlay {
@@ -200,6 +285,12 @@ enum Overlay {
     Rename { prompt: menu::Prompt, pos: usize },
     /// Branch picker (items: branch names, `null` = create a new branch).
     Branches(menu::Menu),
+    /// A right-click menu.
+    Context(ctxmenu::ContextMenu),
+    /// Name for a rename or a new file/folder in the explorer.
+    ExplorerPrompt { prompt: menu::Prompt, op: ExplorerOp, target: PathBuf },
+    /// "Move … to the recycle bin?"
+    ConfirmDelete(menu::Menu, PathBuf),
     /// "Wyven x.y is available – install?"
     Update(menu::Menu),
     /// The color theme picker (state in `State::theme_picker`).
@@ -230,6 +321,15 @@ struct Mouse {
 /// Screen layout, recomputed on resize, font change and when the explorer is toggled.
 #[derive(Default, Clone, Copy)]
 struct Layout {
+    /// The icon column at the left window edge.
+    activity: Rect,
+    /// The card the (focused) editor half sits on: its tab bar and text (and preview).
+    editor_card: Rect,
+    /// The other half's card, when split.
+    editor2_card: Option<Rect>,
+    /// Space between the cards and their corner radius.
+    gap: f32,
+    radius: f32,
     /// The dock areas (with their panel tab strip), when open.
     left: Option<Rect>,
     right: Option<Rect>,
@@ -238,6 +338,9 @@ struct Layout {
     editor: Rect,
     /// Markdown preview, right of the editor.
     preview: Option<Rect>,
+    /// The other editor half of a split: its tab bar and text.
+    tabs2: Option<Rect>,
+    editor2: Option<Rect>,
     status: Rect,
 }
 
@@ -260,11 +363,16 @@ struct State {
     closed: Vec<PathBuf>,
     tab_bar: Buffer,
     tab_spans: Vec<(f32, f32)>,
+    /// The tab under the mouse, and the icons drawn on tabs (close ×, unsaved ●).
+    tab_hover: Option<usize>,
+    tab_icons: (Buffer, Buffer),
 
     explorer: Option<Explorer>,
     /// Where the panels are docked and which ones show.
     dock: dock::Dock,
     dock_bar: dock::DockBar,
+    /// The icons at the left window edge.
+    activity: chrome::ActivityBar,
     panel_drag: Option<PanelDrag>,
     /// The dock area whose edge is being dragged to resize it.
     resizing: Option<Area>,
@@ -335,6 +443,14 @@ struct State {
     settings_page: settings_page::SettingsPage,
     theme_picker: Option<ThemePicker>,
     plugins: plugins::Plugins,
+    /// Organize usings in two steps (C#): 1 = remove unused, 2 = sort.
+    organize_step: Option<u8>,
+    /// Zen mode: only the text, fullscreen; and when Esc was last pressed (twice leaves).
+    zen: bool,
+    last_escape: Option<Instant>,
+    split: Option<Split>,
+    /// Shortcuts from keymap.toml.
+    custom_keys: custom_keys::CustomKeys,
     /// A running update check or download.
     update_rx: Option<std::sync::mpsc::Receiver<update::UpdateEvent>>,
     /// The newer version on offer, and whether the check was asked for.
@@ -417,6 +533,35 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(line) = self.goto_line {
             state.editor_mut().jump_to_line(line, None);
         }
+        match self.demo.take().as_deref() {
+            Some("--compass") => {
+                if let Some(r) = state.layout.left {
+                    let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                    state.panel_drag = Some(PanelDrag { what: Dragged::Panel(Panel::Terminal), from: (0.0, 0.0), moved: false, targets: Vec::new(), target: None });
+                    state.panel_drag_move(x, y);
+                }
+            }
+            Some("--menu") => {
+                if let Some(r) = state.explorer.as_ref().and(state.layout.left) {
+                    let (x, y) = (r.x + r.w * 0.4, r.y + state.ui_font.line_h * 6.3);
+                    state.open_explorer_menu(x, y);
+                }
+            }
+            _ => {}
+        }
+        if let Some(g) = self.open_popup.take() {
+            let group: &'static str = leader::items("").iter().find_map(|i| match i.action {
+                leader::Action::Group(name) if name == g => Some(name),
+                _ => None,
+            }).unwrap_or("");
+            state.overlay = Overlay::Leader { group, since: Instant::now(), shown: true };
+        }
+        if self.open_split {
+            state.split_editor(true);
+        }
+        if self.open_zen {
+            state.toggle_zen();
+        }
         if self.open_settings {
             state.open_settings_page();
         }
@@ -465,6 +610,8 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let (x, y) = (position.x as f32, position.y as f32);
                 if let Some(t) = &state.tooltip
+                    && state.activity.hover.is_none()
+                    && state.dock_bar.hover.is_none()
                     && ((t.x - x).abs() > 12.0 || (t.y - y).abs() > 12.0) {
                         state.tooltip = None;
                         state.window.request_redraw();
@@ -476,6 +623,56 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if state.panel_drag.is_some() {
                     state.panel_drag_move(x, y);
+                }
+                if let Overlay::Context(menu) = &mut state.overlay {
+                    let hover = menu.row_at(x, y);
+                    if hover != menu.hover {
+                        menu.hover = hover;
+                        state.window.request_redraw();
+                    }
+                }
+                // The explorer row under the mouse.
+                let explorer_shown = state.panel_shown(Panel::Explorer);
+                if let Some(ex) = &mut state.explorer {
+                    let hover = (explorer_shown && ex.contains(x, y)).then(|| ex.row_at(y)).flatten();
+                    if hover != ex.hover {
+                        ex.hover = hover;
+                        state.window.request_redraw();
+                    }
+                }
+                // The tab under the mouse (shows its ×).
+                let t = state.layout.tabs;
+                let tab_hover = (y >= t.y && y < t.y + t.h)
+                    .then(|| state.tab_spans.iter().position(|&(a, b)| x >= a && x < b))
+                    .flatten();
+                if tab_hover != state.tab_hover || tab_hover.is_some() {
+                    state.tab_hover = tab_hover;
+                    state.window.request_redraw();
+                }
+                // Header buttons: highlight and a tooltip.
+                let header_hover = match state.dock_bar.hit(x, y) {
+                    Some(dock::HeaderHit::Button(a, _, b)) => Some((a, b)),
+                    _ => None,
+                };
+                if header_hover != state.dock_bar.hover {
+                    state.dock_bar.hover = header_hover;
+                    state.tooltip = header_hover.and_then(|(a, b)| {
+                        let r = state.dock_bar.buttons.iter().find(|x| x.0 == a && x.2 == b)?.3;
+                        let fs = state.renderer.font_system();
+                        Some(completion::Tooltip::new(fs, state.ui_font, &state.family, &state.theme, b.tooltip(), r.x, r.y + r.h + 4.0))
+                    });
+                    state.window.request_redraw();
+                }
+                // The activity bar: highlight and a tooltip with the shortcut.
+                let hover = state.activity.hit(x, y);
+                if hover != state.activity.hover {
+                    state.activity.hover = hover;
+                    state.tooltip = hover.map(|item| {
+                        let r = state.activity.slots.iter().find(|s| s.0 == item).map(|s| s.1).unwrap_or_default();
+                        let fs = state.renderer.font_system();
+                        completion::Tooltip::new(fs, state.ui_font, &state.family, &state.theme, item.tooltip(), r.x + r.w + 4.0, r.y + r.h * 0.2)
+                    });
+                    state.window.request_redraw();
                 }
                 // Resize arrows over the edge of a dock area.
                 let edge = state.resizing.or_else(|| state.splitter_at(x, y));
@@ -655,6 +852,45 @@ fn expression_at(rope: &wyven_buffer::Rope, pos: usize) -> Option<String> {
     (!expr.is_empty()).then(|| expr.to_string())
 }
 
+/// A file or folder name Windows accepts.
+fn valid_file_name(name: &str) -> Result<(), String> {
+    const BAD: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+    let reserved = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "LPT1", "LPT2", "LPT3"];
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    if name.is_empty() || name == "." || name == ".." {
+        Err("Please enter a name".into())
+    } else if let Some(c) = name.chars().find(|c| BAD.contains(c) || c.is_control()) {
+        Err(format!("A name cannot contain {c}"))
+    } else if name.ends_with(['.', ' ']) {
+        Err("A name cannot end with a dot or a space".into())
+    } else if reserved.contains(&stem.as_str()) {
+        Err(format!("{name} is reserved by Windows"))
+    } else {
+        Ok(())
+    }
+}
+
+/// The block of `using …;` lines at the top of a C# file (char range), if there is one.
+fn csharp_usings(rope: &wyven_buffer::Rope) -> Option<(usize, usize)> {
+    let mut first = None;
+    let mut last = None;
+    for (i, line) in rope.lines().enumerate() {
+        let t = line.to_string();
+        let t = t.trim();
+        let is_using = (t.starts_with("using ") || t.starts_with("global using ")) && t.ends_with(';') && !t.contains('(') && !t.contains(" var ");
+        if is_using {
+            first.get_or_insert(i);
+            last = Some(i);
+        } else if !(t.is_empty() || t.starts_with("//") || t.starts_with('#')) {
+            break;
+        }
+    }
+    let (first, last) = (first?, last?);
+    let end_line = (last + 1).min(rope.len_lines().saturating_sub(1));
+    let end = if last + 1 < rope.len_lines() { rope.line_to_char(end_line) } else { rope.len_chars() };
+    Some((rope.line_to_char(first), end))
+}
+
 /// The language server for a tab's language, if one runs.
 fn server_of<'a>(
     servers: &'a mut HashMap<lsp::ServerKind, lsp::LanguageServer>,
@@ -704,6 +940,8 @@ impl State {
         let palette = Palette::new(fs, ui_font);
         let terminal_panel = terminal::TerminalPanel::new(fs, font, ui_font, family.clone());
         let dock_bar = dock::DockBar::new(fs, ui_font, family.clone());
+        let tab_icons = Self::make_tab_icons(fs, ui_font);
+        let activity = chrome::ActivityBar::new(fs, ui_font);
         let settings_page = settings_page::SettingsPage::new(ui_font, family.clone());
         let find_bar = find::FindBar::new(fs, ui_font);
         let (initial_theme, theme_error) = match Theme::resolve(&settings.theme) {
@@ -739,9 +977,12 @@ impl State {
             closed: Vec::new(),
             tab_bar,
             tab_spans: Vec::new(),
+            tab_hover: None,
+            tab_icons,
             explorer: None,
             dock: dock::Dock::load(),
             dock_bar,
+            activity,
             panel_drag: None,
             resizing: None,
             cursor_resize: None,
@@ -785,6 +1026,11 @@ impl State {
             settings_page,
             theme_picker: None,
             plugins: plugins::Plugins::new(),
+            organize_step: None,
+            zen: false,
+            last_escape: None,
+            split: None,
+            custom_keys: custom_keys::CustomKeys::default(),
             update_rx: None,
             update_offer: None,
             update_manual: false,
@@ -805,6 +1051,7 @@ impl State {
         state.relayout();
         state.start_claude_bridge();
         state.reload_plugins(false);
+        state.reload_keymap(false);
         state.check_updates(false);
         if let Some(e) = theme_error {
             state.show(e);
@@ -830,42 +1077,95 @@ impl State {
     fn relayout(&mut self) {
         let (w, h) = self.renderer.size();
         let (w, h) = (w as f32, h as f32);
-        let status_h = (self.ui_font.line_h * 1.25).round();
-        let tabs_h = (self.ui_font.line_h * 1.6).round();
+        let scale = self.renderer.scale_factor();
+        let zen = self.zen;
+        let status_h = if zen { 0.0 } else { (self.ui_font.line_h * 1.3).round() };
+        let tabs_h = if zen { 0.0 } else { (self.ui_font.line_h * 1.75).round() };
         let body_h = h - status_h;
+        // Cards on a frame (Visual Studio 2026 style): a gap around and between them.
+        let act_w = if zen { 0.0 } else { (self.ui_font.line_h * 2.3).round() };
+        let gap = if zen { 0.0 } else { (6.0 * scale).round() };
+        let half = (gap / 2.0).round();
+        let radius = (7.0 * scale).round();
+        let (ox, oy) = (act_w + half, half);
+        let (rw, rh) = (w - act_w - gap, body_h - gap);
         let cell = self.ui_font.cell_w;
         let side_w = |me: &Self, a: Area| -> f32 {
-            if !me.area_open(a) {
+            if zen || !me.area_open(a) {
                 return 0.0;
             }
             let cells = me.dock.area(a).size.unwrap_or(me.settings.ui.explorer_width);
-            (cells * cell).clamp(cell * 12.0, w * 0.45).round()
+            (cells * cell).clamp(cell * 12.0, rw * 0.45).round()
         };
         let left_w = side_w(self, Area::Left);
-        let right_w = side_w(self, Area::Right).min(w - left_w - cell * 20.0).max(0.0);
-        let center_w = w - left_w - right_w;
-        let bottom_h = if self.area_open(Area::Bottom) {
+        let right_w = side_w(self, Area::Right).min(rw - left_w - cell * 20.0).max(0.0);
+        let center_w = rw - left_w - right_w;
+        let bottom_h = if !zen && self.area_open(Area::Bottom) {
             let pct = self.dock.area(Area::Bottom).size.unwrap_or(self.settings.terminal.height);
-            (body_h * pct / 100.0)
-                .round()
-                .max(self.font.line_h * 4.0)
-                .min(body_h - tabs_h - self.font.line_h * 3.0)
+            (rh * pct / 100.0).round().max(self.font.line_h * 4.0).min(rh - tabs_h - self.font.line_h * 3.0)
         } else {
             0.0
         };
-        let editor_h = body_h - tabs_h - bottom_h;
-        // The Markdown preview takes the right half of the editor.
-        let preview_w = if self.preview_visible() { (center_w / 2.0).round() } else { 0.0 };
+        let deflate = |r: Rect| Rect { x: r.x + half, y: r.y + half, w: (r.w - gap).max(0.0), h: (r.h - gap).max(0.0) };
+        let editor_card = if zen {
+            let col = (self.font.cell_w * 104.0).min(w);
+            Rect { x: ((w - col) / 2.0).round(), y: 0.0, w: col, h: body_h }
+        } else {
+            deflate(Rect { x: ox + left_w, y: oy, w: center_w, h: rh - bottom_h })
+        };
+        // A card's tab bar on top, the text below, and the Markdown preview on the right.
+        let preview_on = self.preview_visible();
+        let fill = |card: Rect, with_preview: bool| -> (Rect, Rect, Option<Rect>) {
+            let tabs = Rect { x: card.x, y: card.y, w: card.w, h: tabs_h };
+            let body = Rect { x: card.x, y: card.y + tabs_h, w: card.w, h: card.h - tabs_h };
+            if with_preview {
+                let pw = (body.w / 2.0).round();
+                (tabs, Rect { w: body.w - pw, ..body }, Some(Rect { x: body.x + body.w - pw, w: pw, ..body }))
+            } else {
+                (tabs, body, None)
+            }
+        };
+        let (tabs, editor, preview) = fill(editor_card, preview_on);
         self.layout = Layout {
-            left: (left_w > 0.0).then_some(Rect { x: 0.0, y: 0.0, w: left_w, h: body_h }),
-            right: (right_w > 0.0).then_some(Rect { x: w - right_w, y: 0.0, w: right_w, h: body_h }),
-            bottom: (bottom_h > 0.0).then_some(Rect { x: left_w, y: body_h - bottom_h, w: center_w, h: bottom_h }),
-            tabs: Rect { x: left_w, y: 0.0, w: center_w, h: tabs_h },
-            editor: Rect { x: left_w, y: tabs_h, w: center_w - preview_w, h: editor_h },
-            preview: (preview_w > 0.0)
-                .then_some(Rect { x: left_w + center_w - preview_w, y: tabs_h, w: preview_w, h: editor_h }),
+            activity: Rect { x: 0.0, y: 0.0, w: act_w, h: body_h },
+            editor_card,
+            editor2_card: None,
+            gap,
+            radius,
+            left: (left_w > 0.0).then(|| deflate(Rect { x: ox, y: oy, w: left_w, h: rh })),
+            right: (right_w > 0.0).then(|| deflate(Rect { x: ox + rw - right_w, y: oy, w: right_w, h: rh })),
+            bottom: (bottom_h > 0.0).then(|| deflate(Rect { x: ox + left_w, y: oy + rh - bottom_h, w: center_w, h: bottom_h })),
+            tabs,
+            editor,
+            preview,
+            tabs2: None,
+            editor2: None,
             status: Rect { x: 0.0, y: body_h, w, h: status_h },
         };
+        // Split: two cards side by side or stacked; the focused half uses `tabs`/`editor`.
+        if let Some(sp) = &self.split
+            && !zen
+        {
+            let c = editor_card;
+            let (first, second) = if sp.vertical {
+                let w1 = ((c.w - gap) / 2.0).round();
+                (Rect { w: w1, ..c }, Rect { x: c.x + w1 + gap, w: c.w - w1 - gap, ..c })
+            } else {
+                let h1 = ((c.h - gap) / 2.0).round();
+                (Rect { h: h1, ..c }, Rect { y: c.y + h1 + gap, h: c.h - h1 - gap, ..c })
+            };
+            let (mine, other) = if sp.focused_first { (first, second) } else { (second, first) };
+            let (t, e, p) = fill(mine, preview_on);
+            let (t2, e2, _) = fill(other, false);
+            self.layout.editor_card = mine;
+            self.layout.editor2_card = Some(other);
+            self.layout.tabs = t;
+            self.layout.editor = e;
+            self.layout.preview = p;
+            self.layout.tabs2 = Some(t2);
+            self.layout.editor2 = Some(e2);
+        }
+        self.activity.place(self.layout.activity);
         // Each panel draws below the tab strip of its area.
         for p in Panel::ALL {
             let Some(r) = self.layout_area(self.dock.area_of(p)) else { continue };
@@ -882,11 +1182,18 @@ impl State {
                 Panel::Terminal => self.terminal.set_area(c),
             }
         }
-        let strips: Vec<(Area, Rect, Vec<Panel>)> = Area::ALL
+        let strips: Vec<(Area, Rect, Vec<Panel>, Option<Panel>)> = Area::ALL
             .into_iter()
-            .filter_map(|a| self.layout_area(a).map(|r| (a, r, self.dock.area(a).panels.clone())))
+            .filter_map(|a| self.layout_area(a).map(|r| (a, r, self.dock.area(a).panels.clone(), self.dock.area(a).active)))
             .collect();
         self.dock_bar.place(&strips);
+        if let (Some(sp), Some(r)) = (&mut self.split, self.layout.editor2) {
+            let scale = self.renderer.scale_factor();
+            for t in &mut sp.tabs {
+                t.set_area(r);
+                t.scale = scale;
+            }
+        }
         let area = self.layout.editor;
         let scale = self.renderer.scale_factor();
         for t in &mut self.tabs {
@@ -976,6 +1283,409 @@ impl State {
         self.dock_changed();
     }
 
+    /// Alt → v → z: everything but the text disappears, the window goes fullscreen.
+    fn toggle_zen(&mut self) {
+        self.zen = !self.zen;
+        self.window.set_fullscreen(self.zen.then_some(winit::window::Fullscreen::Borderless(None)));
+        if self.zen {
+            self.focus = Focus::Editor;
+        }
+        let mut tabs = std::mem::take(&mut self.tabs);
+        for t in &mut tabs {
+            self.configure_view(t);
+        }
+        self.tabs = tabs;
+        self.relayout();
+        self.show(if self.zen { "Zen mode: Alt → v → z or Esc twice leaves" } else { "Zen mode off" });
+    }
+
+    /// The tab of the focused half that shows the same file as `view`.
+    fn tab_for_view(&self, view: &EditorView) -> Option<usize> {
+        view.doc.path().and_then(|p| self.tab_for(p))
+    }
+
+    /// Alt → w → v / h: a second editor half with the current file (or the other direction).
+    fn split_editor(&mut self, vertical: bool) {
+        if let Some(sp) = &mut self.split {
+            sp.vertical = vertical;
+            self.relayout();
+            return;
+        }
+        self.diff = None;
+        let fs = self.renderer.font_system();
+        let twin = self.tabs[self.active].twin(fs);
+        let mut tab_bar = Buffer::new(fs, Metrics::new(self.ui_font.size, self.ui_font.line_h));
+        tab_bar.set_wrap(Wrap::None);
+        self.split = Some(Split {
+            vertical,
+            tabs: vec![twin],
+            active: 0,
+            mru: vec![0],
+            focused_first: true,
+            tab_bar,
+            tab_spans: Vec::new(),
+        });
+        // The new half gets the focus.
+        self.focus_other_half();
+        self.show("Split: Alt → w → o or ←↑→↓ switches halves, Alt → w → c closes");
+    }
+
+    /// Moves the focus to the other editor half.
+    fn focus_other_half(&mut self) {
+        let Some(sp) = &mut self.split else {
+            self.show("No split: Alt → w → v splits the editor");
+            return;
+        };
+        std::mem::swap(&mut self.tabs, &mut sp.tabs);
+        std::mem::swap(&mut self.active, &mut sp.active);
+        std::mem::swap(&mut self.mru, &mut sp.mru);
+        std::mem::swap(&mut self.tab_bar, &mut sp.tab_bar);
+        sp.focused_first = !sp.focused_first;
+        self.cycling = None;
+        self.diff = None;
+        self.completion = None;
+        self.focus = Focus::Editor;
+        self.relayout();
+        self.lsp_open_all();
+        self.follow_git(false);
+        self.window.request_redraw();
+    }
+
+    /// Alt → w → ←/↑ (first half) or →/↓ (second half).
+    fn focus_half(&mut self, first: bool) {
+        if self.split.as_ref().is_some_and(|sp| sp.focused_first != first) {
+            self.focus_other_half();
+        }
+    }
+
+    /// Alt → w → c: one editor again; files only open in the other half come along as tabs.
+    fn close_split(&mut self) {
+        let Some(sp) = self.split.take() else {
+            self.show("No split open");
+            return;
+        };
+        for t in sp.tabs {
+            if t.doc.path().is_some() && self.tab_for_view(&t).is_some() {
+                continue; // the same file is open here already
+            }
+            if t.doc.path().is_none() && !t.doc.is_dirty() && t.is_untouched() {
+                continue;
+            }
+            self.tabs.push(t);
+            self.mru.push(self.tabs.len() - 1);
+        }
+        self.relayout();
+        self.lsp_open_all();
+        self.show("Split closed");
+    }
+
+    /// After an edit in the focused half, its file's view in the other half takes the text.
+    fn sync_split_twins(&mut self) {
+        let Some(sp) = &mut self.split else { return };
+        let ed = &self.tabs[self.active];
+        let Some(path) = ed.doc.path() else { return };
+        let path = path.to_string_lossy().to_lowercase();
+        for t in &mut sp.tabs {
+            let same = t.doc.path().is_some_and(|p| p.to_string_lossy().to_lowercase() == path);
+            if same && (t.doc.version() != ed.doc.version() || t.doc.is_dirty() != ed.doc.is_dirty() || t.doc.text() != ed.doc.text()) {
+                t.mirror_from(ed);
+            }
+        }
+    }
+
+    /// The × and ● drawn on tabs.
+    fn make_tab_icons(fs: &mut FontSystem, ui: FontMetrics) -> (Buffer, Buffer) {
+        let family = chrome::icon_family(fs);
+        let size = (ui.size * 0.8).round();
+        let close = chrome::label(fs, &chrome::ICON_CLOSE.to_string(), &family, size, size * 1.3);
+        let dot = chrome::label(fs, "\u{25CF}", &family, size, size * 1.3);
+        (close, dot)
+    }
+
+    fn show_context(&mut self, b: ctxmenu::MenuBuilder, x: f32, y: f32) {
+        let (w, h) = self.renderer.size();
+        let fs = self.renderer.font_system();
+        let menu = b.build(fs, self.ui_font, &self.family, x, y, (w as f32, h as f32));
+        self.overlay = Overlay::Context(menu);
+        self.tooltip = None;
+        self.window.request_redraw();
+    }
+
+    /// Right-click in the explorer: on a row its commands, on empty space new file/folder.
+    fn open_explorer_menu(&mut self, x: f32, y: f32) {
+        use ctxmenu::CtxAction as C;
+        let Some(ex) = &mut self.explorer else { return };
+        self.focus = Focus::Explorer;
+        let row = ex.row_at(y);
+        if let Some(i) = row {
+            ex.selected = i;
+            ex.invalidate();
+        }
+        let row = row.and_then(|_| ex.selected_row().cloned());
+        let root = ex.root().to_path_buf();
+        let b = match row {
+            Some(r) => {
+                let dir = if r.is_dir { r.path.clone() } else { r.path.parent().map(Path::to_path_buf).unwrap_or(root) };
+                let mut b = ctxmenu::MenuBuilder::new()
+                    .item("New File …", "Ctrl+N", C::NewFile(dir.clone()))
+                    .item("New Folder …", "Ctrl+Shift+N", C::NewFolder(dir.clone()))
+                    .separator();
+                if !r.is_root {
+                    b = b
+                        .item("Rename …", "F2", C::Rename(r.path.clone()))
+                        .item("Delete", "Del", C::Delete(r.path.clone()))
+                        .separator();
+                }
+                b = b
+                    .item("Copy Path", "", C::CopyPath(r.path.clone()))
+                    .item("Copy Relative Path", "", C::CopyRelativePath(r.path.clone()))
+                    .separator()
+                    .item("Reveal in File Explorer", "", C::RevealInOs(r.path.clone()))
+                    .item("Open in Terminal", "", C::OpenTerminalHere(dir));
+                if r.is_root && self.roots().len() > 1 {
+                    b = b.separator().item("Remove Folder from Workspace", "", C::RemoveRoot(r.path));
+                }
+                b
+            }
+            None => ctxmenu::MenuBuilder::new()
+                .item("New File …", "Ctrl+N", C::NewFile(root.clone()))
+                .item("New Folder …", "Ctrl+Shift+N", C::NewFolder(root.clone()))
+                .separator()
+                .item("Refresh", "", C::RefreshExplorer)
+                .item("Collapse Folders", "", C::CollapseExplorer)
+                .separator()
+                .item("Open in Terminal", "", C::OpenTerminalHere(root)),
+        };
+        self.show_context(b, x, y);
+    }
+
+    /// Right-click on a tab.
+    fn open_tab_menu(&mut self, i: usize, x: f32, y: f32) {
+        use ctxmenu::CtxAction as C;
+        let path = self.tabs[i].doc.path().map(Path::to_path_buf);
+        let mut b = ctxmenu::MenuBuilder::new()
+            .item("Close", "Ctrl+W", C::CloseTab(i))
+            .item("Close Others", "", C::CloseOthers(i))
+            .item("Close to the Right", "", C::CloseToRight(i))
+            .item("Close All", "Alt f c", C::CloseAll)
+            .separator();
+        if let Some(p) = path {
+            b = b
+                .item("Copy Path", "", C::CopyPath(p.clone()))
+                .item("Copy Relative Path", "", C::CopyRelativePath(p.clone()))
+                .item("Reveal in Explorer", "", C::RevealInExplorer(p.clone()))
+                .item("Reveal in File Explorer", "", C::RevealInOs(p))
+                .separator();
+        }
+        b = b.item("Split Right", "Alt w v", C::SplitRight).item("Split Down", "Alt w h", C::SplitDown);
+        self.activate(i);
+        self.show_context(b, x, y);
+    }
+
+    /// Right-click in the text: the click moves the cursor unless it is inside the selection.
+    fn open_editor_menu(&mut self, x: f32, y: f32) {
+        use ctxmenu::CtxAction as C;
+        use keymap::Command as K;
+        self.focus = Focus::Editor;
+        let pos = self.editor().hit_test(x, y);
+        let sel = self.editor().doc.selection().primary();
+        if pos < sel.from() || pos > sel.to() || sel.is_empty() {
+            self.tabs[self.active].doc.set_cursor(pos);
+        }
+        let mut b = ctxmenu::MenuBuilder::new();
+        if self.editor().lsp_kind().is_some() {
+            b = b
+                .item("Go to Definition", "F12", C::Run(K::GotoDefinition))
+                .item("Go to Implementation", "Ctrl+F12", C::Run(K::GotoImplementation))
+                .item("Find All References", "Shift+F12", C::Run(K::FindReferences))
+                .separator()
+                .item("Rename Symbol …", "F2", C::Run(K::Rename))
+                .item("Quick Actions …", "Ctrl+.", C::Run(K::QuickActions))
+                .item("Format Document", "Ctrl+K Ctrl+D", C::Run(K::Format))
+                .separator();
+        }
+        b = b
+            .item("Cut", "Ctrl+X", C::Run(K::Cut))
+            .item("Copy", "Ctrl+C", C::Run(K::Copy))
+            .item("Paste", "Ctrl+V", C::Run(K::Paste))
+            .separator()
+            .item("Select All", "Ctrl+A", C::Run(K::SelectAll));
+        self.show_context(b, x, y);
+    }
+
+    fn context_key(&mut self, key: &Key) {
+        let Overlay::Context(menu) = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::ArrowUp) => menu.move_hover(-1),
+            Key::Named(NamedKey::ArrowDown) => menu.move_hover(1),
+            Key::Named(NamedKey::Enter) => {
+                let action = menu.hover.and_then(|h| menu.action(h));
+                self.overlay = Overlay::None;
+                if let Some(a) = action {
+                    self.run_ctx(a);
+                }
+            }
+            _ => {}
+        }
+        self.window.request_redraw();
+    }
+
+    /// Runs a menu row.
+    fn run_ctx(&mut self, action: ctxmenu::CtxAction) {
+        use ctxmenu::CtxAction as C;
+        let is_new_file = matches!(action, C::NewFile(_));
+        let only_right = matches!(action, C::CloseToRight(_));
+        match action {
+            C::NewFile(dir) | C::NewFolder(dir) => {
+                let op = if is_new_file { ExplorerOp::NewFile } else { ExplorerOp::NewFolder };
+                let what = if op == ExplorerOp::NewFile { "New file" } else { "New folder" };
+                let title = format!("{what} in {} (Enter, Esc)", file_name(&dir));
+                let prompt = menu::Prompt::new(self.renderer.font_system(), self.ui_font, &title, "");
+                self.overlay = Overlay::ExplorerPrompt { prompt, op, target: dir };
+            }
+            C::Rename(p) => {
+                let name = file_name(&p);
+                let title = format!("Rename {name} (Enter, Esc)");
+                let prompt = menu::Prompt::new(self.renderer.font_system(), self.ui_font, &title, &name);
+                self.overlay = Overlay::ExplorerPrompt { prompt, op: ExplorerOp::Rename, target: p };
+            }
+            C::Delete(p) => {
+                let is_dir = p.is_dir();
+                let title = format!("Move {}{} to the recycle bin?", file_name(&p), if is_dir { " and everything in it" } else { "" });
+                let items = vec![
+                    ("Yes, move to recycle bin".to_string(), wyven_lsp::Value::Bool(true)),
+                    ("No".to_string(), wyven_lsp::Value::Bool(false)),
+                ];
+                let mut m = menu::Menu::new(self.renderer.font_system(), self.ui_font, &title, items);
+                m.select(1);
+                self.overlay = Overlay::ConfirmDelete(m, p);
+            }
+            C::CopyPath(p) => {
+                self.set_clipboard((p.display().to_string(), false));
+                self.show("Path copied");
+            }
+            C::CopyRelativePath(p) => {
+                let rel = self
+                    .root_for(Some(&p))
+                    .and_then(|r| p.strip_prefix(&r).ok().map(Path::to_path_buf))
+                    .unwrap_or(p);
+                self.set_clipboard((rel.display().to_string().replace('\\', "/"), false));
+                self.show("Relative path copied");
+            }
+            C::RevealInOs(p) => {
+                let arg = if p.is_dir() { p.display().to_string() } else { format!("/select,{}", p.display()) };
+                if let Err(e) = std::process::Command::new("explorer.exe").arg(arg).spawn() {
+                    self.show(format!("File Explorer: {e}"));
+                }
+            }
+            C::OpenTerminalHere(dir) => {
+                self.dock.show(Panel::Terminal);
+                self.focus = Focus::Terminal;
+                self.dock_changed();
+                if self.terminal.term.is_none() {
+                    self.start_terminal();
+                }
+                if let Some(t) = &self.terminal.term {
+                    let cmd_exe = self.settings.terminal.shell.to_lowercase().contains("cmd");
+                    let line = if cmd_exe { format!("cd /d \"{}\"\r", dir.display()) } else { format!("cd \"{}\"\r", dir.display()) };
+                    t.type_text(&line, false);
+                }
+            }
+            C::RemoveRoot(p) => self.remove_folder(&p),
+            C::RefreshExplorer => self.after_files_changed(),
+            C::CollapseExplorer => {
+                if let Some(ex) = &mut self.explorer {
+                    ex.collapse_all();
+                }
+            }
+            C::CloseTab(i) => self.close_tab(i),
+            C::CloseOthers(keep) | C::CloseToRight(keep) => {
+                let mut kept = 0;
+                let mut i = self.tabs.len();
+                let mut keep = keep;
+                while i > 0 {
+                    i -= 1;
+                    if i == keep || (only_right && i < keep) {
+                        continue;
+                    }
+                    if self.tabs[i].doc.is_dirty() {
+                        kept += 1;
+                        continue;
+                    }
+                    self.armed = None;
+                    self.close_tab(i);
+                    if i < keep {
+                        keep -= 1;
+                    }
+                }
+                if kept > 0 {
+                    self.show(format!("{kept} file(s) with unsaved changes stay open."));
+                }
+            }
+            C::CloseAll => self.close_all(),
+            C::RevealInExplorer(p) => {
+                if let Some(ex) = &mut self.explorer {
+                    ex.reveal(&p);
+                }
+                self.dock.show(Panel::Explorer);
+                self.focus = Focus::Explorer;
+                self.dock_changed();
+            }
+            C::SplitRight => self.split_editor(true),
+            C::SplitDown => self.split_editor(false),
+            C::Run(cmd) => self.run(cmd),
+        }
+        self.window.request_redraw();
+    }
+
+    /// A click on an icon button in a panel header.
+    fn header_button(&mut self, panel: Panel, button: dock::HeaderButton) {
+        use dock::HeaderButton as B;
+        match button {
+            B::NewFile | B::NewFolder => {
+                // In the selected folder, or at the top of the main folder.
+                self.focus = Focus::Explorer;
+                let op = if button == B::NewFile { ExplorerOp::NewFile } else { ExplorerOp::NewFolder };
+                self.start_explorer_op(op);
+            }
+            B::Refresh => match panel {
+                Panel::Git => self.git.refresh_status(),
+                _ => self.after_files_changed(),
+            },
+            B::CollapseAll => {
+                if let Some(ex) = &mut self.explorer {
+                    ex.collapse_all();
+                }
+            }
+            B::Close => {
+                self.dock.hide(panel);
+                if self.focused_panel() == Some(panel) {
+                    self.focus = Focus::Editor;
+                }
+                self.dock_changed();
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// A click on the activity bar: shows the panel (or hides it when it is already in front).
+    fn activity_click(&mut self, item: chrome::ActItem) {
+        match item {
+            chrome::ActItem::Settings => self.open_settings_page(),
+            chrome::ActItem::Panel(p) => {
+                if self.panel_shown(p) && self.focused_panel() == Some(p) {
+                    self.dock.hide(p);
+                    self.focus = Focus::Editor;
+                    self.dock_changed();
+                } else {
+                    self.activate_panel(p);
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
     /// Alt → w → r: everything back to where it was at first.
     fn reset_layout(&mut self) {
         self.dock = dock::Dock::default();
@@ -988,24 +1698,25 @@ impl State {
 
     /// The dock area whose inner edge is under the mouse (to resize it).
     fn splitter_at(&self, x: f32, y: f32) -> Option<Area> {
-        let grab = 4.0 * self.renderer.scale_factor();
+        let grab = 2.0 * self.renderer.scale_factor() + self.layout.gap / 2.0;
+        let half = self.layout.gap / 2.0;
         let near = |a: f32, b: f32| (a - b).abs() <= grab;
         if let Some(r) = self.layout.left
-            && near(x, r.x + r.w)
+            && near(x, r.x + r.w + half)
             && y >= r.y
             && y < r.y + r.h
         {
             return Some(Area::Left);
         }
         if let Some(r) = self.layout.right
-            && near(x, r.x)
+            && near(x, r.x - half)
             && y >= r.y
             && y < r.y + r.h
         {
             return Some(Area::Right);
         }
         if let Some(r) = self.layout.bottom
-            && near(y, r.y)
+            && near(y, r.y - half)
             && x >= r.x
             && x < r.x + r.w
         {
@@ -1020,10 +1731,14 @@ impl State {
         let w = w as f32;
         let body_h = self.layout.status.y;
         let cell = self.ui_font.cell_w;
+        // Sizes count from the outer edge of the content (right of the activity bar).
+        let left0 = self.layout.activity.w + self.layout.gap / 2.0;
+        let right0 = w - self.layout.gap / 2.0;
+        let rh = body_h - self.layout.gap;
         let size = match a {
-            Area::Left => (x.clamp(cell * 12.0, w * 0.45)) / cell,
-            Area::Right => ((w - x).clamp(cell * 12.0, w * 0.45)) / cell,
-            Area::Bottom => ((body_h - y) / body_h * 100.0).clamp(10.0, 80.0),
+            Area::Left => ((x - left0).clamp(cell * 12.0, w * 0.45)) / cell,
+            Area::Right => ((right0 - x).clamp(cell * 12.0, w * 0.45)) / cell,
+            Area::Bottom => ((body_h - self.layout.gap / 2.0 - y) / rh * 100.0).clamp(10.0, 80.0),
         };
         self.dock.area_mut(a).size = Some((size * 10.0).round() / 10.0);
         self.relayout();
@@ -1031,35 +1746,109 @@ impl State {
 
     /// Mouse moves while a panel tab is held: start the drag, follow the drop target.
     fn panel_drag_move(&mut self, x: f32, y: f32) {
-        let strips: Vec<(Area, Rect)> = Area::ALL
-            .into_iter()
-            .filter_map(|a| {
-                self.layout_area(a).map(|r| (a, Rect { x: r.x, y: r.y, w: r.w, h: dock::strip_h(self.ui_font) }))
-            })
-            .collect();
-        let body = Rect { x: 0.0, y: 0.0, w: self.layout.status.w, h: self.layout.status.y };
+        let scale = self.renderer.scale_factor();
+        let Some(what) = self.panel_drag.as_ref().map(|d| d.what) else { return };
+        let content = Rect {
+            x: self.layout.activity.w,
+            y: 0.0,
+            w: self.layout.status.w - self.layout.activity.w,
+            h: self.layout.status.y,
+        };
+        let areas: Vec<(Area, Rect)> = Area::ALL.into_iter().filter_map(|a| self.layout_area(a).map(|r| (a, r))).collect();
+        let inside = |r: &Rect| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        let under = areas
+            .iter()
+            .find(|(_, r)| inside(r))
+            .map(|(a, r)| (*r, Some(*a)))
+            .or_else(|| [Some(self.layout.editor_card), self.layout.editor2_card].into_iter().flatten().find(|r| inside(r)).map(|r| (r, None)));
+        let size = (self.ui_font.line_h * 2.1).round();
+        let targets = match what {
+            Dragged::Panel(_) => compass::panel_targets(content, &areas, under, size),
+            Dragged::Tab(_) => compass::tab_targets(self.layout.editor_card, size),
+        };
+        // Ctrl: move without docking (like Visual Studio).
+        let ctrl = self.modifiers.control_key();
         let Some(d) = &mut self.panel_drag else { return };
         let dist = ((x - d.from.0).powi(2) + (y - d.from.1).powi(2)).sqrt();
-        if !d.moved && dist < 6.0 * self.renderer.scale_factor() {
+        if !d.moved && dist < 8.0 * scale {
             return;
         }
         d.moved = true;
-        d.target = dock::drop_target(x, y, body, &self.dock_bar.spans, &strips);
+        d.target = if ctrl { None } else { compass::hit(&targets, x, y) };
+        d.targets = targets;
         self.window.request_redraw();
     }
 
-    /// Mouse released after dragging a panel tab.
+    /// Mouse released after dragging a panel or a tab: dock it where the compass says.
     fn panel_drop(&mut self) {
         let Some(d) = self.panel_drag.take() else { return };
         if !d.moved {
             return;
         }
-        if let Some((area, index)) = d.target {
-            self.dock.move_panel(d.panel, area, index);
-            self.dock_changed();
-            self.activate_panel(d.panel);
+        match (d.what, d.target) {
+            (Dragged::Panel(p), Some(t)) => {
+                if let Some(area) = t.area {
+                    self.dock.move_panel(p, area, usize::MAX);
+                    self.dock_changed();
+                    self.activate_panel(p);
+                }
+            }
+            (Dragged::Tab(i), Some(t)) => self.split_tab(i, t.side),
+            _ => {}
         }
         self.window.request_redraw();
+    }
+
+    /// Takes tab `i` out of a tab list, keeping `active` and the recently used order right.
+    fn take_tab(tabs: &mut Vec<EditorView>, active: &mut usize, mru: &mut Vec<usize>, i: usize) -> EditorView {
+        let t = tabs.remove(i);
+        mru.retain(|&m| m != i);
+        for m in mru.iter_mut() {
+            if *m > i {
+                *m -= 1;
+            }
+        }
+        if *active > i || *active >= tabs.len() {
+            *active = active.saturating_sub(1);
+        }
+        t
+    }
+
+    /// A tab dropped on a compass target: the editor splits and the tab moves to that side.
+    fn split_tab(&mut self, i: usize, side: compass::Side) {
+        use compass::Side;
+        if side == Side::Center || i >= self.tabs.len() {
+            return;
+        }
+        let vertical = matches!(side, Side::Left | Side::Right);
+        let first = matches!(side, Side::Left | Side::Top);
+        if self.split.is_none() {
+            self.activate(i);
+            self.split_editor(vertical);
+            // The tab moves (the old half keeps its other tabs).
+            if let Some(sp) = &mut self.split {
+                sp.focused_first = first;
+                if sp.tabs.len() > 1 {
+                    Self::take_tab(&mut sp.tabs, &mut sp.active, &mut sp.mru, i);
+                }
+            }
+        } else {
+            if self.tabs.len() > 1 {
+                let t = Self::take_tab(&mut self.tabs, &mut self.active, &mut self.mru, i);
+                self.focus_other_half();
+                self.tabs.push(t);
+                self.mru.insert(0, self.tabs.len() - 1);
+                self.active = self.tabs.len() - 1;
+            } else {
+                self.focus_other_half();
+            }
+            if let Some(sp) = &mut self.split {
+                sp.vertical = vertical;
+                sp.focused_first = first;
+            }
+        }
+        self.relayout();
+        self.lsp_open_all();
     }
 
     /// The preview shows while it is switched on and the active tab is a Markdown file.
@@ -1124,6 +1913,12 @@ impl State {
         for t in &mut self.tabs {
             t.set_font(self.renderer.font_system(), font);
         }
+        if let Some(sp) = &mut self.split {
+            for t in &mut sp.tabs {
+                t.set_font(self.renderer.font_system(), font);
+            }
+            sp.tab_bar.set_metrics(Metrics::new(ui.size, ui.line_h));
+        }
         if let Some(ex) = &mut self.explorer {
             ex.set_font(ui);
         }
@@ -1137,6 +1932,8 @@ impl State {
         self.debugger.set_font(ui);
         self.settings_page.set_font(ui, self.family.clone());
         self.dock_bar.set_font(self.renderer.font_system(), ui);
+        self.tab_icons = Self::make_tab_icons(self.renderer.font_system(), ui);
+        self.activity.set_font(self.renderer.font_system(), ui);
         // The diff view keeps its own fonts; reopening is cheaper than re-measuring it.
         self.diff = None;
         let m = Metrics::new(ui.size, ui.line_h);
@@ -1213,6 +2010,194 @@ impl State {
         self.follow_git(true);
         self.claude_workspace_changed();
         self.relayout();
+    }
+
+    /// What an explorer operation acts on: the explorer's selection while it has the focus,
+    /// else the active file.
+    fn explorer_target(&self) -> Option<(PathBuf, bool, bool)> {
+        if self.focus == Focus::Explorer
+            && let Some(row) = self.explorer.as_ref().and_then(|ex| ex.selected_row())
+        {
+            return Some((row.path.clone(), row.is_dir, row.is_root));
+        }
+        if let Some(p) = self.editor().doc.path() {
+            return Some((p.to_path_buf(), false, false));
+        }
+        self.project_root().map(|r| (r.to_path_buf(), true, true))
+    }
+
+    /// F2 / Del / Ctrl+N / Ctrl+Shift+N in the explorer, Alt → f → r/d/f/k.
+    fn start_explorer_op(&mut self, op: ExplorerOp) {
+        let Some((path, is_dir, is_root)) = self.explorer_target() else {
+            self.show("No file or folder selected");
+            return;
+        };
+        let fs = self.renderer.font_system();
+        let name = file_name(&path);
+        match op {
+            ExplorerOp::Rename | ExplorerOp::Delete if is_root => {
+                self.show("That is a workspace folder: remove it with the × or rename it outside Wyven");
+            }
+            ExplorerOp::Rename => {
+                let title = format!("Rename {name} (Enter, Esc)");
+                let prompt = menu::Prompt::new(fs, self.ui_font, &title, &name);
+                self.overlay = Overlay::ExplorerPrompt { prompt, op, target: path };
+            }
+            ExplorerOp::Delete => {
+                let title = format!("Move {name}{} to the recycle bin?", if is_dir { " and everything in it" } else { "" });
+                let items = vec![
+                    ("Yes, move to recycle bin".to_string(), wyven_lsp::Value::Bool(true)),
+                    ("No".to_string(), wyven_lsp::Value::Bool(false)),
+                ];
+                let mut menu = menu::Menu::new(fs, self.ui_font, &title, items);
+                menu.select(1);
+                self.overlay = Overlay::ConfirmDelete(menu, path);
+            }
+            ExplorerOp::NewFile | ExplorerOp::NewFolder => {
+                let dir = if is_dir { path } else { path.parent().map(Path::to_path_buf).unwrap_or(path) };
+                let what = if op == ExplorerOp::NewFile { "New file" } else { "New folder" };
+                let title = format!("{what} in {} (Enter, Esc)", file_name(&dir));
+                let prompt = menu::Prompt::new(fs, self.ui_font, &title, "");
+                self.overlay = Overlay::ExplorerPrompt { prompt, op, target: dir };
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    fn explorer_prompt_key(&mut self, event: &KeyEvent, key: &Key) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        let Overlay::ExplorerPrompt { prompt, .. } = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::Enter) => {
+                let Overlay::ExplorerPrompt { prompt, op, target } = std::mem::replace(&mut self.overlay, Overlay::None) else {
+                    return;
+                };
+                self.finish_explorer_op(op, &target, prompt.text.trim());
+            }
+            Key::Named(NamedKey::Backspace) => prompt.backspace(ctrl),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::End | NamedKey::Home) => prompt.keep(),
+            _ => {
+                if let Some(t) = Keymap::text(event, mods) {
+                    prompt.type_text(&t);
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    fn finish_explorer_op(&mut self, op: ExplorerOp, target: &Path, name: &str) {
+        if let Err(e) = valid_file_name(name) {
+            self.show(e);
+            return;
+        }
+        let result = match op {
+            ExplorerOp::Rename => self.rename_on_disk(target, name),
+            ExplorerOp::NewFile => {
+                let path = target.join(name);
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map(|_| Some(path))
+                    .map_err(|e| format!("{name}: {e}"))
+            }
+            ExplorerOp::NewFolder => {
+                let path = target.join(name);
+                std::fs::create_dir(&path).map(|_| Some(path)).map_err(|e| format!("{name}: {e}"))
+            }
+            ExplorerOp::Delete => Ok(None),
+        };
+        match result {
+            Ok(Some(path)) => {
+                self.after_files_changed();
+                if op == ExplorerOp::NewFile {
+                    self.open_path(&path);
+                } else if let Some(ex) = &mut self.explorer {
+                    ex.reveal(&path);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => self.show(e),
+        }
+    }
+
+    /// Renames on disk; open tabs inside follow the new path.
+    fn rename_on_disk(&mut self, from: &Path, name: &str) -> Result<Option<PathBuf>, String> {
+        let to = from.parent().map(|p| p.join(name)).ok_or("cannot rename this")?;
+        let same_ignoring_case = to.to_string_lossy().to_lowercase() == from.to_string_lossy().to_lowercase();
+        if to.exists() && !same_ignoring_case {
+            return Err(format!("{name} already exists"));
+        }
+        std::fs::rename(from, &to).map_err(|e| format!("Rename failed: {e}"))?;
+        for i in 0..self.tabs.len() {
+            let Some(old) = self.tabs[i].doc.path().map(Path::to_path_buf) else { continue };
+            let Ok(rest) = old.strip_prefix(from) else { continue };
+            let new = if rest.as_os_str().is_empty() { to.clone() } else { to.join(rest) };
+            for server in self.servers.values_mut() {
+                server.close(&old);
+            }
+            self.tabs[i].doc.set_path(new);
+            self.tabs[i].refresh_disk_mtime();
+        }
+        self.lsp_open_all();
+        self.show(format!("Renamed to {name}"));
+        Ok(Some(to))
+    }
+
+    fn confirm_delete_key(&mut self, key: &Key) {
+        let Overlay::ConfirmDelete(menu, _) = &mut self.overlay else { return };
+        let choice = match key {
+            Key::Named(NamedKey::Escape) => Some(false),
+            Key::Named(NamedKey::ArrowUp) => {
+                menu.move_selection(-1);
+                None
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                menu.move_selection(1);
+                None
+            }
+            Key::Named(NamedKey::Enter) => menu.selected().and_then(|v| v.as_bool()),
+            Key::Character(c) if c.as_str() == "1" => Some(true),
+            Key::Character(c) if c.as_str() == "2" => Some(false),
+            _ => None,
+        };
+        let Some(yes) = choice else { return };
+        let Overlay::ConfirmDelete(_, path) = std::mem::replace(&mut self.overlay, Overlay::None) else { return };
+        if yes {
+            self.delete_to_trash(&path);
+        }
+    }
+
+    /// Moves a file or folder to the recycle bin and closes its tabs.
+    fn delete_to_trash(&mut self, path: &Path) {
+        let inside = |t: &EditorView| t.doc.path().is_some_and(|p| p.starts_with(path));
+        if self.tabs.iter().any(|t| inside(t) && t.doc.is_dirty()) {
+            self.show("It has unsaved changes open: save or close them first");
+            return;
+        }
+        if let Err(e) = trash::delete(path) {
+            self.show(format!("Could not move to the recycle bin: {e}"));
+            return;
+        }
+        while let Some(i) = self.tabs.iter().position(&inside) {
+            self.close_tab(i);
+        }
+        self.after_files_changed();
+        self.show(format!("{} moved to the recycle bin", file_name(path)));
+    }
+
+    /// Files were created, renamed or deleted: explorer, file index and Git catch up.
+    fn after_files_changed(&mut self) {
+        if let Some(ex) = &mut self.explorer {
+            ex.refresh();
+        }
+        self.index.rebuild(&self.roots());
+        if self.git.repo.is_some() {
+            self.git.refresh_status();
+        }
+        self.window.request_redraw();
     }
 
     /// Alt → p → a: another folder in this window.
@@ -1463,6 +2448,17 @@ impl State {
                 *i -= 1;
             }
         }
+        if self.tabs.is_empty()
+            && let Some(sp) = self.split.take()
+        {
+            // The half is empty: the other half takes the whole column.
+            self.tabs = sp.tabs;
+            self.active = sp.active.min(self.tabs.len() - 1);
+            self.mru = sp.mru;
+            self.relayout();
+            self.lsp_open_all();
+            return;
+        }
         if self.tabs.is_empty() {
             let fs = self.renderer.font_system();
             let mut view = EditorView::new(Document::default(), fs, self.font, self.family.clone());
@@ -1532,10 +2528,14 @@ impl State {
                     server.saved(path);
                 }
                 let is_settings = ed.doc.path().is_some() && ed.doc.path() == settings::path().as_deref();
+                let is_keymap = ed.doc.path().is_some() && ed.doc.path() == custom_keys::path().as_deref();
                 self.show(format!("{name} saved"));
                 self.plugin_event(plugins::Event::Save);
                 if is_settings {
                     self.reload_settings();
+                }
+                if is_keymap {
+                    self.reload_keymap(true);
                 }
                 if self.git.repo.is_some() {
                     self.git.refresh_status();
@@ -1597,7 +2597,11 @@ impl State {
     }
 
     fn confirm_close_window(&mut self) -> bool {
-        let dirty = self.tabs.iter().filter(|t| t.doc.is_dirty()).count();
+        let other = self.split.as_ref().map_or(0, |sp| {
+            // A file open in both halves counts once.
+            sp.tabs.iter().filter(|t| t.doc.is_dirty() && self.tab_for_view(t).is_none()).count()
+        });
+        let dirty = self.tabs.iter().filter(|t| t.doc.is_dirty()).count() + other;
         if dirty == 0 {
             return true;
         }
@@ -1672,12 +2676,24 @@ impl State {
                 self.branch_menu_key(&key);
                 return;
             }
+            Overlay::ExplorerPrompt { .. } => {
+                self.explorer_prompt_key(event, &key);
+                return;
+            }
+            Overlay::ConfirmDelete(..) => {
+                self.confirm_delete_key(&key);
+                return;
+            }
             Overlay::Themes(_) => {
                 self.theme_picker_key(event, &key);
                 return;
             }
             Overlay::Update(_) => {
                 self.update_key(&key);
+                return;
+            }
+            Overlay::Context(_) => {
+                self.context_key(&key);
                 return;
             }
             Overlay::References(_) => {
@@ -1705,6 +2721,15 @@ impl State {
 
         let mods = self.modifiers;
         self.tooltip = None;
+        if self.zen && key == Key::Named(NamedKey::Escape) {
+            let now = Instant::now();
+            if self.last_escape.is_some_and(|t| now.duration_since(t) < Duration::from_millis(600)) {
+                self.last_escape = None;
+                self.toggle_zen();
+                return;
+            }
+            self.last_escape = Some(now);
+        }
         if self.focus == Focus::Terminal && self.panel_shown(Panel::Terminal) {
             self.terminal_key(event);
             return;
@@ -1746,11 +2771,26 @@ impl State {
         if self.focus == Focus::Editor && self.completion.is_none() && self.ghost_key(&key) {
             return;
         }
-        if self.focus == Focus::Explorer && !mods.control_key() && !mods.alt_key()
+        let explorer_new = mods.control_key()
+            && !mods.alt_key()
+            && matches!(&key, Key::Character(c) if c.as_str().eq_ignore_ascii_case("n"));
+        if self.focus == Focus::Explorer && (explorer_new || (!mods.control_key() && !mods.alt_key()))
             && self.explorer_key(&key) {
                 return;
             }
 
+        // Own shortcuts from keymap.toml come first (not in the middle of a Ctrl+K/M chord).
+        if self.keymap.chord_pending().is_none()
+            && let Some(combo) = custom_keys::combo_of(&key, mods)
+            && let Some(binding) = self.custom_keys.key(&combo)
+        {
+            let binding = binding.map(str::to_string);
+            if let Some(cmd) = binding.and_then(|id| self.command_by_id(&id)) {
+                self.finish_cycling();
+                self.run_palette_cmd(cmd);
+            }
+            return;
+        }
         let cmd = self
             .keymap
             .handle(event, mods)
@@ -1815,6 +2855,19 @@ impl State {
             Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => ex.activate_selected(),
             Key::Named(NamedKey::Escape) => {
                 self.focus = Focus::Editor;
+                return true;
+            }
+            Key::Named(NamedKey::F2) => {
+                self.start_explorer_op(ExplorerOp::Rename);
+                return true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                self.start_explorer_op(ExplorerOp::Delete);
+                return true;
+            }
+            Key::Character(c) if self.modifiers.control_key() && c.as_str().eq_ignore_ascii_case("n") => {
+                let op = if self.modifiers.shift_key() { ExplorerOp::NewFolder } else { ExplorerOp::NewFile };
+                self.start_explorer_op(op);
                 return true;
             }
             Key::Character(_) => return true, // type-to-search comes later; never edit the file
@@ -2044,7 +3097,27 @@ impl State {
                     }
                 }
                 lsp::Event::DefinitionNotFound => self.show("No definition found"),
-                lsp::Event::WorkspaceEdit { edit, what } => self.apply_workspace_edit(&edit, &what),
+                lsp::Event::WorkspaceEdit { edit, what } => {
+                    self.apply_workspace_edit(&edit, &what);
+                    // Organizing usings: after removing the unused ones, sort the rest.
+                    if self.organize_step == Some(2) {
+                        self.request_organize(2);
+                    }
+                }
+                lsp::Event::Implementations(locs) => match locs.len() {
+                    0 => self.show("No implementation found"),
+                    1 => {
+                        let (path, start) = locs[0].clone();
+                        self.open_path(&path);
+                        let ed = self.editor_mut();
+                        if ed.doc.path() == Some(path.as_path()) {
+                            let pos = wyven_lsp::from_lsp(ed.doc.text(), &start);
+                            ed.jump_to(pos);
+                        }
+                    }
+                    _ => self.show_locations(locs, "implementation"),
+                },
+                lsp::Event::OrganizeActions(actions) => self.organize_actions(actions),
                 lsp::Event::CodeActions(actions) => self.show_actions("Quick actions (digit or Enter, Esc)", actions),
                 lsp::Event::InlayHints { path, version, hints } => {
                     if let Some(i) = self.tab_for(&path)
@@ -2421,8 +3494,13 @@ impl State {
     /// Applies tab width and default indentation from the settings to a document view.
     fn configure_view(&self, view: &mut EditorView) {
         view.doc.tab_width = self.settings.editor.tab_width;
-        view.minimap = editor::MinimapMode::parse(&self.settings.editor.minimap);
+        view.minimap = if self.zen {
+            editor::MinimapMode::parse("off")
+        } else {
+            editor::MinimapMode::parse(&self.settings.editor.minimap)
+        };
         view.sticky_scroll = self.settings.editor.sticky_scroll;
+        view.wrap = self.settings.editor.word_wrap;
         view.show_inlay_hints = self.settings.editor.inlay_hints;
         view.show_code_lens = self.settings.editor.code_lens;
         view.scale = self.renderer.scale_factor();
@@ -2432,7 +3510,6 @@ impl State {
         view.invalidate();
     }
 
-    /// Re-reads settings.toml and applies what changed. A broken file keeps the old settings.
     /// Looks for a newer version (`manual`: now, and say the result; else at most daily).
     fn check_updates(&mut self, manual: bool) {
         let source = self.settings.update.url.trim().to_string();
@@ -2528,6 +3605,43 @@ impl State {
         self.update_rx = Some(update::download(source, m, move || {
             let _ = proxy.send_event(UserEvent::Update);
         }));
+    }
+
+    /// Every command of the search field: name for keymap.toml, title, default keys, command.
+    fn all_commands(&self) -> Vec<(String, String, String, palette::Cmd)> {
+        let mut out: Vec<(String, String, String, palette::Cmd)> = palette::commands()
+            .into_iter()
+            .map(|(title, keys, cmd)| (custom_keys::command_id(title), title.to_string(), keys.to_string(), cmd))
+            .collect();
+        for (title, _, cmd) in &self.palette.plugin_commands {
+            out.push((custom_keys::command_id(title), title.clone(), String::new(), cmd.clone()));
+        }
+        out
+    }
+
+    fn command_by_id(&self, id: &str) -> Option<palette::Cmd> {
+        self.all_commands().into_iter().find(|c| c.0 == id).map(|c| c.3)
+    }
+
+    fn run_palette_cmd(&mut self, cmd: palette::Cmd) {
+        match cmd {
+            palette::Cmd::Key(c) => self.run(c),
+            palette::Cmd::Leader(a) => self.leader_action(a),
+            palette::Cmd::Plugin(i, id) => self.run_plugin_command(i, &id),
+        }
+        self.window.request_redraw();
+    }
+
+    /// Reads keymap.toml (at start and after saving it in Wyven).
+    fn reload_keymap(&mut self, report: bool) {
+        let ids: Vec<String> = self.all_commands().into_iter().map(|c| c.0).collect();
+        let (keys, errors) = custom_keys::CustomKeys::load(|id| ids.iter().any(|i| i == id));
+        self.custom_keys = keys;
+        if let Some(e) = errors.last() {
+            self.show(e.clone());
+        } else if report {
+            self.show(if self.custom_keys.is_empty() { "keymap.toml: no own shortcuts" } else { "Own shortcuts applied" });
+        }
     }
 
     /// Loads the plugins folder (again) and puts their commands into the search field.
@@ -2705,6 +3819,7 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Re-reads settings.toml and applies what changed. A broken file keeps the old settings.
     fn reload_settings(&mut self) {
         self.settings_mtime = settings::modified();
         let new = match settings::load() {
@@ -2777,6 +3892,11 @@ impl State {
         self.theme = theme;
         for t in &mut self.tabs {
             t.invalidate();
+        }
+        if let Some(sp) = &mut self.split {
+            for t in &mut sp.tabs {
+                t.invalidate();
+            }
         }
         if let Some(ex) = &mut self.explorer {
             ex.invalidate();
@@ -4087,12 +5207,24 @@ impl State {
 
     fn leader_key(&mut self, group: &'static str, key: &Key) {
         self.overlay = Overlay::None;
+        if group == "w"
+            && let Key::Named(arrow @ (NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::ArrowUp | NamedKey::ArrowDown)) = key
+        {
+            self.focus_half(matches!(arrow, NamedKey::ArrowLeft | NamedKey::ArrowUp));
+            return;
+        }
         let c = match key {
             Key::Named(NamedKey::Escape) => return,
             Key::Character(s) => s.chars().next(),
             _ => None,
         };
         let Some(c) = c else { return };
+        if let Some(id) = self.custom_keys.leader(group, c).map(str::to_string)
+            && let Some(cmd) = self.command_by_id(&id)
+        {
+            self.run_palette_cmd(cmd);
+            return;
+        }
         match leader::find(group, c) {
             Some(leader::Action::Group(g)) => {
                 // Same rule as the first level: the popup only appears if the user pauses.
@@ -4129,7 +5261,13 @@ impl State {
                 }
             }
             ResetLayout => self.reset_layout(),
+            Split { vertical } => self.split_editor(vertical),
+            FocusOtherHalf => self.focus_other_half(),
+            CloseSplit => self.close_split(),
+            ToggleZen => self.toggle_zen(),
+            ToggleWordWrap => self.toggle_word_wrap(),
             OpenFolder => self.pick_folder(),
+            ExplorerOp(op) => self.start_explorer_op(op),
             AddFolder => self.add_folder(),
             OpenWorkspace => self.open_workspace_dialog(),
             SaveWorkspace => self.save_workspace_as(),
@@ -4147,7 +5285,6 @@ impl State {
             NewFile => self.new_file(),
             SaveAs => self.save_as(),
             CloseAll => self.close_all(),
-            Later(msg) => self.show(msg),
             OpenSettings => self.open_settings_page(),
             ReloadPlugins => self.reload_plugins(true),
             CheckUpdates => self.check_updates(true),
@@ -4167,6 +5304,21 @@ impl State {
                         self.show(format!("{}: {e}", dir.display()));
                     }
                 }
+            }
+            OpenKeymap => {
+                let Some(path) = custom_keys::path() else { return };
+                if !path.exists() {
+                    let list: Vec<(String, String, String)> =
+                        self.all_commands().into_iter().map(|(id, title, keys, _)| (id, title, keys)).collect();
+                    if let Some(dir) = path.parent() {
+                        let _ = std::fs::create_dir_all(dir);
+                    }
+                    if let Err(e) = std::fs::write(&path, custom_keys::template(&list)) {
+                        self.show(format!("keymap.toml: {e}"));
+                        return;
+                    }
+                }
+                self.open_path(&path);
             }
             OpenSettingsFile => {
                 if let Some(path) = settings::ensure_file() {
@@ -4207,6 +5359,26 @@ impl State {
             ToggleStickyScroll => self.toggle_sticky_scroll(),
             ToggleInlayHints => self.toggle_extra("inlay_hints"),
             ToggleCodeLens => self.toggle_extra("code_lens"),
+        }
+    }
+
+    /// Alt → v → w: word wrap on/off for all tabs, saved in settings.toml.
+    fn toggle_word_wrap(&mut self) {
+        let on = !self.settings.editor.word_wrap;
+        self.settings.editor.word_wrap = on;
+        for t in &mut self.tabs {
+            t.wrap = on;
+            t.scroll_x = 0.0;
+            t.invalidate();
+            t.ensure_cursor_visible();
+        }
+        let label = if on { "Word wrap: on" } else { "Word wrap: off" };
+        match settings::store_value(Some("editor"), "word_wrap", if on { "true" } else { "false" }) {
+            Ok(()) => {
+                self.settings_mtime = settings::modified();
+                self.show(label);
+            }
+            Err(e) => self.show(format!("{label} (not saved: {e})")),
         }
     }
 
@@ -4262,6 +5434,76 @@ impl State {
     }
 
     /// Shift+F12, Alt → j → r or a CodeLens click: asks the C# server for all references.
+    fn request_implementation(&mut self, pos: usize) {
+        if self.tabs[self.active].lsp_kind().is_none() {
+            self.show("Go to implementation needs a language server (C#, TypeScript).");
+            return;
+        }
+        if !self.lsp_ready() {
+            self.show("The language server is still loading the project …");
+            return;
+        }
+        self.lsp_sync_active();
+        let ed = &self.tabs[self.active];
+        if let (Some(server), Some(path)) = (server_of(&mut self.servers, ed), ed.doc.path()) {
+            server.implementation(path, ed.doc.text(), pos);
+        }
+    }
+
+    /// Alt → c → o. C#: remove unused usings (step 1), then sort (step 2); other languages:
+    /// their "organize imports" action.
+    fn request_organize(&mut self, step: u8) {
+        self.organize_step = None;
+        if self.tabs[self.active].lsp_kind().is_none() {
+            self.show("Organizing usings needs a language server (C#, TypeScript).");
+            return;
+        }
+        if !self.lsp_ready() {
+            self.show("The language server is still loading the project …");
+            return;
+        }
+        self.lsp_sync_active();
+        let ed = &self.tabs[self.active];
+        let rope = ed.doc.text();
+        let range = if ed.lsp_kind() == Some(lsp::ServerKind::CSharp) {
+            match csharp_usings(rope) {
+                Some(r) => r,
+                None => {
+                    self.show("No usings in this file");
+                    return;
+                }
+            }
+        } else {
+            (0, rope.len_chars())
+        };
+        self.organize_step = Some(step);
+        let ed = &self.tabs[self.active];
+        if let (Some(server), Some(path)) = (server_of(&mut self.servers, ed), ed.doc.path()) {
+            server.organize_actions(path, ed.doc.text(), range.0, range.1);
+        }
+    }
+
+    fn organize_actions(&mut self, actions: Vec<wyven_lsp::Value>) {
+        let Some(step) = self.organize_step.take() else { return };
+        let title = |a: &wyven_lsp::Value| a["title"].as_str().unwrap_or("").to_string();
+        let kind = |a: &wyven_lsp::Value| a["kind"].as_str().unwrap_or("").to_string();
+        if let Some(a) = actions.iter().find(|a| kind(a).starts_with("source.organizeImports")) {
+            self.run_action(a.clone());
+            return;
+        }
+        let remove = actions.iter().find(|a| title(a) == "Remove unnecessary usings");
+        let sort = actions.iter().find(|a| title(a) == "Sort Usings");
+        match (step, remove, sort) {
+            (1, Some(r), _) => {
+                self.organize_step = Some(2);
+                self.run_action(r.clone());
+            }
+            (_, _, Some(s)) => self.run_action(s.clone()),
+            (1, None, None) => self.show("The usings are already tidy"),
+            _ => self.show("Removed unnecessary usings"),
+        }
+    }
+
     fn request_references(&mut self, pos: usize) {
         if self.tabs[self.active].lsp_kind().is_none() {
             self.show("Find references needs a language server (C#, TypeScript, HTML, CSS, JSON).");
@@ -4284,6 +5526,11 @@ impl State {
             self.show("No references found");
             return;
         }
+        self.show_locations(refs, "reference");
+    }
+
+    /// A pick list of places ("reference", "implementation").
+    fn show_locations(&mut self, refs: Vec<(PathBuf, wyven_lsp::Value)>, noun: &str) {
         let mut items = Vec::new();
         for (path, start) in &refs {
             let line = start["line"].as_u64().unwrap_or(0) as usize;
@@ -4298,7 +5545,7 @@ impl State {
             let value = wyven_lsp::json!({ "path": path.display().to_string(), "start": start });
             items.push((label, value));
         }
-        let title = format!("{} reference{} (digit or Enter, Esc)", refs.len(), if refs.len() == 1 { "" } else { "s" });
+        let title = format!("{} {noun}{} (digit or Enter, Esc)", refs.len(), if refs.len() == 1 { "" } else { "s" });
         let fs = self.renderer.font_system();
         self.overlay = Overlay::References(menu::Menu::new(fs, self.ui_font, &title, items));
     }
@@ -4505,6 +5752,15 @@ impl State {
                 let pos = self.editor().doc.selection().primary().head;
                 self.request_references(pos);
             }
+            Command::GotoImplementation => {
+                follow_cursor = false;
+                let pos = self.editor().doc.selection().primary().head;
+                self.request_implementation(pos);
+            }
+            Command::OrganizeUsings => {
+                follow_cursor = false;
+                self.request_organize(1);
+            }
             Command::Format => {
                 follow_cursor = false;
                 self.request_format();
@@ -4632,7 +5888,19 @@ impl State {
                 self.window.request_redraw();
                 return;
             }
-        if !matches!(self.overlay, Overlay::None) {
+        if let Overlay::Context(menu) = &self.overlay {
+            let action = (button == MouseButton::Left).then(|| menu.row_at(self.mouse.x, self.mouse.y)).flatten().and_then(|r| menu.action(r));
+            let inside = menu.contains(self.mouse.x, self.mouse.y);
+            self.overlay = Overlay::None;
+            if let Some(a) = action {
+                self.run_ctx(a);
+            }
+            self.window.request_redraw();
+            if inside || button != MouseButton::Right {
+                return;
+            }
+            // A right-click elsewhere opens the menu there (below).
+        } else if !matches!(self.overlay, Overlay::None) {
             self.overlay = Overlay::None;
             self.window.request_redraw();
             return;
@@ -4650,25 +5918,48 @@ impl State {
             self.ai_toggle();
             return;
         }
+        if button == MouseButton::Left
+            && let Some(item) = self.activity.hit(x, y)
+        {
+            self.activity_click(item);
+            return;
+        }
         if button == MouseButton::Left {
             if let Some(area) = self.splitter_at(x, y) {
                 self.resizing = Some(area);
                 return;
             }
-            if let Some(tab) = self.dock_bar.hit(x, y) {
-                self.panel_drag = Some(PanelDrag { panel: tab.panel, from: (x, y), moved: false, target: None });
-                self.activate_panel(tab.panel);
-                return;
+            match self.dock_bar.hit(x, y) {
+                Some(dock::HeaderHit::Tab(tab)) => {
+                    self.panel_drag = Some(PanelDrag { what: Dragged::Panel(tab.panel), from: (x, y), moved: false, targets: Vec::new(), target: None });
+                    self.activate_panel(tab.panel);
+                    return;
+                }
+                Some(dock::HeaderHit::Button(_, panel, button)) => {
+                    self.header_button(panel, button);
+                    return;
+                }
+                None => {}
             }
+        }
+        let inside = |r: Option<Rect>| r.is_some_and(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+        if inside(self.layout.tabs2) || inside(self.layout.editor2) {
+            // The other half: it gets the focus, then the click works as usual.
+            self.focus_other_half();
         }
         let t = self.layout.tabs;
         if y >= t.y && y < t.y + t.h && x >= t.x && x < t.x + t.w {
             if let Some(i) = self.tab_spans.iter().position(|&(a, b)| x >= a && x < b) {
+                let (cx0, cx1) = tab_close_span(self.tab_spans[i], self.ui_font.cell_w);
                 match button {
                     MouseButton::Middle => self.close_tab(i),
+                    MouseButton::Left if x >= cx0 && x < cx1 => self.close_tab(i),
+                    MouseButton::Right => self.open_tab_menu(i, x, y),
                     MouseButton::Left => {
                         self.activate(i);
                         self.focus = Focus::Editor;
+                        // Dragging a tab shows the compass to split the editor.
+                        self.panel_drag = Some(PanelDrag { what: Dragged::Tab(i), from: (x, y), moved: false, targets: Vec::new(), target: None });
                     }
                     _ => {}
                 }
@@ -4732,6 +6023,13 @@ impl State {
         }
         let explorer_shown = self.panel_shown(Panel::Explorer);
         if explorer_shown
+            && button == MouseButton::Right
+            && self.explorer.as_ref().is_some_and(|ex| ex.contains(x, y))
+        {
+            self.open_explorer_menu(x, y);
+            return;
+        }
+        if explorer_shown
             && button == MouseButton::Left
             && let Some(root) = self.explorer.as_ref().and_then(|ex| ex.close_hit(x, y))
         {
@@ -4755,6 +6053,10 @@ impl State {
         {
             self.mouse.minimap_drag = Some((y, start));
             self.focus = Focus::Editor;
+            return;
+        }
+        if button == MouseButton::Right && self.diff.is_none() && self.editor().contains(x, y) && !self.editor().settings_page {
+            self.open_editor_menu(x, y);
             return;
         }
         if button != MouseButton::Left || !self.editor().contains(x, y) {
@@ -4845,6 +6147,17 @@ impl State {
             self.window.request_redraw();
             return;
         }
+        if let (Some(sp), Some(e2)) = (&mut self.split, self.layout.editor2)
+            && x >= e2.x
+            && x < e2.x + e2.w
+            && y >= e2.y
+            && y < e2.y + e2.h
+        {
+            sp.tabs[sp.active].scroll_by(-dy.round() as isize);
+            sp.tabs[sp.active].invalidate();
+            self.window.request_redraw();
+            return;
+        }
         if let Some(d) = &mut self.diff
             && d.contains(x, y) {
                 d.scroll_by(-dy.round() as isize);
@@ -4895,20 +6208,20 @@ impl State {
 
     fn update_tab_bar(&mut self) {
         let cw = self.ui_font.cell_w;
-        let mut x = self.layout.tabs.x;
-        let mut spans: Vec<(String, Rgba)> = Vec::new();
-        self.tab_spans.clear();
-        for (i, t) in self.tabs.iter().enumerate() {
-            let dirty = if t.doc.is_dirty() { " ●" } else { "  " };
-            let label = format!("  {}{dirty} ", t.file_name());
-            let w = label.chars().count() as f32 * cw;
-            self.tab_spans.push((x, x + w));
-            x += w;
-            let color =
-                if i == self.active { self.theme.tab_text_active } else { self.theme.tab_text };
-            spans.push((label, color));
-        }
+        let (spans, tab_spans) = tab_bar_spans(&self.tabs, self.active, self.layout.tabs.x, cw, &self.theme);
+        self.tab_spans = tab_spans;
         let attrs = Attrs::new().family(Family::Name(&self.family));
+        if let (Some(sp), Some(t2)) = (&mut self.split, self.layout.tabs2) {
+            let (labels, spans2) = tab_bar_spans(&sp.tabs, sp.active, t2.x, cw, &self.theme);
+            sp.tab_spans = spans2;
+            sp.tab_bar.set_rich_text(
+                labels.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
+                &attrs,
+                Shaping::Advanced,
+                None,
+            );
+            sp.tab_bar.shape_until_scroll(self.renderer.font_system(), false);
+        }
         self.tab_bar.set_rich_text(
             spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
             &attrs,
@@ -4977,29 +6290,37 @@ impl State {
     }
 
     fn update_popup(&mut self) -> bool {
-        let (title, entries): (String, Vec<(String, String)>) = match &self.overlay {
+        let dark = self.theme.dark;
+        let (title, color, entries): (String, Rgba, Vec<popup::PopupEntry>) = match &self.overlay {
             Overlay::Leader { group, shown: true, .. } => (
                 leader::title(group),
+                chrome::group_color(group, dark),
                 leader::items(group)
                     .iter()
-                    .map(|i| (i.key.to_string(), i.label.to_string()))
+                    .map(|i| popup::PopupEntry {
+                        key: i.key.to_string(),
+                        label: i.label.to_string(),
+                        group: matches!(i.action, leader::Action::Group(_)),
+                    })
                     .collect(),
             ),
             Overlay::Recent(list) => (
                 "Recent projects (pick a digit, Esc = cancel)".into(),
+                self.theme.accent,
                 list.iter()
                     .enumerate()
-                    .map(|(i, p)| ((i + 1).to_string(), p.display().to_string()))
+                    .map(|(i, p)| popup::PopupEntry { key: (i + 1).to_string(), label: p.display().to_string(), group: false })
                     .collect(),
             ),
             _ => return false,
         };
         let fs = self.renderer.font_system();
-        self.popup.set(fs, &self.theme, &self.family, &title, &entries);
+        self.popup.set(fs, &self.family, &title, color, &entries);
         true
     }
 
     fn redraw(&mut self) {
+        self.sync_split_twins();
         if !self.terminal_started && self.panel_shown(Panel::Terminal) {
             self.start_terminal();
         }
@@ -5033,9 +6354,11 @@ impl State {
             | Overlay::Processes(m)
             | Overlay::References(m)
             | Overlay::Themes(m)
-            | Overlay::Update(m) => {
+            | Overlay::Update(m)
+            | Overlay::ConfirmDelete(m, _) => {
                 m.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
+            Overlay::ExplorerPrompt { prompt, .. } => prompt.prepare(self.renderer.font_system(), &self.theme, &self.family),
             Overlay::Watch(prompt) | Overlay::ApiKey(prompt) => {
                 prompt.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
@@ -5054,6 +6377,9 @@ impl State {
                 Some(d) => d.prepare(fs, theme),
                 None if self.tabs[self.active].settings_page => self.settings_page.prepare(fs, theme, &self.settings),
                 None => self.tabs[self.active].prepare(fs, theme),
+            }
+            if let (Some(sp), Some(_)) = (&mut self.split, self.layout.editor2) {
+                sp.tabs[sp.active].prepare(self.renderer.font_system(), theme);
             }
             if let Some(ex) = &mut self.explorer {
                 ex.prepare(self.renderer.font_system(), theme, active_path.as_deref());
@@ -5096,10 +6422,48 @@ impl State {
         let scale = self.renderer.scale_factor();
         let l = self.layout;
         let mut under = Vec::with_capacity(64);
+        if self.zen {
+            let (w, h) = self.renderer.size();
+            under.push(Quad { x: 0.0, y: 0.0, w: w as f32, h: h as f32, color: theme.background });
+        }
         let mut over = Vec::with_capacity(16);
         let mut overlay = Vec::new();
         let mut text: Vec<TextBlock<'_>> = Vec::with_capacity(8);
         let mut overlay_text: Vec<TextBlock<'_>> = Vec::new();
+        let mut cards: Vec<RoundRect> = Vec::new();
+        let mut masks: Vec<RoundRect> = Vec::new();
+        let mut overlay_cards: Vec<RoundRect> = Vec::new();
+        // The cards everything sits on, rounded; the focused one gets a colored edge.
+        if !self.zen {
+            let rad = l.radius;
+            let focus_color = match focused_panel {
+                Some(p) => chrome::panel_color(p, theme.dark),
+                None => theme.accent,
+            };
+            let focused_card = match focused_panel {
+                Some(p) => self.layout_area(self.dock.area_of(p)),
+                None => Some(l.editor_card),
+            };
+            let mut all: Vec<(Rect, Rgba)> = vec![(l.editor_card, theme.background)];
+            if let Some(c) = l.editor2_card {
+                all.push((c, theme.background));
+            }
+            for r in [l.left, l.right, l.bottom].into_iter().flatten() {
+                all.push((r, theme.panel_bg));
+            }
+            for (r, color) in all {
+                cards.push(RoundRect::new(r.x, r.y, r.w, r.h, color, rad));
+                masks.push(RoundRect::corner_mask(r.x, r.y, r.w, r.h, theme.frame, rad));
+                if focused_card == Some(r) {
+                    let edge = (1.5 * scale).max(1.0);
+                    masks.push(RoundRect::outline(r.x, r.y, r.w, r.h, focus_color.with_alpha(0xB0), rad, edge));
+                } else {
+                    masks.push(RoundRect::outline(r.x, r.y, r.w, r.h, theme.divider, rad, scale.round().max(1.0)));
+                }
+            }
+            let shown_panels: Vec<Panel> = Panel::ALL.into_iter().filter(|p| self.panel_shown(*p)).collect();
+            self.activity.draw(theme, scale, &shown_panels, focused_panel, &mut cards, &mut text);
+        }
 
         if shown[1] {
             self.search.draw(theme, self.focus == Focus::Search, &mut under, &mut text);
@@ -5119,40 +6483,87 @@ impl State {
         if let Some(r) = l.right {
             under.push(Quad { x: r.x, y: r.y, w: 1.0, h: r.h, color: theme.divider });
         }
-        self.dock_bar.draw(theme, scale, &strips, focused_panel, &mut under, &mut text);
-        if let Some((area, _)) = self.panel_drag.as_ref().filter(|d| d.moved).and_then(|d| d.target) {
-            let body = Rect { x: 0.0, y: 0.0, w: l.status.w, h: l.status.y };
-            let open = match area {
-                Area::Left => l.left,
-                Area::Right => l.right,
-                Area::Bottom => l.bottom,
-            };
-            let z = dock::drop_zone(area, body, open);
-            overlay.push(Quad { x: z.x, y: z.y, w: z.w, h: z.h, color: theme.accent.with_alpha(0x38) });
-        }
+        self.dock_bar.draw(theme, scale, &strips, focused_panel, &mut under, &mut cards, &mut text);
 
-        // Tab bar.
+        // Tab bar: the active tab lifted, a colored line under it, × on the active and the
+        // hovered tab (● for unsaved changes).
         under.push(Quad { x: l.tabs.x, y: l.tabs.y, w: l.tabs.w, h: l.tabs.h, color: theme.tab_bar });
         let accent_h = (2.0 * scale).round();
+        let tab_clip = [l.tabs.x as i32, l.tabs.y as i32, (l.tabs.x + l.tabs.w) as i32, (l.tabs.y + l.tabs.h) as i32];
+        let cw = self.ui_font.cell_w;
+        let icon_h = (self.ui_font.size * 0.8).round() * 1.3;
         for (i, &(x0, x1)) in self.tab_spans.iter().enumerate() {
+            let hovered = self.tab_hover == Some(i);
             if i == self.active {
                 under.push(Quad { x: x0, y: l.tabs.y, w: x1 - x0, h: l.tabs.h, color: theme.tab_active });
-                under.push(Quad { x: x0, y: l.tabs.y, w: x1 - x0, h: accent_h, color: theme.accent });
+                let line = if focused_panel.is_none() { theme.accent } else { theme.accent.with_alpha(0x70) };
+                cards.push(RoundRect::new(x0 + cw, l.tabs.y + l.tabs.h - accent_h - 1.0, x1 - x0 - 2.0 * cw, accent_h, line, accent_h / 2.0));
+            } else if hovered {
+                under.push(Quad { x: x0, y: l.tabs.y, w: x1 - x0, h: l.tabs.h, color: theme.tab_active.with_alpha(0x80) });
             }
-            under.push(Quad { x: x1, y: l.tabs.y, w: 1.0, h: l.tabs.h, color: theme.divider });
+            under.push(Quad { x: x1, y: l.tabs.y + l.tabs.h * 0.25, w: 1.0, h: l.tabs.h * 0.5, color: theme.divider });
+            let dirty = self.tabs.get(i).is_some_and(|t| t.doc.is_dirty());
+            let (cx0, cx1) = tab_close_span((x0, x1), cw);
+            let over_close = hovered && self.mouse.x >= cx0 && self.mouse.x < cx1;
+            let icon = if dirty && !hovered {
+                Some(&self.tab_icons.1)
+            } else if hovered || i == self.active {
+                Some(&self.tab_icons.0)
+            } else {
+                None
+            };
+            if let Some(icon) = icon {
+                if over_close {
+                    let side = cx1 - cx0;
+                    cards.push(RoundRect::new(cx0, l.tabs.y + (l.tabs.h - side) / 2.0, side, side, theme.tab_text.with_alpha(0x30), (4.0 * scale).round()));
+                }
+                let iw = icon.layout_runs().next().map_or(cw, |r| r.line_w);
+                text.push(TextBlock {
+                    buffer: icon,
+                    x: (cx0 + (cx1 - cx0 - iw) / 2.0).round(),
+                    y: (l.tabs.y + (l.tabs.h - icon_h) / 2.0).round(),
+                    color: if dirty && !hovered { theme.tab_text_active } else { theme.tab_text },
+                    clip: Some(tab_clip),
+                });
+            }
         }
         text.push(TextBlock {
             buffer: &self.tab_bar,
             x: l.tabs.x,
             y: l.tabs.y + (l.tabs.h - self.ui_font.line_h) / 2.0,
             color: theme.tab_text,
-            clip: Some([l.tabs.x as i32, 0, (l.tabs.x + l.tabs.w) as i32, l.tabs.h as i32]),
+            clip: Some(tab_clip),
         });
 
         match &self.diff {
             Some(d) => d.draw(theme, scale, &mut under, &mut over, &mut text),
             None if self.tabs[self.active].settings_page => self.settings_page.draw(theme, &mut under, &mut text),
             None => self.tabs[self.active].draw(theme, scale, &mut under, &mut over, &mut text),
+        }
+        if let (Some(sp), Some(t2), Some(e2)) = (&self.split, l.tabs2, l.editor2) {
+            under.push(Quad { x: t2.x, y: t2.y, w: t2.w, h: t2.h, color: theme.tab_bar });
+            for (i, &(x0, x1)) in sp.tab_spans.iter().enumerate() {
+                if i == sp.active {
+                    under.push(Quad { x: x0, y: t2.y, w: x1 - x0, h: t2.h, color: theme.tab_active });
+                }
+                under.push(Quad { x: x1, y: t2.y, w: 1.0, h: t2.h, color: theme.divider });
+            }
+            text.push(TextBlock {
+                buffer: &sp.tab_bar,
+                x: t2.x,
+                y: t2.y + (t2.h - self.ui_font.line_h) / 2.0,
+                color: theme.tab_text,
+                clip: Some([t2.x as i32, t2.y as i32, (t2.x + t2.w) as i32, (t2.y + t2.h) as i32]),
+            });
+            sp.tabs[sp.active].draw(theme, scale, &mut under, &mut over, &mut text);
+            // The line between the halves.
+            let e1 = l.editor;
+            let (dx, dy, dw, dh) = if sp.vertical {
+                (e1.x.max(e2.x) - 1.0, t2.y.min(l.tabs.y), 1.0, e2.h + t2.h)
+            } else {
+                (e2.x, e1.y.max(e2.y) - l.tabs.h - 1.0, e2.w, 1.0)
+            };
+            under.push(Quad { x: dx, y: dy, w: dw, h: dh, color: theme.divider });
         }
         if let Some(p) = &self.preview {
             p.draw(theme, scale, &mut under, &mut text);
@@ -5181,17 +6592,18 @@ impl State {
             x: s.w - right_w - pad,
             y: text_y,
             color: theme.status_text,
-            clip: None,
+            clip: Some([0, s.y as i32, s.w as i32, (s.y + s.h) as i32]),
         });
         // The AI switch, left of the right-hand status text (click toggles).
         let ai_w = self.status_ai.layout_runs().next().map_or(0.0, |r| r.line_w);
         let ai_x = s.w - right_w - 3.0 * pad - ai_w;
         self.status_ai_span = (ai_x - pad * 0.5, ai_x + ai_w + pad * 0.5);
         let ai_color = if self.ai.enabled && self.ai.has_key() { theme.status_accent } else { theme.status_text };
-        text.push(TextBlock { buffer: &self.status_ai, x: ai_x, y: text_y, color: ai_color, clip: None });
+        let status_clip = Some([0, s.y as i32, s.w as i32, (s.y + s.h) as i32]);
+        text.push(TextBlock { buffer: &self.status_ai, x: ai_x, y: text_y, color: ai_color, clip: status_clip });
 
         if popup_visible {
-            self.popup.draw(theme, self.ui_font, s.w, s.y, &mut overlay, &mut overlay_text);
+            self.popup.draw(theme, scale, s.w, s.y, &mut overlay_cards, &mut overlay, &mut overlay_text);
         }
         let window = (s.w, s.y + s.h);
         if self.find.open {
@@ -5222,9 +6634,14 @@ impl State {
                 | Overlay::Processes(m)
                 | Overlay::References(m)
                 | Overlay::Themes(m)
-                | Overlay::Update(m) => {
+                | Overlay::Update(m)
+                | Overlay::ConfirmDelete(m, _) => {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
+                }
+                Overlay::ExplorerPrompt { prompt, .. } => {
+                    let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
+                    prompt.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }
                 Overlay::NewBranch(prompt) | Overlay::Watch(prompt) | Overlay::ApiKey(prompt) => {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
@@ -5233,16 +6650,30 @@ impl State {
                 _ => {}
             }
         }
+        if let Overlay::Context(menu) = &self.overlay {
+            menu.draw(theme, scale, &mut overlay_cards, &mut overlay, &mut overlay_text);
+        }
+        // The docking compass while a panel or tab is dragged.
+        if let Some(d) = self.panel_drag.as_ref().filter(|d| d.moved) {
+            let color = match d.what {
+                Dragged::Panel(p) => chrome::panel_color(p, theme.dark),
+                Dragged::Tab(_) => theme.accent,
+            };
+            compass::draw(&d.targets, d.target, color, theme, scale, &mut overlay_cards);
+        }
         if matches!(self.overlay, Overlay::Palette) {
             let top = l.tabs.y + l.tabs.h * 0.5;
             self.palette.draw(theme, self.ui_font, s.w, top, scale, &mut overlay, &mut overlay_text);
         }
 
         let scene = Scene {
-            background: theme.background,
+            background: if self.zen { theme.background } else { theme.frame },
+            cards: &cards,
             under: &under,
             text: &text,
             over: &over,
+            masks: &masks,
+            overlay_cards: &overlay_cards,
             overlay: &overlay,
             overlay_text: &overlay_text,
         };
@@ -5257,5 +6688,42 @@ impl State {
             log::debug!("frame skipped, retrying");
             self.window.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_command_has_its_own_keymap_name() {
+        let mut seen = std::collections::HashMap::new();
+        for (title, _, _) in palette::commands() {
+            let id = custom_keys::command_id(title);
+            assert!(!id.is_empty(), "{title}");
+            if let Some(other) = seen.insert(id.clone(), title) {
+                panic!("“{title}” and “{other}” both become {id}");
+            }
+        }
+    }
+
+    #[test]
+    fn file_names_are_checked_like_windows_does() {
+        assert!(valid_file_name("Program.cs").is_ok());
+        assert!(valid_file_name("a/b").is_err());
+        assert!(valid_file_name("what?").is_err());
+        assert!(valid_file_name("con.txt").is_err());
+        assert!(valid_file_name("name.").is_err());
+        assert!(valid_file_name("").is_err());
+    }
+
+    #[test]
+    fn the_using_block_is_found_at_the_top() {
+        let rope = wyven_buffer::Rope::from_str("// header\nusing System.Text;\n\nusing System;\nnamespace A;\nusing (var x = y) { }\n");
+        let (start, end) = csharp_usings(&rope).unwrap();
+        assert_eq!(rope.slice(start..end).to_string(), "using System.Text;\n\nusing System;\n");
+        assert_eq!(csharp_usings(&wyven_buffer::Rope::from_str("class A {}\n")), None);
+        let only = wyven_buffer::Rope::from_str("global using System;");
+        assert_eq!(csharp_usings(&only), Some((0, only.len_chars())));
     }
 }

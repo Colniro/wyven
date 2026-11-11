@@ -8,6 +8,8 @@ pub enum Action {
     ToggleExplorer,
     FocusExplorer,
     OpenFolder,
+    /// Rename / delete / create in the explorer (or the active file).
+    ExplorerOp(crate::ExplorerOp),
     /// Another folder in the same window.
     AddFolder,
     /// A VS Code `.code-workspace` file.
@@ -22,8 +24,6 @@ pub enum Action {
     Palette(&'static str),
     /// Runs an editor command (rename, format, …).
     Run(crate::keymap::Command),
-    /// Known, but built in a later phase.
-    Later(&'static str),
     /// The settings page (a tab).
     OpenSettings,
     /// Loads the plugins folder again.
@@ -32,6 +32,8 @@ pub enum Action {
     CheckUpdates,
     ShowPlugins,
     OpenPluginsFolder,
+    /// keymap.toml: your own shortcuts.
+    OpenKeymap,
     /// settings.toml itself.
     OpenSettingsFile,
     CheatSheet,
@@ -45,10 +47,17 @@ pub enum Action {
     /// Minimap: blocks → bar → off.
     CycleMinimap,
     ToggleStickyScroll,
+    /// Only the text, fullscreen.
+    ToggleZen,
+    ToggleWordWrap,
     ToggleInlayHints,
     ToggleCodeLens,
     /// Panels back to their first places and sizes.
     ResetLayout,
+    /// Two editors side by side (`vertical`) or stacked.
+    Split { vertical: bool },
+    FocusOtherHalf,
+    CloseSplit,
     /// Alt → m: live preview of a Markdown file next to it.
     MarkdownPreview,
     AiToggle,
@@ -108,7 +117,10 @@ const FILE: &[Item] = &[
     item('o', "open file", OpenFile),
     item('s', "save as", SaveAs),
     item('c', "close all", CloseAll),
-    item('r', "rename", Later("Renaming in the explorer comes in phase 2")),
+    item('r', "rename file …", ExplorerOp(crate::ExplorerOp::Rename)),
+    item('d', "delete file", ExplorerOp(crate::ExplorerOp::Delete)),
+    item('f', "new file in explorer folder …", ExplorerOp(crate::ExplorerOp::NewFile)),
+    item('k', "new folder …", ExplorerOp(crate::ExplorerOp::NewFolder)),
 ];
 
 const PROJECT: &[Item] = &[
@@ -141,7 +153,7 @@ const DEBUG: &[Item] = &[
 
 const JUMP: &[Item] = &[
     item('d', "definition", Run(Command::GotoDefinition)),
-    item('i', "implementation", Later("Comes with the C# language server")),
+    item('i', "implementation", Run(Command::GotoImplementation)),
     item('r', "references", Run(Command::FindReferences)),
     item('s', "symbol in file", Palette("@")),
     item('l', "line", Palette(":")),
@@ -152,14 +164,15 @@ const CODE: &[Item] = &[
     item('r', "rename", Run(Command::Rename)),
     item('f', "format", Run(Command::Format)),
     item('a', "quick actions", Run(Command::QuickActions)),
-    item('o', "organize usings", Later("Organize usings comes in phase 3")),
+    item('o', "organize usings / imports", Run(Command::OrganizeUsings)),
     item('e', "next error", Run(Command::NextProblem)),
 ];
 
 const WINDOW: &[Item] = &[
-    item('v', "split vertically", Later("Split views come in phase 2")),
-    item('h', "split horizontally", Later("Split views come in phase 2")),
-    item('c', "close split", Later("Split views come in phase 2")),
+    item('v', "split right", Split { vertical: true }),
+    item('h', "split down", Split { vertical: false }),
+    item('o', "other half (or ←↑→↓)", FocusOtherHalf),
+    item('c', "close split", CloseSplit),
     item('r', "reset panel layout", ResetLayout),
 ];
 
@@ -168,8 +181,8 @@ const VIEW: &[Item] = &[
     item('s', "sticky scroll on/off", ToggleStickyScroll),
     item('i', "inlay hints on/off", ToggleInlayHints),
     item('l', "code lens on/off", ToggleCodeLens),
-    item('w', "word wrap", Later("Word wrap comes in phase 2")),
-    item('z', "zen mode", Later("Zen mode comes in phase 4")),
+    item('w', "word wrap on/off", ToggleWordWrap),
+    item('z', "zen mode", ToggleZen),
     item('t', "toggle light/dark theme", ToggleTheme),
     item('c', "color theme …", ChooseTheme),
     item('f', "fold / unfold at cursor", Run(Command::Fold(FoldCmd::Toggle))),

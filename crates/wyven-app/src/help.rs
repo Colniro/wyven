@@ -79,16 +79,10 @@ pub fn cheat_sheet() -> String {
         match &root.action {
             Action::Group(g) => {
                 for sub in leader::items(g) {
-                    let later = matches!(sub.action, Action::Later(_));
-                    let label = if later { format!("{} (coming later)", sub.label) } else { sub.label.to_string() };
-                    rows.push((format!("Alt → {} → {}", root.key, sub.key), label));
+                    rows.push((format!("Alt → {} → {}", root.key, sub.key), sub.label.to_string()));
                 }
             }
-            action => {
-                let later = matches!(action, Action::Later(_));
-                let label = if later { format!("{} (coming later)", root.label) } else { root.label.to_string() };
-                rows.push((format!("Alt → {}", root.key), label));
-            }
+            _ => rows.push((format!("Alt → {}", root.key), root.label.to_string())),
         }
     }
     table(&mut out, &rows);

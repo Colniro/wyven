@@ -429,6 +429,9 @@ fn build(label: &str, raw: &Raw) -> Theme {
         diff_added: c("diffEditor.insertedTextBackground").or(c("diffEditor.insertedLineBackground")).unwrap_or(base.diff_added),
         diff_filler: base.diff_filler,
         debug_line: c("editor.stackFrameHighlightBackground").unwrap_or(base.debug_line),
+        frame: on(&["activityBar.background", "titleBar.activeBackground"], bg)
+            .filter(|f| *f != bg)
+            .unwrap_or_else(|| if dark { mix(bg, Rgba::rgb(0, 0, 0), 0.35) } else { mix(bg, Rgba::rgb(0x80, 0x80, 0x80), 0.15) }),
         ansi: (ansi.len() == 16).then(|| std::array::from_fn(|i| ansi[i])),
         syntax,
     }

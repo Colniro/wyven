@@ -32,6 +32,19 @@ Benutzerhandbuch (englisch): [docs/guide.md](docs/guide.md), Plugins: [docs/plug
   - `Enter` / `F3` nächster Treffer, `Shift+Enter` / `Shift+F3` vorheriger, `Tab` wechselt zwischen Suchen und Ersetzen, `Esc` schließt.
   - `Alt+C` Groß/Klein, `Alt+W` ganzes Wort, `Alt+E` regulärer Ausdruck (Ersetzen mit `$1`, `$2` …), `Alt+R` ersetzt den Treffer, `Alt+A` alle (ein Rückgängig-Schritt).
   - Alle Treffer sind im Editor hinterlegt, der aktuelle kräftiger.
+- **Oberfläche im Stil von Visual Studio 2026**: Explorer, Editor, Terminal usw. liegen als abgerundete Karten mit kleinem Abstand auf einem etwas dunkleren Rahmen; das Fenster mit dem Fokus hat einen farbigen Rand.
+  - **Aktivitätsleiste** ganz links mit farbigen Symbolen (Explorer blau, Suche orange, Git rot, Debug grün, Terminal lila, unten die Einstellungen). Ein Klick öffnet das Panel daneben, ein zweiter Klick schließt es; beim Darüberfahren zeigt ein Hinweis das Tastenkürzel.
+  - **Panel-Köpfe** mit Knöpfen: im Explorer neue Datei, neuer Ordner, Aktualisieren, alles zuklappen; rechts und unten ein × zum Schließen.
+  - **Tabs** mit farbigem Dateityp (C#, MD, {} …), × zum Schließen auf dem aktiven Tab und beim Darüberfahren (● bei ungespeicherten Änderungen), mittlere Maustaste schließt ebenfalls.
+  - **Rechtsklick-Menüs**: im Explorer (neue Datei/neuer Ordner, Umbenennen, Löschen, Pfad kopieren, im Datei-Explorer zeigen, Terminal hier öffnen, Ordner aus dem Workspace nehmen), auf Tabs (Schließen, andere/rechts davon/alle schließen, Pfad kopieren, teilen) und im Text (Definition, Implementierung, Referenzen, Umbenennen, Quick Actions, Formatieren, Ausschneiden/Kopieren/Einfügen).
+  - **Andocken wie in Visual Studio**: Beim Ziehen eines Panel-Kopfs erscheint ein Kompass mit Zielen in der Mitte des Bereichs unter der Maus und an den Fensterrändern; das Ziel unter der Maus zeigt schattiert, wo das Panel landet (links, rechts, unten oder als Tab dort). Ein gezogener Editor-Tab teilt den Editor nach links, rechts, oben oder unten. `Strg` beim Ziehen: nicht andocken.
+  - **Tastenmenü** (nach `Alt`, unten rechts): eine Karte mit farbigem Titel je Gruppe, Tasten als kleine Tastenkappen, Untermenüs (›) oben, Befehle darunter, bei langen Listen in zwei Spalten.
+- **Geteilte Ansicht**: `Alt → w → v` teilt den Editor nebeneinander, `Alt → w → h` untereinander. Jede Hälfte hat eigene Tabs; dieselbe Datei kann in beiden offen sein, Änderungen erscheinen sofort in der anderen Hälfte. `Alt → w → o` oder `Alt → w → ←↑→↓` wechselt die Hälfte (oder ein Klick hinein), `Alt → w → c` schließt die Teilung.
+- **Zeilenumbruch** (`Alt → v → w`, gespeichert in `settings.toml`): lange Zeilen gehen an Wortgrenzen in der nächsten Zeile weiter, eingerückt wie die Zeile selbst.
+- **Zen-Modus** (`Alt → v → z`): Vollbild, nur noch der Text in einer Spalte in der Mitte; `Alt → v → z` oder zweimal `Esc` beendet ihn.
+- **Dateien im Explorer**: `F2` umbenennen (offene Tabs folgen), `Entf` in den Papierkorb (mit Rückfrage), `Strg+N` / `Strg+Shift+N` neue Datei / neuer Ordner im gewählten Ordner. Auch über `Alt → f → r/d/f/k`.
+- **Gehe zu Implementierung** (`Strg+F12`, `Alt → j → i`) und **Usings ordnen** (`Alt → c → o`: unnötige `using`s entfernen und sortieren; bei TypeScript „Organize Imports“).
+- **Eigene Tastenkürzel** in `%APPDATA%\Wyven\keymap.toml` (siehe [SHORTCUTS.md](SHORTCUTS.md)).
 - **Mehrere Ordner in einem Fenster** (Multi-Root):
   - `Alt → p → a` fügt einen Ordner hinzu. Im Explorer hat dann jeder Ordner eine eigene Zeile; das `×` dahinter nimmt ihn wieder heraus.
   - Dateisuche (`Ctrl+Q`) und Projektsuche durchsuchen alle Ordner; Dateien weiterer Ordner beginnen mit deren Namen (`lib/src/x.rs`).

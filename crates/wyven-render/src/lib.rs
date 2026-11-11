@@ -9,7 +9,8 @@ use std::sync::Arc;
 mod quad;
 
 pub use glyphon::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, Style, Weight, Wrap};
-pub use quad::{Quad, Rgba};
+pub use quad::{Quad, Rgba, RoundRect};
+use quad::Layer;
 use quad::QuadPipeline;
 use glyphon::{
     Cache, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -30,11 +31,17 @@ pub struct TextBlock<'a> {
 /// Everything to draw in one frame, back to front.
 pub struct Scene<'a> {
     pub background: Rgba,
+    /// Rounded boxes behind everything (the cards panels and editors sit on).
+    pub cards: &'a [RoundRect],
     /// Rectangles behind the text (panels, selection, current line).
     pub under: &'a [Quad],
     pub text: &'a [TextBlock<'a>],
     /// Rectangles in front of the text (cursors).
     pub over: &'a [Quad],
+    /// Rounded shapes in front of the text: corner masks and outlines of the cards.
+    pub masks: &'a [RoundRect],
+    /// Rounded boxes and shadows of floating popups, below `overlay`.
+    pub overlay_cards: &'a [RoundRect],
     /// Floating boxes (menus, popups): drawn last, above everything else.
     pub overlay: &'a [Quad],
     pub overlay_text: &'a [TextBlock<'a>],
@@ -270,7 +277,14 @@ impl Renderer {
             &self.device,
             &self.queue,
             (width, height),
-            &[scene.under, scene.over, scene.overlay],
+            &[
+                Layer::Rounds(scene.cards),
+                Layer::Quads(scene.under),
+                Layer::Quads(scene.over),
+                Layer::Rounds(scene.masks),
+                Layer::Rounds(scene.overlay_cards),
+                Layer::Quads(scene.overlay),
+            ],
         );
         fn to_area<'a>(b: &TextBlock<'a>, width: u32, height: u32) -> TextArea<'a> {
             let [left, top, right, bottom] =
@@ -347,14 +361,17 @@ impl Renderer {
                 multiview_mask: None,
             });
             self.quads.render(&mut pass, ranges[0].clone());
+            self.quads.render(&mut pass, ranges[1].clone());
             if let Err(e) = self
                 .text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)
             {
                 log::error!("text render failed: {e}");
             }
-            self.quads.render(&mut pass, ranges[1].clone());
             self.quads.render(&mut pass, ranges[2].clone());
+            self.quads.render(&mut pass, ranges[3].clone());
+            self.quads.render(&mut pass, ranges[4].clone());
+            self.quads.render(&mut pass, ranges[5].clone());
             if let Err(e) = self
                 .overlay_text_renderer
                 .render(&self.atlas, &self.viewport, &mut pass)

@@ -68,6 +68,10 @@ pub enum Event {
     CodeLens { path: PathBuf, version: u64, lenses: Vec<(Value, String)> },
     /// "Find all references": file and start position of each.
     References(Vec<(PathBuf, Value)>),
+    /// "Go to implementation": file and start position of each.
+    Implementations(Vec<(PathBuf, Value)>),
+    /// Code actions offered for organizing usings/imports (raw).
+    OrganizeActions(Vec<Value>),
     Status,
     Message(String),
 }
@@ -86,6 +90,24 @@ enum Pending {
     CodeLens { path: PathBuf, version: u64 },
     LensResolve { path: PathBuf, version: u64, start: Value },
     References,
+    Implementation,
+    Organize,
+}
+
+/// Locations from a `Location[]` or `LocationLink[]` answer: file and start position.
+fn locations(value: &Value) -> Vec<(PathBuf, Value)> {
+    let list = match value {
+        Value::Array(a) => a.clone(),
+        Value::Null => Vec::new(),
+        v => vec![v.clone()],
+    };
+    list.iter()
+        .filter_map(|loc| {
+            let uri = loc["uri"].as_str().or(loc["targetUri"].as_str())?;
+            let range = if loc["range"].is_object() { &loc["range"] } else { &loc["targetSelectionRange"] };
+            Some((uri_to_path(uri)?, range["start"].clone()))
+        })
+        .collect()
 }
 
 struct OpenDoc {
@@ -651,6 +673,26 @@ impl LanguageServer {
         self.pending.insert(id, Pending::References);
     }
 
+    /// "Go to implementation" at a char position.
+    pub fn implementation(&mut self, path: &Path, rope: &Rope, pos: usize) {
+        let id = self.client.request("textDocument/implementation", Self::position_params(path, rope, pos));
+        self.pending.insert(id, Pending::Implementation);
+    }
+
+    /// Code actions for organizing usings/imports in `start..end` (Roslyn offers them on the
+    /// using lines, TypeScript as `source.organizeImports`).
+    pub fn organize_actions(&mut self, path: &Path, rope: &Rope, start: usize, end: usize) {
+        let id = self.client.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "range": { "start": to_lsp(rope, start), "end": to_lsp(rope, end) },
+                "context": { "diagnostics": [], "only": ["source.organizeImports", "source", "quickfix", "refactor"], "triggerKind": 1 }
+            }),
+        );
+        self.pending.insert(id, Pending::Organize);
+    }
+
     /// Asks again for hints and lenses of all open files (after switching them on).
     pub fn refresh_extras(&mut self) {
         let now = Instant::now();
@@ -938,6 +980,14 @@ impl LanguageServer {
             Pending::LensResolve { path, version, start } => {
                 let title = value["command"]["title"].as_str().map(|t| (start, t.to_string()));
                 self.lens_done(path, version, title, events);
+            }
+            Pending::Implementation => events.push(Event::Implementations(locations(&value))),
+            Pending::Organize => {
+                let actions = value
+                    .as_array()
+                    .map(|a| a.iter().filter(|x| x.get("edit").is_some() || x.get("data").is_some()).cloned().collect())
+                    .unwrap_or_default();
+                events.push(Event::OrganizeActions(actions));
             }
             Pending::References => {
                 let refs = value
