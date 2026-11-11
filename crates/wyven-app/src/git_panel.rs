@@ -80,6 +80,8 @@ pub struct GitPanel {
     top: Buffer,
     list: Buffer,
     list_y: f32,
+    /// Shaped lines of the list after wrapping: (logical line = row - scroll, top).
+    list_runs: Vec<(usize, f32)>,
     /// Shaped labels: branch, sync, commit button, changes heading, icons (open, discard).
     branch_buf: Buffer,
     sync_buf: Buffer,
@@ -114,6 +116,7 @@ impl GitPanel {
         let icon_discard = crate::chrome::label(fs, &crate::chrome::ICON_UNDO.to_string(), &icons, isz, isz * 1.2);
         let (branch_buf, sync_buf, commit_buf, heading_buf) = (mk(fs), mk(fs), mk(fs), mk(fs));
         Self {
+            list_runs: Vec::new(),
             branch_buf,
             sync_buf,
             commit_buf,
@@ -272,7 +275,9 @@ impl GitPanel {
             return Some(GitHover::Commit);
         }
         if y >= self.list_y {
-            let i = self.scroll + ((y - self.list_y) / self.font.line_h) as usize;
+            let lh = self.font.line_h;
+            let &(line, _) = self.list_runs.iter().find(|(_, t)| y >= self.list_y + t && y < self.list_y + t + lh)?;
+            let i = self.scroll + line;
             if i < self.change_count() {
                 let right = self.area.x + self.area.w;
                 let b = self.font.line_h;
@@ -411,6 +416,12 @@ impl GitPanel {
             b.set_rich_text(spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))), &attrs, Shaping::Advanced, None);
             b.shape_until_scroll(fs, false);
         };
+        let width = (self.area.w - 2.0 * self.font.cell_w).max(self.font.cell_w * 4.0);
+        // Text continues on the next line instead of being cut off.
+        self.top.set_wrap(if self.repo.is_none() { Wrap::WordOrGlyph } else { Wrap::None });
+        self.top.set_size(if self.repo.is_none() { Some(width) } else { None }, None);
+        self.list.set_wrap(Wrap::WordOrGlyph);
+        self.list.set_size(Some(width), None);
         match (&self.repo, &self.status) {
             (None, _) => {
                 let top = [
@@ -427,8 +438,10 @@ impl GitPanel {
                 };
                 set(&mut self.branch_buf, fs, &[(format!("⎇ {branch}  ˅"), theme.accent)]);
                 set(&mut self.sync_buf, fs, &[(format!("⟳ {}", if sync.is_empty() { "Sync".into() } else { sync }), theme.panel_text)]);
+                // Shorter texts when the panel is narrow.
+                let cells = ((self.area.w - 2.0 * self.font.cell_w) / self.font.cell_w) as usize;
                 let (msg, color) = if self.message.is_empty() {
-                    ("Message (Ctrl+Enter commits)".to_string(), theme.panel_dim)
+                    (if cells >= 30 { "Message (Ctrl+Enter commits)" } else { "Message" }.to_string(), theme.panel_dim)
                 } else {
                     (self.message.clone(), if focused { theme.tab_text_active } else { theme.panel_text })
                 };
@@ -437,7 +450,8 @@ impl GitPanel {
                 let label = match &self.busy {
                     Some(b) => b.clone(),
                     None if n == 0 => "Nothing to commit".into(),
-                    None => format!("✓ Commit {n} change{}", if n == 1 { "" } else { "s" }),
+                    None if cells >= 20 => format!("✓ Commit {n} change{}", if n == 1 { "" } else { "s" }),
+                    None => format!("✓ Commit ({n})"),
                 };
                 set(&mut self.commit_buf, fs, &[(label, theme.panel_text)]);
                 set(&mut self.heading_buf, fs, &[(format!("CHANGES  {n}"), theme.panel_dim)]);
@@ -463,6 +477,7 @@ impl GitPanel {
             }
         }
         set(&mut self.list, fs, &spans);
+        self.list_runs = self.list.layout_runs().map(|r| (r.line_i, r.line_top)).collect();
     }
 
     pub fn draw<'a>(&'a mut self, theme: &Theme, focused: bool, under: &mut Vec<Quad>, text: &mut Vec<TextBlock<'a>>) {
@@ -485,9 +500,17 @@ impl GitPanel {
         };
         // Branch (opens the branch list) and sync, side by side.
         let row_h = (lh * 1.3).round();
-        let sync_w = (width(&self.sync_buf) + pad * 1.6).min(w * 0.45);
-        self.sync_rect = Rect { x: x0 + w - sync_w, y: top_y, w: sync_w, h: row_h };
-        self.branch_rect = Rect { x: x0, y: top_y, w: (w - sync_w - pad * 0.5).max(0.0), h: row_h };
+        let sync_w = width(&self.sync_buf) + pad * 1.6;
+        let branch_w = width(&self.branch_buf) + pad * 1.2;
+        // Too narrow for both side by side: sync goes below the branch.
+        let stacked = branch_w + sync_w + pad * 0.5 > w;
+        if stacked {
+            self.branch_rect = Rect { x: x0, y: top_y, w, h: row_h };
+            self.sync_rect = Rect { x: x0, y: top_y + row_h + pad * 0.4, w, h: row_h };
+        } else {
+            self.sync_rect = Rect { x: x0 + w - sync_w, y: top_y, w: sync_w, h: row_h };
+            self.branch_rect = Rect { x: x0, y: top_y, w: (w - sync_w - pad * 0.5).max(0.0), h: row_h };
+        }
         let soft = theme.panel_text.with_alpha(0x14);
         btn(self.branch_rect, hover == Some(GitHover::Branch), soft, under);
         btn(self.sync_rect, hover == Some(GitHover::Sync), soft, under);
@@ -503,7 +526,7 @@ impl GitPanel {
         let r = self.sync_rect;
         text.push(TextBlock { buffer: &self.sync_buf, x: r.x + pad * 0.8, y: ty(r), color: theme.panel_text, clip: Some([r.x as i32, r.y as i32, (r.x + r.w) as i32, (r.y + r.h) as i32]) });
         // The message field (a box; with the focus a colored edge and the cursor).
-        let fy = top_y + row_h + lh * 0.5;
+        let fy = self.sync_rect.y + row_h + lh * 0.5;
         self.field_rect = Rect { x: x0, y: fy, w, h: row_h };
         let edge = if focused { theme.accent } else { theme.divider };
         under.push(Quad { x: x0, y: fy, w, h: row_h, color: edge });
@@ -534,18 +557,26 @@ impl GitPanel {
         text.push(TextBlock { buffer: &self.heading_buf, x: x0, y: hy, color: theme.panel_dim, clip });
         self.list_y = hy + lh * 1.2;
         let vis = self.visible_rows();
+        // The lines of a row (a long path wraps onto a second line).
+        let lines_of = |row: usize| -> Vec<f32> {
+            row.checked_sub(self.scroll).map_or(Vec::new(), |l| self.list_runs.iter().filter(|(i, _)| *i == l).map(|(_, t)| self.list_y + t).collect())
+        };
         if self.change_count() > 0 && self.selected >= self.scroll && self.selected < self.scroll + vis {
-            let y = self.list_y + (self.selected - self.scroll) as f32 * lh;
             let color = if focused { theme.row_selected_unfocused } else { theme.panel_bg };
-            under.push(Quad { x: a.x, y, w: a.w, h: lh, color });
+            for y in lines_of(self.selected) {
+                under.push(Quad { x: a.x, y, w: a.w, h: lh, color });
+            }
         }
         let mut list_clip = [a.x as i32, a.y as i32, (a.x + a.w) as i32, (a.y + a.h) as i32];
         if let Some(GitHover::Row(i, b)) = hover
             && i >= self.scroll
             && i < self.scroll + vis
         {
-            let y = self.list_y + (i - self.scroll) as f32 * lh;
-            under.push(Quad { x: a.x, y, w: a.w, h: lh, color: theme.panel_text.with_alpha(0x12) });
+            let ys = lines_of(i);
+            for &y in &ys {
+                under.push(Quad { x: a.x, y, w: a.w, h: lh, color: theme.panel_text.with_alpha(0x12) });
+            }
+            let y = ys.first().copied().unwrap_or(self.list_y);
             // Open file and discard, at the right end of the row.
             let size = (self.font.size * 0.95).round();
             for (k, icon) in [(1u8, &self.icon_open), (2u8, &self.icon_discard)] {

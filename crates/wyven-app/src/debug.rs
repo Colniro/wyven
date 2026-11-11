@@ -207,14 +207,21 @@ pub struct Debugger {
     selected: usize,
     scroll: usize,
     list_y: f32,
+    /// Shaped lines after wrapping: (logical line, top) – a long row takes several.
+    runs: Vec<(usize, f32)>,
 }
+
+/// Logical lines above the rows (status and key help).
+const HEADER_LINES: usize = 3;
 
 impl Debugger {
     pub fn new(fs: &mut FontSystem, font: FontMetrics, family: String) -> Self {
         let mut buffer = Buffer::new(fs, Metrics::new(font.size, font.line_h));
-        buffer.set_wrap(Wrap::None);
+        // Long lines continue below instead of being cut off at the panel edge.
+        buffer.set_wrap(Wrap::WordOrGlyph);
         let (tx, rx) = mpsc::channel();
         Self {
+            runs: Vec::new(),
             phase: Phase::Idle,
             client: None,
             child: None,
@@ -794,11 +801,16 @@ impl Debugger {
         }
     }
 
+    /// The row whose (possibly wrapped) text is at `y`.
+    fn row_at(&self, y: f32) -> Option<usize> {
+        let top = self.area.y + self.font.line_h * 0.2;
+        let lh = self.font.line_h;
+        let (line, _) = self.runs.iter().find(|(_, t)| y >= top + t && y < top + t + lh)?;
+        line.checked_sub(HEADER_LINES).map(|l| self.scroll + l)
+    }
+
     pub fn click(&mut self, y: f32) -> PanelAction {
-        if y < self.list_y {
-            return PanelAction::None;
-        }
-        let row = self.scroll + ((y - self.list_y) / self.font.line_h) as usize;
+        let Some(row) = self.row_at(y) else { return PanelAction::None };
         if matches!(self.rows.get(row), None | Some(Row::Header(_)) | Some(Row::Info(_))) {
             return PanelAction::None;
         }
@@ -819,7 +831,7 @@ impl Debugger {
             (format!("{}\n", self.status_text()), status_color),
             ("F5 start/continue · F10 over · F11 into\nShift+F11 out · Shift+F5 stop · F9 breakpoint\n".into(), theme.panel_dim),
         ];
-        let header_lines = 3;
+        let header_lines = HEADER_LINES;
         let vis = self.visible_rows();
         for (i, row) in self.rows.iter().enumerate().skip(self.scroll).take(vis) {
             let (text, color) = match row {
@@ -851,6 +863,8 @@ impl Debugger {
             let color = if i == self.selected && focused { theme.tab_text_active } else { color };
             spans.push((format!("{text}\n"), color));
         }
+        let width = (self.area.w - 2.0 * self.font.cell_w).max(self.font.cell_w * 4.0);
+        self.buffer.set_size(Some(width), None);
         self.buffer.set_rich_text(
             spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))),
             &attrs,
@@ -858,18 +872,23 @@ impl Debugger {
             None,
         );
         self.buffer.shape_until_scroll(fs, false);
+        self.runs = self.buffer.layout_runs().map(|r| (r.line_i, r.line_top)).collect();
         let top_y = self.area.y + self.font.line_h * 0.2;
-        self.list_y = top_y + header_lines as f32 * self.font.line_h;
+        let first = self.runs.iter().find(|(l, _)| *l >= header_lines).map_or(header_lines as f32 * self.font.line_h, |r| r.1);
+        self.list_y = top_y + first;
     }
 
     pub fn draw<'a>(&'a self, theme: &Theme, focused: bool, under: &mut Vec<Quad>, text: &mut Vec<TextBlock<'a>>) {
         let a = self.area;
         let lh = self.font.line_h;
         under.push(Quad { x: a.x, y: a.y, w: a.w, h: a.h, color: theme.panel_bg });
-        if self.selected >= self.scroll && self.selected < self.scroll + self.visible_rows() {
-            let y = self.list_y + (self.selected - self.scroll) as f32 * lh;
+        if self.selected >= self.scroll {
+            // Every shaped line of the selected row (it may wrap).
+            let line = self.selected - self.scroll + HEADER_LINES;
             let color = if focused { theme.row_selected } else { theme.row_selected_unfocused };
-            under.push(Quad { x: a.x, y, w: a.w, h: lh, color });
+            for &(_, t) in self.runs.iter().filter(|(l, _)| *l == line) {
+                under.push(Quad { x: a.x, y: a.y + lh * 0.2 + t, w: a.w, h: lh, color });
+            }
         }
         let clip = Some([a.x as i32, a.y as i32, (a.x + a.w) as i32, (a.y + a.h) as i32]);
         text.push(TextBlock {

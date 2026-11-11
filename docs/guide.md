@@ -92,7 +92,7 @@ into `%APPDATA%\Wyven\snippets\` in VS Code's format ("Preferences: Configure Us
 
 **Word wrap** (`Alt v w`) continues long lines in the next row at word boundaries, indented like
 the line. **Zen mode** (`Alt v z`) shows only the text, fullscreen; `Esc` twice leaves it.
-**Split** the editor with `Alt w v` (side by side) or `Alt w h` (stacked): each half has its own
+With a split, **drag a tab onto the other half** to move it there. **Split** the editor with `Alt w v` (side by side) or `Alt w h` (stacked): each half has its own
 tabs, the same file can be open in both, `Alt w o` switches halves and `Alt w c` closes the split.
 
 Files are saved safely (written to a temporary file first) and keep their line endings. Files

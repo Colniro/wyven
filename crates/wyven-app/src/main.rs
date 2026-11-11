@@ -515,6 +515,8 @@ struct State {
     diff: Option<diff_view::DiffView>,
     settings_page: settings_page::SettingsPage,
     theme_picker: Option<ThemePicker>,
+    /// Where the theme list opens (under the settings dropdown), else near the top.
+    theme_anchor: Option<(f32, f32)>,
     plugins: plugins::Plugins,
     /// Organize usings in two steps (C#): 1 = remove unused, 2 = sort.
     organize_step: Option<u8>,
@@ -733,6 +735,15 @@ impl ApplicationHandler<UserEvent> for App {
                         ex.hover = hover;
                         state.window.request_redraw();
                     }
+                }
+                // Theme list: the row under the mouse is selected and previewed.
+                if let Overlay::Themes(menu) = &mut state.overlay
+                    && let Some(i) = menu.row_at(x, y)
+                    && i != menu.selected_index()
+                {
+                    menu.set_selected(i);
+                    state.preview_selected_theme();
+                    state.window.request_redraw();
                 }
                 // The status bar part under the mouse.
                 let sh = if y >= state.layout.status.y { state.status_items.iter().find(|it| x >= it.1 && x < it.2).map(|it| it.0) } else { None };
@@ -1218,6 +1229,7 @@ impl State {
             diff: None,
             settings_page,
             theme_picker: None,
+            theme_anchor: None,
             plugins: plugins::Plugins::new(),
             organize_step: None,
             zen: false,
@@ -2171,7 +2183,23 @@ impl State {
         };
         // Ctrl: move without docking (like Visual Studio).
         let ctrl = self.modifiers.control_key();
+        // An editor tab over the other half of a split: it moves there (the half is shaded).
+        let other = match (what, self.layout.editor2_card) {
+            (Dragged::Tab(_), Some(card)) if inside(&card) => Some(card),
+            _ => None,
+        };
         let Some(d) = &mut self.panel_drag else { return };
+        if let Some(card) = other {
+            let dist = ((x - d.from.0).powi(2) + (y - d.from.1).powi(2)).sqrt();
+            d.at = (x, y);
+            if d.moved || dist >= 8.0 * scale {
+                d.moved = true;
+                d.targets = Vec::new();
+                d.target = Some(compass::Target { side: compass::Side::Center, button: Rect::default(), zone: card, dock: None });
+                self.window.request_redraw();
+            }
+            return;
+        }
         d.at = (x, y);
         let dist = ((x - d.from.0).powi(2) + (y - d.from.1).powi(2)).sqrt();
         if !d.moved && dist < 8.0 * scale {
@@ -2200,6 +2228,7 @@ impl State {
             }
             // Released where no target is: the panel gets a window of its own.
             (Dragged::Panel(p), None) => self.float_panel(p, d.at),
+            (Dragged::Tab(i), Some(t)) if t.side == compass::Side::Center => self.move_tab_to_other_half(i),
             (Dragged::Tab(i), Some(t)) => self.split_tab(i, t.side),
             _ => {}
         }
@@ -2219,6 +2248,38 @@ impl State {
             *active = active.saturating_sub(1);
         }
         t
+    }
+
+    /// A tab dragged onto the other half of a split moves there (the last tab of a half takes
+    /// the split with it).
+    fn move_tab_to_other_half(&mut self, i: usize) {
+        if self.split.is_none() || i >= self.tabs.len() {
+            return;
+        }
+        let path = self.tabs[i].doc.path().map(Path::to_path_buf);
+        if self.tabs.len() == 1 {
+            // Nothing would stay here: one editor again, with this file in it.
+            self.focus_other_half();
+            self.close_split();
+        } else {
+            let t = Self::take_tab(&mut self.tabs, &mut self.active, &mut self.mru, i);
+            self.focus_other_half();
+            match path.as_deref().and_then(|p| self.tab_for(p)) {
+                // Open there already: just show it.
+                Some(j) => self.activate(j),
+                None => {
+                    self.tabs.push(t);
+                    self.mru.insert(0, self.tabs.len() - 1);
+                    self.activate(self.tabs.len() - 1);
+                }
+            }
+        }
+        if let Some(j) = path.as_deref().and_then(|p| self.tab_for(p)) {
+            self.activate(j);
+        }
+        self.focus = Focus::Editor;
+        self.relayout();
+        self.lsp_open_all();
     }
 
     /// A tab dropped on a compass target: the editor splits and the tab moves to that side.
@@ -4562,6 +4623,10 @@ impl State {
                 }
             }
             P::Message(m) => self.show(m),
+            P::PickTheme(x, y) => {
+                self.open_theme_picker();
+                self.theme_anchor = Some((x, y));
+            }
         }
         self.window.request_redraw();
     }
@@ -4657,6 +4722,7 @@ impl State {
 
     /// Alt → v → c: all themes; moving through the list previews them.
     fn open_theme_picker(&mut self) {
+        self.theme_anchor = None;
         let mut all: Vec<(String, String)> =
             theme::THEMES.iter().map(|(id, label)| (label.to_string(), id.to_string())).collect();
         all.extend(vscode_theme::discover().into_iter().map(|e| (format!("{}   · {}", e.label, e.source), e.label)));
@@ -6936,6 +7002,31 @@ impl State {
 
     // ----- mouse -----
 
+    /// Mouse on the theme list: a click keeps the theme, a click elsewhere goes back.
+    fn theme_list_click(&mut self, x: f32, y: f32) -> bool {
+        let Overlay::Themes(menu) = &self.overlay else { return false };
+        match menu.row_at(x, y) {
+            Some(i) => {
+                let id = menu.items.get(i).and_then(|(_, v)| v.as_str().map(str::to_string));
+                self.overlay = Overlay::None;
+                self.theme_picker = None;
+                if let Some(id) = id {
+                    self.set_theme(&id);
+                }
+            }
+            None => {
+                self.overlay = Overlay::None;
+                if let Some(p) = self.theme_picker.take()
+                    && let Ok(t) = Theme::resolve(&p.before)
+                {
+                    self.apply_theme(t);
+                }
+            }
+        }
+        self.window.request_redraw();
+        true
+    }
+
     fn mouse_button(&mut self, button: MouseButton, pressed: bool) {
         if !pressed {
             self.mouse.dragging = false;
@@ -6985,6 +7076,9 @@ impl State {
         let (x, y) = (self.mouse.x, self.mouse.y);
         self.latency.input();
         self.window.request_redraw();
+        if self.theme_list_click(x, y) {
+            return;
+        }
 
         let st = self.layout.status;
         if button == MouseButton::Left
@@ -7249,6 +7343,11 @@ impl State {
             }
         };
         let (x, y) = (self.mouse.x, self.mouse.y);
+        if let Overlay::Themes(menu) = &mut self.overlay {
+            menu.scroll_by(-dy.round() as isize);
+            self.window.request_redraw();
+            return;
+        }
         if self.panel_shown(Panel::Terminal) && self.terminal.contains(x, y) {
             if let Some(t) = self.terminal.term() {
                 t.scroll(dy.round() as i32);
@@ -7868,7 +7967,10 @@ impl State {
                 | Overlay::ConfirmDelete(m, _)
                 | Overlay::ConfirmDiscard(m, ..)
                 | Overlay::ConfirmClose(m) => {
-                    let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
+                    let (x, y) = match (&self.overlay, self.theme_anchor) {
+                        (Overlay::Themes(_), Some(at)) => at,
+                        _ => (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h),
+                    };
                     m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }
                 // New file / folder and rename: typed right in the explorer tree when it is on

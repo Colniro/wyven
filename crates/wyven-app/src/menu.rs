@@ -28,11 +28,50 @@ pub struct Menu {
     scroll: usize,
     buffer: Buffer,
     width_cells: usize,
+    /// Where the list was drawn (x, y, width, row height), for the mouse.
+    drawn: std::cell::Cell<(f32, f32, f32, f32)>,
 }
 
 impl Menu {
     pub fn new(fs: &mut FontSystem, font: FontMetrics, title: &str, items: Vec<(String, Value)>) -> Self {
-        Self { title: title.into(), items, selected: 0, scroll: 0, buffer: line_buffer(fs, font), width_cells: 0 }
+        Self {
+            title: title.into(),
+            items,
+            selected: 0,
+            scroll: 0,
+            buffer: line_buffer(fs, font),
+            width_cells: 0,
+            drawn: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
+        }
+    }
+
+    /// The item under the mouse (index into `items`).
+    pub fn row_at(&self, x: f32, y: f32) -> Option<usize> {
+        let (mx, my, w, lh) = self.drawn.get();
+        if lh <= 0.0 || x < mx || x >= mx + w || y < my + lh {
+            return None;
+        }
+        let row = ((y - my) / lh) as usize - 1;
+        let i = self.scroll + row;
+        (row < ROWS && i < self.items.len()).then_some(i)
+    }
+
+    /// The selected item's index.
+    pub fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    /// Selects a visible item without scrolling (mouse hover).
+    pub fn set_selected(&mut self, i: usize) {
+        if i < self.items.len() {
+            self.selected = i;
+        }
+    }
+
+    /// Scrolls the list (mouse wheel) without moving past its ends.
+    pub fn scroll_by(&mut self, delta: isize) {
+        let max = self.items.len().saturating_sub(ROWS) as isize;
+        self.scroll = (self.scroll as isize + delta).clamp(0, max) as usize;
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -106,7 +145,8 @@ impl Menu {
         let x = x.min(window.0 - w - 4.0).max(0.0);
         let y = if y + h > window.1 { (y - h - font.line_h * 1.5).max(0.0) } else { y };
         frame(theme, x, y, w, h, scale, quads);
-        if !self.items.is_empty() {
+        self.drawn.set((x, y, w, font.line_h));
+        if !self.items.is_empty() && self.selected >= self.scroll && self.selected < self.scroll + ROWS {
             let sy = y + (1 + self.selected - self.scroll) as f32 * font.line_h;
             quads.push(Quad { x, y: sy, w, h: font.line_h, color: theme.row_selected });
         }

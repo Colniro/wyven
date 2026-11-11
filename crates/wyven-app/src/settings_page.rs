@@ -14,6 +14,8 @@ pub enum Kind {
     Choice(&'static [(&'static str, &'static str)]),
     Number { min: f32, max: f32, step: f32, decimals: usize },
     Text { empty: &'static str },
+    /// A box with the current value and ˅; a click opens a list (the theme picker).
+    Dropdown,
 }
 
 pub struct Item {
@@ -48,8 +50,8 @@ const T: Option<&str> = Some("terminal");
 const UP: Option<&str> = Some("update");
 
 pub const ITEMS: &[Item] = &[
-    item("Appearance", None, "theme", "Color theme", "Alt → v → c picks any theme, installed VS Code themes included (with preview). Alt → v → t switches dark/light.",
-         Kind::Choice(&[("dark", "Dark"), ("light", "Light")])),
+    item("Appearance", None, "theme", "Color theme", "Every theme, installed VS Code themes included; moving through the list previews them (also Alt → v → c).",
+         Kind::Dropdown),
     item("Font", F, "family", "Font family", "Font for code and interface (Cascadia Mono, JetBrains Mono, Consolas, …).",
          Kind::Text { empty: "automatic" }),
     item("Font", F, "size", "Font size", "In points. Ctrl++ / Ctrl+- change it only until restart.", num(6.0, 48.0, 1.0, 1)),
@@ -143,13 +145,15 @@ pub enum PageAction {
     Store { table: Option<&'static str>, key: &'static str, value: String },
     OpenFile,
     Message(String),
+    /// Open the theme list below the dropdown at (x, y) in the window.
+    PickTheme(f32, f32),
 }
 
 /// The TOML text for a new value of an item, or why the input is not valid.
 pub fn toml_value(item: &Item, raw: &str) -> Result<String, String> {
     match &item.kind {
         Kind::Toggle => Ok(if raw == "true" { "true" } else { "false" }.into()),
-        Kind::Choice(_) | Kind::Text { .. } => Ok(toml::Value::String(raw.trim().to_string()).to_string()),
+        Kind::Choice(_) | Kind::Text { .. } | Kind::Dropdown => Ok(toml::Value::String(raw.trim().to_string()).to_string()),
         Kind::Number { min, max, decimals, .. } => {
             let v: f32 = raw.trim().replace(',', ".").parse().map_err(|_| format!("{}: “{raw}” is not a number", item.label))?;
             Ok(fmt(v.clamp(*min, *max), *decimals))
@@ -171,6 +175,7 @@ enum Hit {
     Choose(usize, &'static str),
     Step(usize, f32),
     Edit(usize),
+    Dropdown(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -387,6 +392,16 @@ impl SettingsPage {
                     let f = Rect { x: x0, y, w: width.min(cw * 60.0), h: ch };
                     self.field(fs, i, f, &value, empty, ty);
                 }
+                Kind::Dropdown => {
+                    let f = Rect { x: x0, y, w: width.min(cw * 44.0), h: ch };
+                    self.boxes.push((f, Paint::Border));
+                    self.boxes.push((Rect { x: f.x + 1.0, y: f.y + 1.0, w: f.w - 2.0, h: f.h - 2.0 }, Paint::Field));
+                    let (b, _, _) = self.text(fs, &value, 1.0, false, None);
+                    self.labels.push(Label { buffer: b, x: f.x + cw, y: ty, paint: Paint::Text });
+                    let (b, w, _) = self.text(fs, "˅", 1.0, true, None);
+                    self.labels.push(Label { buffer: b, x: f.x + f.w - w - cw, y: ty, paint: Paint::Accent });
+                    self.hits.push((f, Hit::Dropdown(i)));
+                }
             }
             y += ch + lh * 1.1;
         }
@@ -483,6 +498,11 @@ impl SettingsPage {
         let action = match hit {
             None | Some(Hit::Filter) => PageAction::None,
             Some(Hit::OpenFile) => PageAction::OpenFile,
+            Some(Hit::Dropdown(i)) => {
+                // Below the box, in window coordinates.
+                let r = self.hits.iter().find(|(_, h)| *h == Hit::Dropdown(i)).map(|(r, _)| *r).unwrap_or_default();
+                PageAction::PickTheme(self.area.x + r.x, self.area.y + r.y + r.h - self.scroll_y + 2.0)
+            }
             Some(Hit::Edit(i)) => {
                 self.editing = Some((i, value_of(settings, &ITEMS[i])));
                 PageAction::None

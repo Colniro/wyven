@@ -434,6 +434,9 @@ impl Dock {
                     Place::Docked(path) => Some(DockTarget::Into(path)),
                     _ => None,
                 });
+                // Like a side bar: a pane already on that side takes it as a tab (instead of a
+                // new pane opening next to the others).
+                let into = into.or_else(|| self.pane_beside_editor(home.side).map(DockTarget::Into));
                 let target = match into {
                     Some(t) => t,
                     None if home.editor => match self.root.path_of(|n| matches!(n, Node::Editor)) {
@@ -445,6 +448,29 @@ impl Dock {
                 self.dock_sized(p, target, home.size);
             }
         }
+    }
+
+    /// The pane next to the editor on `side` (the nearest one, through rows and columns).
+    fn pane_beside_editor(&self, side: Side) -> Option<NodePath> {
+        let editor = self.root.path_of(|n| matches!(n, Node::Editor))?;
+        // From the editor up: the first row/column of the side's direction with a neighbour there.
+        for depth in (0..editor.len()).rev() {
+            let parent = &editor[..depth];
+            let i = editor[depth];
+            let Some(Node::Split { dir, children, .. }) = self.root.at(parent) else { continue };
+            if *dir != side.dir() {
+                continue;
+            }
+            let n = if side.first() { i.checked_sub(1) } else { (i + 1 < children.len()).then_some(i + 1) };
+            let Some(n) = n else { continue };
+            let mut base = parent.to_vec();
+            base.push(n);
+            let sub = self.root.at(&base)?;
+            let rel = sub.path_of(|x| matches!(x, Node::Pane { .. }))?;
+            base.extend(rel);
+            return Some(base);
+        }
+        None
     }
 
     /// Which side of the editor a docked node is on (the first difference of their paths).
@@ -1140,5 +1166,24 @@ mod tests {
         // Round trip.
         let json = serde_json::to_string(&d).unwrap();
         assert_eq!(serde_json::from_str::<Dock>(&json).unwrap(), d);
+    }
+
+    #[test]
+    fn reopened_side_panels_share_one_pane() {
+        let mut d = Dock::default();
+        // Closing the side bar closes all its panels; opening them one by one (activity bar)
+        // puts them back into one pane, not side by side.
+        d.hide_pane(Panel::Explorer);
+        d.show(Panel::Search);
+        d.show(Panel::Git);
+        d.show(Panel::Explorer);
+        let a = d.arrange(R, 0.0);
+        assert_eq!(a.panes.len(), 1);
+        assert!(d.shown(Panel::Explorer) && !d.shown(Panel::Git));
+        assert_eq!(pane_of(&d, Panel::Git).len(), 3);
+        // The terminal at the bottom joins nothing on the left.
+        d.show(Panel::Terminal);
+        assert_eq!(pane_of(&d, Panel::Terminal), vec![Panel::Terminal]);
+        assert_eq!(d.side_of(Panel::Terminal), Some(Side::Bottom));
     }
 }
