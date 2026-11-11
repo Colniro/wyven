@@ -97,9 +97,9 @@ impl Completion {
         }
     }
 
-    /// Text to insert for the selected item.
-    pub fn selected_insert(&self) -> Option<String> {
-        self.shown.get(self.selected).map(|(i, _)| self.items[*i].insert.clone())
+    /// The selected item.
+    pub fn selected(&self) -> Option<&CompletionItem> {
+        self.shown.get(self.selected).map(|(i, _)| &self.items[*i])
     }
 
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, family: &str) {

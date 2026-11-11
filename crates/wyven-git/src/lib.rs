@@ -329,6 +329,43 @@ pub fn line_marks(old: &str, new: &str) -> Vec<(usize, LineMark)> {
     marks
 }
 
+/// A changed block: lines `new_start..new_start + new_len` of the new text were
+/// `old_lines` in the old text (empty for added lines; `new_len` 0 for deleted lines).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hunk {
+    pub new_start: usize,
+    pub new_len: usize,
+    pub old_lines: Vec<String>,
+}
+
+/// The changed block at `line` of `new` (0-based), as marked by [`line_marks`]; a deletion
+/// counts for the line above it (`usize::MAX`: at the very top).
+pub fn hunk_at(old: &str, new: &str, line: usize) -> Option<Hunk> {
+    let (o, n) = (lines(old), lines(new));
+    let old_of = |i: usize, len: usize| o[i..i + len].iter().map(|l| l.trim_end_matches('\r').to_string()).collect();
+    for op in capture_diff_slices(Algorithm::Myers, &o, &n) {
+        match op {
+            DiffOp::Equal { .. } => {}
+            DiffOp::Insert { new_index, new_len, .. } => {
+                if (new_index..new_index + new_len).contains(&line) {
+                    return Some(Hunk { new_start: new_index, new_len, old_lines: Vec::new() });
+                }
+            }
+            DiffOp::Delete { old_index, old_len, new_index } => {
+                if new_index.wrapping_sub(1) == line {
+                    return Some(Hunk { new_start: new_index, new_len: 0, old_lines: old_of(old_index, old_len) });
+                }
+            }
+            DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+                if (new_index..new_index + new_len).contains(&line) {
+                    return Some(Hunk { new_start: new_index, new_len, old_lines: old_of(old_index, old_len) });
+                }
+            }
+        }
+    }
+    None
+}
+
 /// One row of a side-by-side diff.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffRow {
@@ -447,5 +484,17 @@ mod tests {
         assert_eq!(repo.relative(&dir.join("a.txt")).unwrap(), "a.txt");
         assert!(repo.sync().unwrap_err().contains("No remote"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hunks_for_changed_added_and_deleted_lines() {
+        let old = "a\nb\nc\nd\n";
+        let new = "a\nB\nc\nnew\nd\n";
+        assert_eq!(hunk_at(old, new, 1), Some(Hunk { new_start: 1, new_len: 1, old_lines: vec!["b".into()] }));
+        assert_eq!(hunk_at(old, new, 3), Some(Hunk { new_start: 3, new_len: 1, old_lines: vec![] }));
+        assert_eq!(hunk_at(old, new, 0), None);
+        let gone = "a\nd\n";
+        assert_eq!(hunk_at(old, gone, 0), Some(Hunk { new_start: 1, new_len: 0, old_lines: vec!["b".into(), "c".into()] }));
+        assert_eq!(hunk_at(old, "c\nd\n", usize::MAX), Some(Hunk { new_start: 0, new_len: 0, old_lines: vec!["a".into(), "b".into()] }));
     }
 }

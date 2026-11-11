@@ -48,6 +48,8 @@ pub struct CompletionItem {
     pub insert: String,
     pub filter: String,
     pub sort: String,
+    /// `insert` is a snippet (placeholders like `$1`, `${2:name}`).
+    pub snippet: bool,
 }
 
 /// What the UI has to do after the server answered.
@@ -1137,6 +1139,7 @@ fn parse_completion(item: &Value) -> CompletionItem {
         .map(str::to_string)
         .unwrap_or_else(|| kind_name(item["kind"].as_u64().unwrap_or(0)).to_string());
     CompletionItem {
+        snippet: item["insertTextFormat"].as_u64() == Some(2),
         filter: item["filterText"].as_str().unwrap_or(&label).to_string(),
         sort: item["sortText"].as_str().unwrap_or(&label).to_string(),
         insert,

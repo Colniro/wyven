@@ -122,11 +122,22 @@ pub struct Prompt {
     pub masked: bool,
     fresh: bool,
     buffer: Buffer,
+    /// Only the text (for the dialog card and inline fields).
+    line: Buffer,
+    title_buf: Buffer,
 }
 
 impl Prompt {
     pub fn new(fs: &mut FontSystem, font: FontMetrics, title: &str, text: &str) -> Self {
-        Self { title: title.into(), text: text.into(), fresh: true, buffer: line_buffer(fs, font), masked: false }
+        Self {
+            title: title.into(),
+            text: text.into(),
+            fresh: true,
+            buffer: line_buffer(fs, font),
+            line: line_buffer(fs, font),
+            title_buf: line_buffer(fs, font),
+            masked: false,
+        }
     }
 
     pub fn type_text(&mut self, s: &str) {
@@ -164,6 +175,92 @@ impl Prompt {
             None,
         );
         self.buffer.shape_until_scroll(fs, false);
+        let shown = if self.masked { "•".repeat(self.text.chars().count()) } else { self.text.clone() };
+        self.line.set_text(&shown, &attrs, Shaping::Advanced, None);
+        self.line.shape_until_scroll(fs, false);
+        let bold = attrs.clone().weight(wyven_render::Weight::SEMIBOLD);
+        self.title_buf.set_text(&self.title, &bold, Shaping::Advanced, None);
+        self.title_buf.shape_until_scroll(fs, false);
+    }
+
+    fn text_w(&self) -> f32 {
+        self.line.layout_runs().next().map_or(0.0, |r| r.line_w)
+    }
+
+    /// An input field: rounded box, the text, a selection while it is untouched, the cursor.
+    #[allow(clippy::too_many_arguments)]
+    fn field<'a>(
+        &'a self,
+        theme: &Theme,
+        font: FontMetrics,
+        r: (f32, f32, f32, f32),
+        scale: f32,
+        cards: &mut Vec<wyven_render::RoundRect>,
+        quads: &mut Vec<Quad>,
+        text: &mut Vec<TextBlock<'a>>,
+    ) {
+        let (x, y, w, h) = r;
+        let radius = (5.0 * scale).round();
+        cards.push(wyven_render::RoundRect::new(x, y, w, h, theme.accent, radius));
+        cards.push(wyven_render::RoundRect::new(x + 1.5 * scale, y + 1.5 * scale, w - 3.0 * scale, h - 3.0 * scale, theme.background, radius - 1.0));
+        let pad = font.cell_w * 0.6;
+        let ty = y + (h - font.line_h) / 2.0;
+        let tw = self.text_w();
+        if self.fresh && !self.text.is_empty() {
+            quads.push(Quad { x: x + pad, y: ty, w: tw, h: font.line_h, color: theme.selection });
+        }
+        quads.push(Quad { x: x + pad + tw, y: ty, w: (2.0 * scale).round(), h: font.line_h, color: theme.cursor });
+        text.push(TextBlock {
+            buffer: &self.line,
+            x: x + pad,
+            y: ty,
+            color: theme.tab_text_active,
+            clip: Some([x as i32, y as i32, (x + w) as i32, (y + h) as i32]),
+        });
+    }
+
+    /// The input as a dialog card in the upper middle of the window (new branch, watch, …).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_dialog<'a>(
+        &'a self,
+        theme: &Theme,
+        font: FontMetrics,
+        window: (f32, f32),
+        scale: f32,
+        cards: &mut Vec<wyven_render::RoundRect>,
+        quads: &mut Vec<Quad>,
+        text: &mut Vec<TextBlock<'a>>,
+    ) {
+        let pad = font.cell_w * 2.0;
+        let title_w = self.title_buf.layout_runs().next().map_or(0.0, |r| r.line_w);
+        let w = (title_w + 2.0 * pad).max(font.cell_w * 56.0).min(window.0 - 40.0);
+        let field_h = (font.line_h * 1.6).round();
+        let h = pad + font.line_h * 1.3 + field_h + pad;
+        let x = ((window.0 - w) / 2.0).round();
+        let y = (window.1 * 0.22).round();
+        let radius = (10.0 * scale).round();
+        let shadow = wyven_render::Rgba(0, 0, 0, if theme.dark { 0x99 } else { 0x40 });
+        cards.push(wyven_render::RoundRect::shadow(x, y, w, h, shadow, radius, (16.0 * scale).round()));
+        cards.push(wyven_render::RoundRect::new(x, y, w, h, theme.popup_border, radius));
+        cards.push(wyven_render::RoundRect::new(x + 1.0, y + 1.0, w - 2.0, h - 2.0, theme.popup_bg, radius - 1.0));
+        text.push(TextBlock { buffer: &self.title_buf, x: x + pad, y: y + pad * 0.7, color: theme.panel_text, clip: None });
+        let fy = y + pad * 0.7 + font.line_h * 1.4;
+        self.field(theme, font, (x + pad, fy, w - 2.0 * pad, field_h), scale, cards, quads, text);
+    }
+
+    /// The input right in place (a row of the explorer): `r` is the row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_inline<'a>(
+        &'a self,
+        theme: &Theme,
+        font: FontMetrics,
+        r: (f32, f32, f32, f32),
+        scale: f32,
+        cards: &mut Vec<wyven_render::RoundRect>,
+        quads: &mut Vec<Quad>,
+        text: &mut Vec<TextBlock<'a>>,
+    ) {
+        self.field(theme, font, r, scale, cards, quads, text);
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -34,6 +34,12 @@ pub enum CtxAction {
     SplitDown,
     /// An editor command (cut, go to definition, …).
     Run(Command),
+    /// Terminal list: rename, color (None: default), end.
+    RenameTerminal(usize),
+    ColorTerminal(usize, Option<[u8; 3]>),
+    KillTerminal(usize),
+    /// A new terminal with profile `i` of [`crate::terminal::profiles`].
+    NewTerminalProfile(usize),
 }
 
 enum Row {

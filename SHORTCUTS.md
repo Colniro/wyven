@@ -30,6 +30,8 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 | `Strg+C` / `X` / `V` | Kopieren / Ausschneiden / Einfügen |
 | `Strg+Z` / `Strg+Y` | Rückgängig / Wiederholen |
 | `Strg+S` | Speichern |
+| `Strg+Umschalt+B` | Projekt bauen (Fehler im Problems-Panel, wie VS) |
+| `Strg+Umschalt+S` | Alle geänderten Dateien speichern (sonst auch automatisch kurz nach dem Tippen) |
 | `Strg+A` | Alles auswählen |
 | `Strg+F` / `Strg+H` | Suchen / Ersetzen in der Datei |
 | `F3` / `Shift+F3` | Nächster / vorheriger Treffer |
@@ -59,6 +61,7 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 | `Strg+M, Strg+O` | Auf Definitionen falten (wie VS) |
 | `Strg+M, Strg+P` | Alles öffnen (wie VS) |
 | `Strg+Leertaste` | Autovervollständigung öffnen *(Vorschlag)* |
+| Kürzel + `Tab` | Snippet einfügen (`prop`, `ctor`, `foreach` …); `Tab`/`Shift+Tab` nächster/voriger Platzhalter, `Esc` fertig (wie VS) |
 | `Strg+.` | Quick Actions: Fixes, Usings, Refactorings (wie VS) |
 | `F2` | Umbenennen *(Vorschlag; VS nutzt `Strg+R, Strg+R`)* |
 
@@ -108,6 +111,7 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 | `p` | **p**roject | `o` Ordner öffnen · `r` zuletzt geöffnet (Projekt-Wechsler) · `a` Ordner zum Workspace hinzufügen · `f` Workspace-Datei öffnen · `w` Workspace speichern unter |
 | `w` | **w**indow | `v` rechts teilen · `h` unten teilen · `o` / `←↑→↓` andere Hälfte · `c` Teilung schließen · `r` Panel-Anordnung zurücksetzen |
 | `v` | **v**iew | `m` Minimap (Blöcke / Leiste / aus) · `s` Sticky Scroll an/aus · `i` Inlay Hints · `l` CodeLens · `c` Farbschema wählen · `t` hell/dunkel · `w` Zeilenumbruch · `z` Zen-Modus · `f` Faltung am Cursor · `a` alles falten/öffnen · `d` auf Definitionen falten · `e` alles öffnen |
+| `r` | **r**un & build | `b` bauen · `t` testen · `r` im Terminal starten · `c` aufräumen · `x` abbrechen · `p` Problems · `o` Task-Ausgabe |
 | `a` | **a**i | `t` Vorschläge an/aus · `m` Modell wechseln (Haiku/Sonnet) · `k` API-Key setzen · `c` Claude Code im Terminal öffnen |
 | `m` | **m**arkdown | Vorschau ein/aus |
 | `,` | Einstellungen | Einstellungsseite öffnen |
@@ -120,8 +124,10 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 | Klick auf ein Symbol der Aktivitätsleiste | Panel öffnen; nochmal: schließen |
 | Klick auf × im Tab / mittlere Maustaste | Tab schließen |
 | Rechtsklick auf Explorer-Eintrag, Tab oder Text | Kontextmenü |
-| Panel-Kopf oder Editor-Tab ziehen | Andock-Kompass: links / rechts / unten / als Tab bzw. Editor teilen (`Strg` = nicht andocken) |
-| Kante zwischen zwei Bereichen ziehen | Größe ändern |
+| Panel-Kopf ziehen | Andock-Kompass: neben ein Pane (teilt es), als Tab hinein, neben den Editor oder an eine Fensterkante; ohne Ziel loslassen (oder `Strg`) = eigenes Fenster |
+| Tab-Leiste eines schwebenden Panels aufs Hauptfenster ziehen | wieder andocken |
+| Editor-Tab ziehen | Editor nach links / rechts / oben / unten teilen |
+| Abstand zwischen zwei Panes ziehen | Größe ändern |
 
 ## Lernhilfen
 

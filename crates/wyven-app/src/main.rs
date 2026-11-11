@@ -12,6 +12,7 @@ mod claude;
 mod completion;
 mod chrome;
 mod compass;
+mod floats;
 mod config;
 mod ctxmenu;
 mod custom_keys;
@@ -32,9 +33,12 @@ mod menu;
 mod metrics;
 mod palette;
 mod popup;
+mod problems;
 mod search_panel;
 mod settings;
 mod settings_page;
+mod tasks;
+mod snippets;
 mod terminal;
 mod theme;
 mod vscode_theme;
@@ -71,6 +75,8 @@ use theme::Theme;
 
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// How long the mouse rests on a header button before its tooltip shows.
+const HEADER_TIP_DELAY: Duration = Duration::from_millis(700);
 const MESSAGE_TIME: Duration = Duration::from_secs(4);
 const LEADER_POPUP_DELAY: Duration = Duration::from_millis(300);
 const CONFIRM_TIME: Duration = Duration::from_secs(3);
@@ -87,6 +93,7 @@ enum UserEvent {
     Ai,
     Claude,
     Update,
+    Task,
 }
 
 /// Startup profiling: logs elapsed time and RAM after each startup stage.
@@ -190,9 +197,10 @@ enum Focus {
     Search,
     Git,
     Debug,
+    Problems,
 }
 
-use dock::{Area, Panel};
+use dock::Panel;
 
 /// File operations in the explorer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +264,21 @@ fn tab_bar_spans(tabs: &[EditorView], active: usize, x0: f32, cw: f32, theme: &T
     (labels, spans)
 }
 
+/// The old lines of a changed block, shown in a card under it.
+struct GitPeek {
+    tab: usize,
+    version: u64,
+    /// The marked line (the card hangs below the block).
+    line: usize,
+    hunk: wyven_git::Hunk,
+    header: Buffer,
+    body: Buffer,
+    /// Where the card and its buttons were drawn (for clicks).
+    card: Rect,
+    revert: Rect,
+    close: Rect,
+}
+
 /// What is being dragged with the mouse.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Dragged {
@@ -269,6 +292,8 @@ enum Dragged {
 struct PanelDrag {
     what: Dragged,
     from: (f32, f32),
+    /// The mouse now (main window coordinates).
+    at: (f32, f32),
     moved: bool,
     targets: Vec<compass::Target>,
     target: Option<compass::Target>,
@@ -297,6 +322,8 @@ enum Overlay {
     Themes(menu::Menu),
     /// Name for a new branch.
     NewBranch(menu::Prompt),
+    /// New name for terminal `.1`.
+    RenameTerminal(menu::Prompt, usize),
     /// F5 with several startable projects: which one.
     DebugProjects(menu::Menu),
     /// Alt → d → a: process to attach to.
@@ -319,7 +346,7 @@ struct Mouse {
 }
 
 /// Screen layout, recomputed on resize, font change and when the explorer is toggled.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 struct Layout {
     /// The icon column at the left window edge.
     activity: Rect,
@@ -327,13 +354,14 @@ struct Layout {
     editor_card: Rect,
     /// The other half's card, when split.
     editor2_card: Option<Rect>,
-    /// Space between the cards and their corner radius.
-    gap: f32,
+    /// The corner radius of the cards.
     radius: f32,
-    /// The dock areas (with their panel tab strip), when open.
-    left: Option<Rect>,
-    right: Option<Rect>,
-    bottom: Option<Rect>,
+    /// The panes of the dock tree (with their panel tab strip) and the gaps between nodes.
+    panes: Vec<dock::PaneBox>,
+    splitters: Vec<dock::Splitter>,
+    /// The editor node of the tree (both halves of a split) and its path.
+    editor_node: Rect,
+    editor_path: dock::NodePath,
     tabs: Rect,
     editor: Rect,
     /// Markdown preview, right of the editor.
@@ -374,10 +402,12 @@ struct State {
     /// The icons at the left window edge.
     activity: chrome::ActivityBar,
     panel_drag: Option<PanelDrag>,
+    /// Windows of floating panels.
+    floats: Vec<floats::FloatWin>,
     /// The dock area whose edge is being dragged to resize it.
-    resizing: Option<Area>,
+    resizing: Option<(usize, f32)>,
     /// The mouse cursor shape last set (arrow or resize arrows).
-    cursor_resize: Option<Area>,
+    cursor_resize: Option<dock::Dir>,
     focus: Focus,
 
     overlay: Overlay,
@@ -427,6 +457,8 @@ struct State {
     search: search_panel::SearchPanel,
     git: git_panel::GitPanel,
     debugger: debug::Debugger,
+    problems: problems::ProblemsPanel,
+    tasks: tasks::TaskRunner,
     /// Breakpoints of files that are not open (open tabs keep their own).
     breakpoint_store: debug::Breakpoints,
     /// The project F5 starts (asked once if there are several).
@@ -451,6 +483,17 @@ struct State {
     split: Option<Split>,
     /// Shortcuts from keymap.toml.
     custom_keys: custom_keys::CustomKeys,
+    /// The committed version of a changed block, shown under it (click on a git change bar).
+    git_peek: Option<GitPeek>,
+    /// A snippet being filled in: its tab and tab stops.
+    snippet: Option<(usize, snippets::Session)>,
+    /// Snippets from %APPDATA%\\Wyven\\snippets.
+    user_snippets: snippets::UserSnippets,
+    /// When the tooltip of the hovered header button appears.
+    header_tip_due: Option<Instant>,
+    /// Auto save: when to save, and a stamp of the changed documents' versions.
+    auto_save_due: Option<Instant>,
+    auto_save_stamp: u64,
     /// A running update check or download.
     update_rx: Option<std::sync::mpsc::Receiver<update::UpdateEvent>>,
     /// The newer version on offer, and whether the check was asked for.
@@ -535,14 +578,14 @@ impl ApplicationHandler<UserEvent> for App {
         }
         match self.demo.take().as_deref() {
             Some("--compass") => {
-                if let Some(r) = state.layout.left {
+                if let Some(r) = state.layout.panes.first().map(|b| b.rect) {
                     let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-                    state.panel_drag = Some(PanelDrag { what: Dragged::Panel(Panel::Terminal), from: (0.0, 0.0), moved: false, targets: Vec::new(), target: None });
+                    state.panel_drag = Some(PanelDrag { what: Dragged::Panel(Panel::Terminal), from: (0.0, 0.0), at: (x, y), moved: false, targets: Vec::new(), target: None });
                     state.panel_drag_move(x, y);
                 }
             }
             Some("--menu") => {
-                if let Some(r) = state.explorer.as_ref().and(state.layout.left) {
+                if let Some(r) = state.explorer.as_ref().and(state.pane_rect(Panel::Explorer)) {
                     let (x, y) = (r.x + r.w * 0.4, r.y + state.ui_font.line_h * 6.3);
                     state.open_explorer_menu(x, y);
                 }
@@ -576,8 +619,12 @@ impl ApplicationHandler<UserEvent> for App {
         self.state = Some(state);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some(state) = &mut self.state else { return };
+        if state.is_float_window(id) {
+            state.float_event(id, event);
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => {
                 if state.confirm_close_window() {
@@ -618,8 +665,8 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 state.mouse.x = x;
                 state.mouse.y = y;
-                if let Some(area) = state.resizing {
-                    state.resize_area(area, x, y);
+                if let Some((i, _)) = state.resizing {
+                    state.resize_split(i, x, y);
                 }
                 if state.panel_drag.is_some() {
                     state.panel_drag_move(x, y);
@@ -640,6 +687,12 @@ impl ApplicationHandler<UserEvent> for App {
                         state.window.request_redraw();
                     }
                 }
+                // The terminal list row under the mouse (shows its ×).
+                let term_hover = if state.panel_shown(Panel::Terminal) { state.terminal.list_hit(x, y).map(|h| h.0) } else { None };
+                if term_hover != state.terminal.list_hover {
+                    state.terminal.list_hover = term_hover;
+                    state.window.request_redraw();
+                }
                 // The tab under the mouse (shows its ×).
                 let t = state.layout.tabs;
                 let tab_hover = (y >= t.y && y < t.y + t.h)
@@ -655,12 +708,12 @@ impl ApplicationHandler<UserEvent> for App {
                     _ => None,
                 };
                 if header_hover != state.dock_bar.hover {
+                    // First only the highlight; the text follows when the mouse rests a moment.
+                    if state.dock_bar.hover.is_some() {
+                        state.tooltip = None;
+                    }
                     state.dock_bar.hover = header_hover;
-                    state.tooltip = header_hover.and_then(|(a, b)| {
-                        let r = state.dock_bar.buttons.iter().find(|x| x.0 == a && x.2 == b)?.3;
-                        let fs = state.renderer.font_system();
-                        Some(completion::Tooltip::new(fs, state.ui_font, &state.family, &state.theme, b.tooltip(), r.x, r.y + r.h + 4.0))
-                    });
+                    state.header_tip_due = header_hover.map(|_| Instant::now() + HEADER_TIP_DELAY);
                     state.window.request_redraw();
                 }
                 // The activity bar: highlight and a tooltip with the shortcut.
@@ -675,19 +728,20 @@ impl ApplicationHandler<UserEvent> for App {
                     state.window.request_redraw();
                 }
                 // Resize arrows over the edge of a dock area.
-                let edge = state.resizing.or_else(|| state.splitter_at(x, y));
+                let edge = state.resizing.map(|r| r.0).or_else(|| state.splitter_at(x, y));
+                let edge = edge.and_then(|i| state.layout.splitters.get(i)).map(|s| s.dir);
                 if edge != state.cursor_resize {
                     state.cursor_resize = edge;
                     state.window.set_cursor(match edge {
-                        Some(Area::Bottom) => winit::window::CursorIcon::RowResize,
-                        Some(_) => winit::window::CursorIcon::ColResize,
+                        Some(dock::Dir::Column) => winit::window::CursorIcon::RowResize,
+                        Some(dock::Dir::Row) => winit::window::CursorIcon::ColResize,
                         None => winit::window::CursorIcon::Default,
                     });
                 }
                 state.hover_rest = (!state.mouse.dragging).then(|| (Instant::now(), x, y));
                 if state.terminal.selecting {
                     let (row, col) = state.terminal.cell_at(x, y);
-                    if let Some(t) = &state.terminal.term {
+                    if let Some(t) = state.terminal.term() {
                         t.select_to(row, col);
                     }
                     state.terminal.dirty = true;
@@ -737,6 +791,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 UserEvent::Git => state.git_poll(),
                 UserEvent::Debug => state.debug_poll(),
+                UserEvent::Task => state.task_poll(),
                 UserEvent::Ai => state.ai_poll(),
                 UserEvent::Claude => state.claude_poll(),
                 UserEvent::Update => {
@@ -755,6 +810,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Sleep until the next status refresh or until the leader popup is due.
         let Some(state) = &mut self.state else { return };
+        state.sync_floats(event_loop);
         let now = Instant::now();
         if now >= state.next_stats {
             state.next_stats = now + STATS_INTERVAL;
@@ -766,6 +822,17 @@ impl ApplicationHandler<UserEvent> for App {
             state.window.request_redraw();
         }
         let mut wake = state.next_stats;
+        if let Some(due) = state.header_tip_due {
+            if now >= due {
+                state.header_tip_due = None;
+                state.show_header_tip();
+            } else {
+                wake = wake.min(due);
+            }
+        }
+        if let Some(t) = state.auto_save_tick(now) {
+            wake = wake.min(t);
+        }
         if let Some(t) = state.lsp_tick(now) {
             wake = wake.min(t);
         }
@@ -952,6 +1019,7 @@ impl State {
         let search = search_panel::SearchPanel::new(fs, ui_font, family.clone());
         let mut git = git_panel::GitPanel::new(fs, ui_font, family.clone());
         let mut debugger = debug::Debugger::new(fs, ui_font, family.clone());
+        let problems = problems::ProblemsPanel::new(fs, ui_font, family.clone());
         let debug_proxy = proxy.clone();
         debugger.set_wake(move || {
             let _ = debug_proxy.send_event(UserEvent::Debug);
@@ -984,6 +1052,7 @@ impl State {
             dock_bar,
             activity,
             panel_drag: None,
+            floats: Vec::new(),
             resizing: None,
             cursor_resize: None,
             focus: Focus::Editor,
@@ -1016,6 +1085,8 @@ impl State {
             search,
             git,
             debugger,
+            problems,
+            tasks: tasks::TaskRunner::default(),
             breakpoint_store: debug::Breakpoints::new(),
             debug_project: None,
             preview_on: false,
@@ -1031,6 +1102,12 @@ impl State {
             last_escape: None,
             split: None,
             custom_keys: custom_keys::CustomKeys::default(),
+            auto_save_due: None,
+            snippet: None,
+            user_snippets: snippets::UserSnippets::load(),
+            git_peek: None,
+            header_tip_due: None,
+            auto_save_stamp: 0,
             update_rx: None,
             update_offer: None,
             update_manual: false,
@@ -1089,29 +1166,21 @@ impl State {
         let radius = (7.0 * scale).round();
         let (ox, oy) = (act_w + half, half);
         let (rw, rh) = (w - act_w - gap, body_h - gap);
-        let cell = self.ui_font.cell_w;
-        let side_w = |me: &Self, a: Area| -> f32 {
-            if zen || !me.area_open(a) {
-                return 0.0;
-            }
-            let cells = me.dock.area(a).size.unwrap_or(me.settings.ui.explorer_width);
-            (cells * cell).clamp(cell * 12.0, rw * 0.45).round()
-        };
-        let left_w = side_w(self, Area::Left);
-        let right_w = side_w(self, Area::Right).min(rw - left_w - cell * 20.0).max(0.0);
-        let center_w = rw - left_w - right_w;
-        let bottom_h = if !zen && self.area_open(Area::Bottom) {
-            let pct = self.dock.area(Area::Bottom).size.unwrap_or(self.settings.terminal.height);
-            (rh * pct / 100.0).round().max(self.font.line_h * 4.0).min(rh - tabs_h - self.font.line_h * 3.0)
+        // The dock tree in the space right of the activity bar (the Explorer only with a folder).
+        let mut view = self.dock.clone();
+        if self.explorer.is_none() {
+            view.hide(Panel::Explorer);
+        }
+        let arranged = if zen {
+            dock::Arrangement::default()
         } else {
-            0.0
+            view.arrange(Rect { x: ox + half, y: oy + half, w: rw - gap, h: rh - gap }, gap)
         };
-        let deflate = |r: Rect| Rect { x: r.x + half, y: r.y + half, w: (r.w - gap).max(0.0), h: (r.h - gap).max(0.0) };
         let editor_card = if zen {
             let col = (self.font.cell_w * 104.0).min(w);
             Rect { x: ((w - col) / 2.0).round(), y: 0.0, w: col, h: body_h }
         } else {
-            deflate(Rect { x: ox + left_w, y: oy, w: center_w, h: rh - bottom_h })
+            arranged.editor
         };
         // A card's tab bar on top, the text below, and the Markdown preview on the right.
         let preview_on = self.preview_visible();
@@ -1130,11 +1199,11 @@ impl State {
             activity: Rect { x: 0.0, y: 0.0, w: act_w, h: body_h },
             editor_card,
             editor2_card: None,
-            gap,
             radius,
-            left: (left_w > 0.0).then(|| deflate(Rect { x: ox, y: oy, w: left_w, h: rh })),
-            right: (right_w > 0.0).then(|| deflate(Rect { x: ox + rw - right_w, y: oy, w: right_w, h: rh })),
-            bottom: (bottom_h > 0.0).then(|| deflate(Rect { x: ox + left_w, y: oy + rh - bottom_h, w: center_w, h: bottom_h })),
+            panes: arranged.panes,
+            splitters: arranged.splitters,
+            editor_node: editor_card,
+            editor_path: arranged.editor_path,
             tabs,
             editor,
             preview,
@@ -1165,10 +1234,14 @@ impl State {
             self.layout.tabs2 = Some(t2);
             self.layout.editor2 = Some(e2);
         }
-        self.activity.place(self.layout.activity);
-        // Each panel draws below the tab strip of its area.
+        // The activity bar: panels docked left (or above) of the editor, a line, the others.
+        let (upper, lower): (Vec<Panel>, Vec<Panel>) = Panel::ALL
+            .into_iter()
+            .partition(|&p| matches!(self.dock.side_of(p), Some(dock::Side::Left | dock::Side::Top)));
+        self.activity.place(self.layout.activity, &upper, &lower);
+        // Each shown panel draws below the tab strip of its pane.
         for p in Panel::ALL {
-            let Some(r) = self.layout_area(self.dock.area_of(p)) else { continue };
+            let Some(r) = self.pane_rect(p) else { continue };
             let c = dock::content(r, self.ui_font);
             match p {
                 Panel::Explorer => {
@@ -1179,13 +1252,11 @@ impl State {
                 Panel::Search => self.search.set_area(c),
                 Panel::Git => self.git.set_area(c),
                 Panel::Debug => self.debugger.set_area(c),
+                Panel::Problems => self.problems.set_area(c),
                 Panel::Terminal => self.terminal.set_area(c),
             }
         }
-        let strips: Vec<(Area, Rect, Vec<Panel>, Option<Panel>)> = Area::ALL
-            .into_iter()
-            .filter_map(|a| self.layout_area(a).map(|r| (a, r, self.dock.area(a).panels.clone(), self.dock.area(a).active)))
-            .collect();
+        let strips = self.strips();
         self.dock_bar.place(&strips);
         if let (Some(sp), Some(r)) = (&mut self.split, self.layout.editor2) {
             let scale = self.renderer.scale_factor();
@@ -1210,11 +1281,35 @@ impl State {
         self.window.request_redraw();
     }
 
-    fn layout_area(&self, a: Area) -> Option<Rect> {
-        match a {
-            Area::Left => self.layout.left,
-            Area::Right => self.layout.right,
-            Area::Bottom => self.layout.bottom,
+    /// The pane a panel is shown in.
+    fn pane_rect(&self, p: Panel) -> Option<Rect> {
+        self.layout.panes.iter().find(|b| b.active == p).map(|b| b.rect)
+    }
+
+    /// Panes left of the editor with several panels show only the shown one's title (the
+    /// activity bar switches there), like a side bar; closing it closes all of them.
+    fn is_side_bar(&self, panels: &[Panel]) -> bool {
+        panels.len() > 1 && panels.first().is_some_and(|&p| self.dock.side_of(p) == Some(dock::Side::Left))
+    }
+
+    /// The headers of all panes.
+    fn strips(&self) -> Vec<dock::Strip> {
+        self.layout
+            .panes
+            .iter()
+            .map(|b| dock::Strip { rect: b.rect, panels: b.panels.clone(), active: b.active, title_only: self.is_side_bar(&b.panels) })
+            .collect()
+    }
+
+    /// Closes a panel: the whole side bar if it is in one, else just this panel.
+    fn close_panel(&mut self, p: Panel) {
+        if self.is_side_bar(&self.dock.neighbours(p)) {
+            self.dock.hide_pane(p);
+        } else {
+            self.dock.hide(p);
+        }
+        if self.focused_panel().is_some_and(|f| !self.dock.shown(f)) {
+            self.focus = Focus::Editor;
         }
     }
 
@@ -1223,14 +1318,15 @@ impl State {
         p != Panel::Explorer || self.explorer.is_some()
     }
 
-    fn area_open(&self, a: Area) -> bool {
-        let s = self.dock.area(a);
-        s.visible && s.active.is_some_and(|p| self.panel_available(p))
+    /// The panel is on screen in the main window.
+    fn panel_shown(&self, p: Panel) -> bool {
+        self.panel_available(p) && self.pane_rect(p).is_some()
     }
 
-    /// The panel is on screen.
-    fn panel_shown(&self, p: Panel) -> bool {
-        self.dock.shown(p) && self.layout_area(self.dock.area_of(p)).is_some()
+    /// The panel is on screen, in the main window or a floating one.
+    fn panel_open(&self, p: Panel) -> bool {
+        self.panel_shown(p)
+            || (self.panel_available(p) && matches!(self.dock.place(p), dock::Place::Floating(_)) && self.dock.shown(p))
     }
 
     fn focused_panel(&self) -> Option<Panel> {
@@ -1239,6 +1335,7 @@ impl State {
             Focus::Search => Some(Panel::Search),
             Focus::Git => Some(Panel::Git),
             Focus::Debug => Some(Panel::Debug),
+            Focus::Problems => Some(Panel::Problems),
             Focus::Terminal => Some(Panel::Terminal),
             Focus::Editor => None,
         }
@@ -1271,10 +1368,14 @@ impl State {
             }
             Panel::Git => self.show_git_panel(),
             Panel::Debug => self.show_debug_panel(true),
+            Panel::Problems => {
+                self.dock.show(p);
+                self.focus = Focus::Problems;
+            }
             Panel::Terminal => {
                 self.dock.show(p);
                 self.focus = Focus::Terminal;
-                if self.terminal.term.is_none() {
+                if self.terminal.term().is_none() {
                     self.relayout();
                     self.start_terminal();
                 }
@@ -1542,6 +1643,9 @@ impl State {
                 let what = if op == ExplorerOp::NewFile { "New file" } else { "New folder" };
                 let title = format!("{what} in {} (Enter, Esc)", file_name(&dir));
                 let prompt = menu::Prompt::new(self.renderer.font_system(), self.ui_font, &title, "");
+                if let Some(ex) = &mut self.explorer {
+                    ex.expand(&dir);
+                }
                 self.overlay = Overlay::ExplorerPrompt { prompt, op, target: dir };
             }
             C::Rename(p) => {
@@ -1583,10 +1687,10 @@ impl State {
                 self.dock.show(Panel::Terminal);
                 self.focus = Focus::Terminal;
                 self.dock_changed();
-                if self.terminal.term.is_none() {
+                if self.terminal.term().is_none() {
                     self.start_terminal();
                 }
-                if let Some(t) = &self.terminal.term {
+                if let Some(t) = self.terminal.term() {
                     let cmd_exe = self.settings.terminal.shell.to_lowercase().contains("cmd");
                     let line = if cmd_exe { format!("cd /d \"{}\"\r", dir.display()) } else { format!("cd \"{}\"\r", dir.display()) };
                     t.type_text(&line, false);
@@ -1635,8 +1739,136 @@ impl State {
             C::SplitRight => self.split_editor(true),
             C::SplitDown => self.split_editor(false),
             C::Run(cmd) => self.run(cmd),
+            C::RenameTerminal(i) => {
+                let fs = self.renderer.font_system();
+                let current = self.terminal.display_name(i);
+                let prompt = menu::Prompt::new(fs, self.ui_font, "Terminal name (Enter, Esc; empty: the shell's title)", &current);
+                self.overlay = Overlay::RenameTerminal(prompt, i);
+            }
+            C::ColorTerminal(i, c) => self.terminal.set_color(i, c),
+            C::KillTerminal(i) => self.close_terminal(i),
+            C::NewTerminalProfile(i) => {
+                if let Some(p) = terminal::profiles().get(i).cloned() {
+                    if self.terminal.count() == 0 {
+                        self.toggle_terminal_on();
+                    }
+                    match self.terminal.add_with(&p.shell, &p.args, Some(&p.name)) {
+                        Ok(()) => {
+                            self.dock.show(Panel::Terminal);
+                            self.focus = Focus::Terminal;
+                            self.dock_changed();
+                        }
+                        Err(e) => self.show(e),
+                    }
+                }
+            }
         }
         self.window.request_redraw();
+    }
+
+    /// The tooltip of the header button under the mouse, below its row of buttons and moved
+    /// left when it would leave the pane.
+    fn show_header_tip(&mut self) {
+        let Some((pane, b)) = self.dock_bar.hover else { return };
+        let Some(r) = self.dock_bar.buttons.iter().find(|x| x.0 == pane && x.2 == b).map(|x| x.3) else { return };
+        let fs = self.renderer.font_system();
+        let x = (r.x + r.w / 2.0 - self.ui_font.cell_w * b.tooltip().chars().count() as f32 / 2.0).max(0.0);
+        self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, b.tooltip(), x, r.y + r.h + 6.0));
+        self.window.request_redraw();
+    }
+
+    /// Shows the committed version of the block at a marked line (a second click closes it).
+    fn open_git_peek(&mut self, line: usize) {
+        if self.git_peek.as_ref().is_some_and(|p| p.tab == self.active && p.line == line) {
+            self.git_peek = None;
+            return;
+        }
+        let Some(hunk) = self.editor().git_hunk(line) else { return };
+        let (font, ui) = (self.font, self.ui_font);
+        let family = self.family.clone();
+        let (dim, txt, acc) = (self.theme.panel_dim, self.theme.panel_text, self.theme.accent);
+        let fs = self.renderer.font_system();
+        let attrs = Attrs::new().family(Family::Name(&family));
+        let mut header = Buffer::new(fs, Metrics::new(ui.size, ui.line_h));
+        header.set_wrap(Wrap::None);
+        let what = match (hunk.old_lines.len(), hunk.new_len) {
+            (0, n) => format!("{n} new line{} (not in the last commit)", if n == 1 { "" } else { "s" }),
+            (o, 0) => format!("{o} deleted line{}", if o == 1 { "" } else { "s" }),
+            (o, n) => format!("{o} → {n} changed line{}", if n == 1 { "" } else { "s" }),
+        };
+        let spans = [
+            ("Last commit  ·  ".to_string(), dim),
+            (what, txt),
+            ("        Revert".to_string(), acc),
+            ("      ✕".to_string(), dim),
+        ];
+        header.set_rich_text(spans.iter().map(|(t, c)| (t.as_str(), attrs.clone().color(c.to_glyphon()))), &attrs, Shaping::Advanced, None);
+        header.shape_until_scroll(fs, false);
+        let mut body = Buffer::new(fs, Metrics::new(font.size, font.line_h));
+        body.set_wrap(Wrap::None);
+        body.set_monospace_width(Some(font.cell_w));
+        let shown: Vec<String> = hunk.old_lines.iter().take(15).cloned().collect();
+        let mut text = shown.join("\n");
+        if hunk.old_lines.len() > 15 {
+            text.push_str(&format!("\n… {} more lines", hunk.old_lines.len() - 15));
+        }
+        body.set_text(&text, &attrs, Shaping::Advanced, None);
+        body.shape_until_scroll(fs, false);
+        let version = self.editor().doc.version();
+        self.git_peek = Some(GitPeek {
+            tab: self.active,
+            version,
+            line,
+            hunk,
+            header,
+            body,
+            card: Rect::default(),
+            revert: Rect::default(),
+            close: Rect::default(),
+        });
+        self.window.request_redraw();
+    }
+
+    /// Puts the committed lines of the peeked block back.
+    fn revert_git_peek(&mut self) {
+        let Some(p) = self.git_peek.take() else { return };
+        let ed = self.editor_mut();
+        let rope = ed.doc.text();
+        let lines = rope.len_lines();
+        let start_line = p.hunk.new_start.min(lines);
+        let end_line = (p.hunk.new_start + p.hunk.new_len).min(lines);
+        let start = if start_line >= lines { rope.len_chars() } else { rope.line_to_char(start_line) };
+        let end = if end_line >= lines { rope.len_chars() } else { rope.line_to_char(end_line) };
+        let mut text: String = p.hunk.old_lines.iter().map(|l| format!("{l}\n")).collect();
+        // The block ran to the end of the file without a final line break.
+        if end_line >= lines && end == rope.len_chars() && p.hunk.new_len > 0 && !rope.to_string().ends_with('\n') {
+            text.pop();
+        }
+        ed.doc.replace_range(start, end, &text);
+        ed.after_edit();
+        ed.ensure_cursor_visible();
+        self.lsp_after_edit();
+        self.show("Block reverted to the last commit");
+    }
+
+    /// A click while the peek is open: its buttons, or anywhere else closes it.
+    fn git_peek_click(&mut self, x: f32, y: f32) -> bool {
+        let Some(p) = &self.git_peek else { return false };
+        let inside = |r: Rect| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        if inside(p.revert) {
+            self.revert_git_peek();
+            return true;
+        }
+        if inside(p.close) {
+            self.git_peek = None;
+            return true;
+        }
+        if inside(p.card) {
+            return true;
+        }
+        // A click on another bar opens that one instead (handled by the caller).
+        self.git_peek = None;
+        false
     }
 
     /// A click on an icon button in a panel header.
@@ -1658,11 +1890,14 @@ impl State {
                     ex.collapse_all();
                 }
             }
+            B::NewTerminal => self.new_terminal(),
+            B::TerminalProfiles => {
+                let (x, y) = (self.mouse.x, self.mouse.y);
+                self.open_profiles_menu(x, y);
+            }
+            B::ToggleOutput => self.problems.toggle_view(),
             B::Close => {
-                self.dock.hide(panel);
-                if self.focused_panel() == Some(panel) {
-                    self.focus = Focus::Editor;
-                }
+                self.close_panel(panel);
                 self.dock_changed();
             }
         }
@@ -1674,9 +1909,8 @@ impl State {
         match item {
             chrome::ActItem::Settings => self.open_settings_page(),
             chrome::ActItem::Panel(p) => {
-                if self.panel_shown(p) && self.focused_panel() == Some(p) {
-                    self.dock.hide(p);
-                    self.focus = Focus::Editor;
+                if self.panel_open(p) && self.focused_panel() == Some(p) {
+                    self.close_panel(p);
                     self.dock_changed();
                 } else {
                     self.activate_panel(p);
@@ -1696,51 +1930,27 @@ impl State {
         self.show("Panel layout reset");
     }
 
-    /// The dock area whose inner edge is under the mouse (to resize it).
-    fn splitter_at(&self, x: f32, y: f32) -> Option<Area> {
-        let grab = 2.0 * self.renderer.scale_factor() + self.layout.gap / 2.0;
-        let half = self.layout.gap / 2.0;
-        let near = |a: f32, b: f32| (a - b).abs() <= grab;
-        if let Some(r) = self.layout.left
-            && near(x, r.x + r.w + half)
-            && y >= r.y
-            && y < r.y + r.h
-        {
-            return Some(Area::Left);
-        }
-        if let Some(r) = self.layout.right
-            && near(x, r.x - half)
-            && y >= r.y
-            && y < r.y + r.h
-        {
-            return Some(Area::Right);
-        }
-        if let Some(r) = self.layout.bottom
-            && near(y, r.y - half)
-            && x >= r.x
-            && x < r.x + r.w
-        {
-            return Some(Area::Bottom);
-        }
-        None
+    /// The gap between two dock nodes under the mouse (to resize them): its index.
+    fn splitter_at(&self, x: f32, y: f32) -> Option<usize> {
+        let grab = 2.0 * self.renderer.scale_factor();
+        self.layout.splitters.iter().position(|s| {
+            let r = s.rect;
+            match s.dir {
+                dock::Dir::Row => x >= r.x - grab && x < r.x + r.w + grab && y >= r.y && y < r.y + r.h,
+                dock::Dir::Column => y >= r.y - grab && y < r.y + r.h + grab && x >= r.x && x < r.x + r.w,
+            }
+        })
     }
 
-    /// Dragging an area's edge: sides in UI cells, the bottom in percent of the window.
-    fn resize_area(&mut self, a: Area, x: f32, y: f32) {
-        let (w, _) = self.renderer.size();
-        let w = w as f32;
-        let body_h = self.layout.status.y;
-        let cell = self.ui_font.cell_w;
-        // Sizes count from the outer edge of the content (right of the activity bar).
-        let left0 = self.layout.activity.w + self.layout.gap / 2.0;
-        let right0 = w - self.layout.gap / 2.0;
-        let rh = body_h - self.layout.gap;
-        let size = match a {
-            Area::Left => ((x - left0).clamp(cell * 12.0, w * 0.45)) / cell,
-            Area::Right => ((right0 - x).clamp(cell * 12.0, w * 0.45)) / cell,
-            Area::Bottom => ((body_h - self.layout.gap / 2.0 - y) / rh * 100.0).clamp(10.0, 80.0),
-        };
-        self.dock.area_mut(a).size = Some((size * 10.0).round() / 10.0);
+    /// Dragging a gap: the nodes on both sides change size (`last`: the previous mouse position
+    /// along the gap's direction).
+    fn resize_split(&mut self, i: usize, x: f32, y: f32) {
+        let Some(s) = self.layout.splitters.get(i).cloned() else { return };
+        let Some((_, last)) = self.resizing else { return };
+        let pos = if s.dir == dock::Dir::Row { x } else { y };
+        let min = if s.dir == dock::Dir::Row { self.ui_font.cell_w * 12.0 } else { self.ui_font.line_h * 4.0 };
+        self.dock.resize(&s.split, s.index, pos - last, s.total, min);
+        self.resizing = Some((i, pos));
         self.relayout();
     }
 
@@ -1754,21 +1964,23 @@ impl State {
             w: self.layout.status.w - self.layout.activity.w,
             h: self.layout.status.y,
         };
-        let areas: Vec<(Area, Rect)> = Area::ALL.into_iter().filter_map(|a| self.layout_area(a).map(|r| (a, r))).collect();
         let inside = |r: &Rect| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
-        let under = areas
+        let under = self
+            .layout
+            .panes
             .iter()
-            .find(|(_, r)| inside(r))
-            .map(|(a, r)| (*r, Some(*a)))
-            .or_else(|| [Some(self.layout.editor_card), self.layout.editor2_card].into_iter().flatten().find(|r| inside(r)).map(|r| (r, None)));
+            .find(|b| inside(&b.rect))
+            .map(|b| compass::Under::Pane(b.path.clone(), b.rect))
+            .or_else(|| inside(&self.layout.editor_node).then(|| compass::Under::Editor(self.layout.editor_path.clone(), self.layout.editor_node)));
         let size = (self.ui_font.line_h * 2.1).round();
         let targets = match what {
-            Dragged::Panel(_) => compass::panel_targets(content, &areas, under, size),
+            Dragged::Panel(_) => compass::panel_targets(content, under, size),
             Dragged::Tab(_) => compass::tab_targets(self.layout.editor_card, size),
         };
         // Ctrl: move without docking (like Visual Studio).
         let ctrl = self.modifiers.control_key();
         let Some(d) = &mut self.panel_drag else { return };
+        d.at = (x, y);
         let dist = ((x - d.from.0).powi(2) + (y - d.from.1).powi(2)).sqrt();
         if !d.moved && dist < 8.0 * scale {
             return;
@@ -1787,12 +1999,15 @@ impl State {
         }
         match (d.what, d.target) {
             (Dragged::Panel(p), Some(t)) => {
-                if let Some(area) = t.area {
-                    self.dock.move_panel(p, area, usize::MAX);
+                if let Some(target) = t.dock {
+                    self.dock.dock(p, target);
                     self.dock_changed();
                     self.activate_panel(p);
+                    self.window.focus_window();
                 }
             }
+            // Released where no target is: the panel gets a window of its own.
+            (Dragged::Panel(p), None) => self.float_panel(p, d.at),
             (Dragged::Tab(i), Some(t)) => self.split_tab(i, t.side),
             _ => {}
         }
@@ -1930,6 +2145,7 @@ impl State {
         self.search.set_font(ui);
         self.git.set_font(ui);
         self.debugger.set_font(ui);
+        self.problems.set_font(ui);
         self.settings_page.set_font(ui, self.family.clone());
         self.dock_bar.set_font(self.renderer.font_system(), ui);
         self.tab_icons = Self::make_tab_icons(self.renderer.font_system(), ui);
@@ -2058,6 +2274,9 @@ impl State {
                 let what = if op == ExplorerOp::NewFile { "New file" } else { "New folder" };
                 let title = format!("{what} in {} (Enter, Esc)", file_name(&dir));
                 let prompt = menu::Prompt::new(fs, self.ui_font, &title, "");
+                if let Some(ex) = &mut self.explorer {
+                    ex.expand(&dir);
+                }
                 self.overlay = Overlay::ExplorerPrompt { prompt, op, target: dir };
             }
         }
@@ -2514,8 +2733,15 @@ impl State {
     }
 
     fn save(&mut self) {
+        self.save_with(true);
+    }
+
+    /// Saves the active file; `report`: say so in the status bar (not for auto save).
+    fn save_with(&mut self, report: bool) {
         if self.editor().doc.path().is_none() {
-            self.save_as();
+            if report {
+                self.save_as();
+            }
             return;
         }
         self.plugin_event(plugins::Event::BeforeSave);
@@ -2529,7 +2755,10 @@ impl State {
                 }
                 let is_settings = ed.doc.path().is_some() && ed.doc.path() == settings::path().as_deref();
                 let is_keymap = ed.doc.path().is_some() && ed.doc.path() == custom_keys::path().as_deref();
-                self.show(format!("{name} saved"));
+                let is_snippets = ed.doc.path().is_some_and(snippets::UserSnippets::is_snippet_file);
+                if report {
+                    self.show(format!("{name} saved"));
+                }
                 self.plugin_event(plugins::Event::Save);
                 if is_settings {
                     self.reload_settings();
@@ -2537,12 +2766,88 @@ impl State {
                 if is_keymap {
                     self.reload_keymap(true);
                 }
+                if is_snippets {
+                    self.user_snippets = snippets::UserSnippets::load();
+                    match self.user_snippets.errors.first() {
+                        Some(e) => self.show(format!("Snippets: {e}")),
+                        None => self.show(format!("{} own snippets loaded", self.user_snippets.list.len())),
+                    }
+                }
                 if self.git.repo.is_some() {
                     self.git.refresh_status();
                 }
             }
             Err(e) => self.show(format!("Save failed: {e}")),
         }
+    }
+
+    /// Saves every open file with changes (both halves of a split). Returns how many.
+    fn save_all(&mut self, report: bool) -> usize {
+        let was = self.active;
+        let mut n = 0;
+        for i in 0..self.tabs.len() {
+            let t = &self.tabs[i];
+            if t.doc.is_dirty() && t.doc.path().is_some() && !t.settings_page {
+                self.active = i;
+                self.save_with(false);
+                n += 1;
+            }
+        }
+        self.active = was.min(self.tabs.len().saturating_sub(1));
+        // Files only open in the other half (twins follow their saved twin by themselves).
+        if let Some(sp) = &mut self.split {
+            let here: Vec<String> =
+                self.tabs.iter().filter_map(|t| t.doc.path().map(|p| p.to_string_lossy().to_lowercase())).collect();
+            for t in &mut sp.tabs {
+                let Some(p) = t.doc.path().map(|p| p.to_string_lossy().to_lowercase()) else { continue };
+                if t.doc.is_dirty() && !here.contains(&p) && t.doc.save().is_ok() {
+                    t.refresh_disk_mtime();
+                    n += 1;
+                }
+            }
+        }
+        if report {
+            self.show(match n {
+                0 => "Nothing to save".to_string(),
+                1 => "1 file saved".to_string(),
+                n => format!("{n} files saved"),
+            });
+        }
+        self.window.request_redraw();
+        n
+    }
+
+    /// Auto save: when the open documents changed, wait for a pause, then save them.
+    fn auto_save_tick(&mut self, now: Instant) -> Option<Instant> {
+        if !self.settings.editor.auto_save {
+            return None;
+        }
+        let stamp: u64 = self
+            .tabs
+            .iter()
+            .chain(self.split.iter().flat_map(|sp| sp.tabs.iter()))
+            .filter(|t| t.doc.is_dirty() && t.doc.path().is_some())
+            .map(|t| t.doc.version())
+            .fold(0u64, |a, v| a.wrapping_mul(31).wrapping_add(v));
+        if stamp == 0 {
+            self.auto_save_due = None;
+            self.auto_save_stamp = 0;
+            return None;
+        }
+        let delay = Duration::from_millis(self.settings.editor.auto_save_delay_ms.clamp(300, 10_000));
+        if stamp != self.auto_save_stamp {
+            self.auto_save_stamp = stamp;
+            self.auto_save_due = Some(now + delay);
+        }
+        let due = self.auto_save_due?;
+        // Not while an input or menu is open, nor while Claude Code waits for a decision.
+        let busy = !matches!(self.overlay, Overlay::None) || self.claude_diff.is_some();
+        if now >= due && !busy {
+            self.auto_save_due = None;
+            self.save_all(false);
+            return None;
+        }
+        Some(due.max(now + Duration::from_millis(200)))
     }
 
     fn dialog_dir(&self) -> Option<PathBuf> {
@@ -2704,6 +3009,10 @@ impl State {
                 self.new_branch_key(event, &key);
                 return;
             }
+            Overlay::RenameTerminal(..) => {
+                self.rename_terminal_key(event, &key);
+                return;
+            }
             Overlay::DebugProjects(_) | Overlay::Processes(_) => {
                 self.debug_menu_key(&key);
                 return;
@@ -2730,21 +3039,26 @@ impl State {
             }
             self.last_escape = Some(now);
         }
-        if self.focus == Focus::Terminal && self.panel_shown(Panel::Terminal) {
+        if self.focus == Focus::Terminal && self.panel_open(Panel::Terminal) {
             self.terminal_key(event);
             return;
         }
-        if self.focus == Focus::Search && self.panel_shown(Panel::Search) {
+        if self.focus == Focus::Search && self.panel_open(Panel::Search) {
             self.search_key(event);
             return;
         }
-        if self.focus == Focus::Git && self.panel_shown(Panel::Git) {
+        if self.focus == Focus::Git && self.panel_open(Panel::Git) {
             self.git_key(event);
             return;
         }
         // F-keys (step, continue) work everywhere, also with the debug panel focused.
         let is_fkey = matches!(key, Key::Named(NamedKey::F5 | NamedKey::F9 | NamedKey::F10 | NamedKey::F11));
-        if self.focus == Focus::Debug && self.panel_shown(Panel::Debug) && !is_fkey {
+        if self.focus == Focus::Problems && self.panel_open(Panel::Problems) && !is_fkey {
+            let action = self.problems.key(event);
+            self.apply_problem_action(action);
+            return;
+        }
+        if self.focus == Focus::Debug && self.panel_open(Panel::Debug) && !is_fkey {
             let action = self.debugger.key(event);
             self.apply_debug_panel_action(action);
             return;
@@ -2769,6 +3083,9 @@ impl State {
                 return;
             }
         if self.focus == Focus::Editor && self.completion.is_none() && self.ghost_key(&key) {
+            return;
+        }
+        if self.focus == Focus::Editor && self.completion.is_none() && self.snippet_key(&key) {
             return;
         }
         let explorer_new = mods.control_key()
@@ -2997,7 +3314,13 @@ impl State {
 
     fn accept_completion(&mut self) {
         let Some(c) = self.completion.take() else { return };
-        let Some(insert) = c.selected_insert() else { return };
+        let Some(item) = c.selected() else { return };
+        let (insert, snippet) = (item.insert.clone(), item.snippet);
+        if snippet {
+            let head = self.editor().doc.selection().primary().head;
+            self.insert_snippet(c.anchor, head, &insert);
+            return;
+        }
         let ed = self.editor_mut();
         let head = ed.doc.selection().primary().head;
         ed.doc.replace_range(c.anchor, head, &insert);
@@ -3072,7 +3395,10 @@ impl State {
             match event {
                 lsp::Event::Status => self.lsp_open_all(),
                 lsp::Event::Message(m) => self.show(m),
-                lsp::Event::Diagnostics(path) => self.apply_diagnostics(&path),
+                lsp::Event::Diagnostics(path) => {
+                    self.apply_diagnostics(&path);
+                    self.refresh_problems();
+                }
                 lsp::Event::Completion { path, anchor, items } => {
                     let ed = &self.tabs[self.active];
                     let head = ed.doc.selection().primary().head;
@@ -3080,6 +3406,20 @@ impl State {
                     let valid = ed.doc.path() == Some(path.as_path())
                         && anchor <= head
                         && rope.char_to_line(anchor) == rope.char_to_line(head);
+                    let mut items = items;
+                    // The built-in snippets of the language join the list.
+                    for sn in snippets::for_language(ed.language_name(), &self.user_snippets) {
+                        if !items.iter().any(|i| i.label == sn.prefix && i.snippet) {
+                            items.push(lsp::CompletionItem {
+                                label: sn.prefix.clone(),
+                                detail: format!("snippet · {}", sn.description),
+                                insert: sn.body.clone(),
+                                filter: sn.prefix.clone(),
+                                sort: format!("~{}", sn.prefix),
+                                snippet: true,
+                            });
+                        }
+                    }
                     if valid && !items.is_empty() {
                         let prefix = rope.slice(anchor..head).to_string();
                         let fs = self.renderer.font_system();
@@ -3192,6 +3532,144 @@ impl State {
     }
 
     /// Converts the server's problem list for a file into ranges in its tab.
+    /// All diagnostics of the language servers into the Problems panel.
+    fn refresh_problems(&mut self) {
+        let mut list = Vec::new();
+        for server in self.servers.values() {
+            for (path, diags) in &server.diagnostics {
+                for d in diags.iter().filter(|d| d.severity <= 2) {
+                    list.push(problems::Problem {
+                        path: path.clone(),
+                        line: d.start["line"].as_u64().unwrap_or(0) as usize,
+                        col: d.start["character"].as_u64().unwrap_or(0) as usize,
+                        severity: d.severity,
+                        message: if d.code.is_empty() { d.message.clone() } else { format!("{}: {}", d.code, d.message) },
+                        from_build: false,
+                    });
+                }
+            }
+        }
+        self.problems.set_lsp(list);
+    }
+
+    /// Enter or a click on a problem: open the file there.
+    fn apply_problem_action(&mut self, action: problems::ProblemAction) {
+        match action {
+            problems::ProblemAction::None => {}
+            problems::ProblemAction::Close => {
+                self.close_panel(Panel::Problems);
+                self.dock_changed();
+            }
+            problems::ProblemAction::Open(path, line, col) => {
+                self.open_path(&path);
+                let ed = self.editor_mut();
+                if ed.doc.path() == Some(path.as_path()) {
+                    let rope = ed.doc.text();
+                    let line = line.min(rope.len_lines().saturating_sub(1));
+                    let pos = rope.line_to_char(line) + col.min(wyven_buffer::line_len_chars(rope, line));
+                    ed.jump_to(pos);
+                    self.focus = Focus::Editor;
+                    self.window.focus_window();
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// Build, test or clean in the background (errors go to Problems); run in a terminal.
+    fn run_task(&mut self, kind: tasks::TaskKind) {
+        let Some(root) = self.active_root().or_else(|| self.editor().doc.path().and_then(Path::parent).map(Path::to_path_buf)) else {
+            self.show("Open a project folder first.");
+            return;
+        };
+        let Some(tool) = tasks::detect(&root) else {
+            self.show("No project found here (.sln, .csproj, Cargo.toml or package.json).");
+            return;
+        };
+        // Like Visual Studio: save before building.
+        self.save_all(false);
+        if kind == tasks::TaskKind::Run {
+            let Some(line) = tool.terminal_line(kind) else { return };
+            if self.terminal.count() == 0 {
+                self.toggle_terminal_on();
+            } else {
+                self.new_terminal();
+            }
+            if let Some(t) = self.terminal.term() {
+                t.write(format!("{line}\r").into_bytes());
+            }
+            return;
+        }
+        let proxy = self.proxy.clone();
+        let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(move || {
+            let _ = proxy.send_event(UserEvent::Task);
+        });
+        self.problems.clear_output();
+        self.problems.set_build(Vec::new());
+        let (program, args) = tool.command(kind).unwrap_or_default();
+        self.problems.push_output(format!("> {program} {}", args.join(" ")));
+        match self.tasks.start(&tool, kind, wake) {
+            Ok(()) => self.show(format!("{} started …", kind.verb())),
+            Err(e) => {
+                self.problems.push_output(e.clone());
+                self.show(e);
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    fn task_poll(&mut self) {
+        let dir = self.tasks.running.as_ref().map(|(_, t, _)| t.dir().to_path_buf());
+        for msg in self.tasks.poll() {
+            match msg {
+                tasks::TaskMsg::Line(line) => {
+                    if let Some(p) = dir.as_deref().and_then(|d| tasks::parse_line(&line, d)) {
+                        self.problems.add_build(p);
+                    }
+                    self.problems.push_output(line);
+                }
+                tasks::TaskMsg::Done(code, err) => {
+                    if let Some(e) = err {
+                        self.problems.push_output(e);
+                    }
+                    let (errors, warnings) = self.problems.counts();
+                    let Some((kind, ok, took)) = self.tasks.last else { continue };
+                    let secs = took.as_secs_f32();
+                    let text = if ok {
+                        format!("{} succeeded in {secs:.1} s ({warnings} warnings)", kind.verb())
+                    } else {
+                        format!("{} failed ({}) in {secs:.1} s: {errors} errors", kind.verb(), code.map_or("stopped".into(), |c| format!("exit {c}")))
+                    };
+                    self.problems.push_output(text.clone());
+                    self.show(text);
+                    // Like Visual Studio: errors open the list.
+                    if !ok && errors > 0 {
+                        self.problems.view = problems::View::Problems;
+                        self.dock.show(Panel::Problems);
+                        self.dock_changed();
+                    } else if !ok {
+                        self.problems.view = problems::View::Output;
+                        self.dock.show(Panel::Problems);
+                        self.dock_changed();
+                    }
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// The line about the task in the Problems header.
+    fn update_task_line(&mut self) {
+        self.problems.roots = self.explorer.as_ref().map(|e| e.roots().to_vec()).unwrap_or_default();
+        self.problems.task_line = match (self.tasks.status(), self.tasks.last) {
+            (Some(s), _) => s,
+            (None, Some((kind, ok, took))) => {
+                format!("{} {} ({:.1} s)", kind.verb(), if ok { "succeeded" } else { "failed" }, took.as_secs_f32())
+            }
+            _ => String::new(),
+        };
+    }
+
     fn apply_diagnostics(&mut self, path: &Path) {
         let list = self.servers.values().find_map(|s| s.diagnostics.get(path).cloned()).unwrap_or_default();
         if let Some(t) = self.tabs.iter_mut().find(|t| t.doc.path() == Some(path)) {
@@ -4017,16 +4495,21 @@ impl State {
 
     /// Alt → t: opens the terminal (starting the shell the first time), focuses it, or closes it.
     fn toggle_terminal(&mut self) {
-        if self.panel_shown(Panel::Terminal) && self.focus == Focus::Terminal {
+        if self.panel_open(Panel::Terminal) && self.focus == Focus::Terminal {
             self.dock.hide(Panel::Terminal);
             self.focus = Focus::Editor;
             self.dock_changed();
             return;
         }
+        self.toggle_terminal_on();
+    }
+
+    /// Shows the terminal panel with the focus, starting the shell the first time.
+    fn toggle_terminal_on(&mut self) {
         self.dock.show(Panel::Terminal);
         self.focus = Focus::Terminal;
         self.dock_changed();
-        if self.terminal.term.is_none() {
+        if self.terminal.term().is_none() {
             self.start_terminal();
         }
     }
@@ -4054,14 +4537,14 @@ impl State {
             terminal::KeyResult::Handled => {}
             terminal::KeyResult::Copy(text) => {
                 self.set_clipboard((text, false));
-                if let Some(t) = &self.terminal.term {
+                if let Some(t) = self.terminal.term() {
                     t.clear_selection();
                 }
                 self.show("Copied");
             }
             terminal::KeyResult::Paste => {
                 if let Some((text, _)) = self.get_clipboard()
-                    && let Some(t) = &self.terminal.term {
+                    && let Some(t) = self.terminal.term() {
                         t.paste(&text);
                     }
             }
@@ -4071,15 +4554,58 @@ impl State {
     }
 
     fn terminal_poll(&mut self) {
-        let Some(t) = &mut self.terminal.term else { return };
-        for event in t.poll() {
+        for (i, event) in self.terminal.poll() {
             match event {
                 wyven_terminal::TermEvent::Wakeup | wyven_terminal::TermEvent::Title(_) => {}
                 wyven_terminal::TermEvent::Copy(text) => self.set_clipboard((text, false)),
-                wyven_terminal::TermEvent::Exited => self.show("Terminal exited – Enter restarts it"),
+                wyven_terminal::TermEvent::Exited => {
+                    if self.terminal.count() > 1 {
+                        self.show(format!("Terminal {} exited – Enter restarts it, × in the list closes it", i + 1));
+                    } else {
+                        self.show("Terminal exited – Enter restarts it");
+                    }
+                }
             }
         }
-        self.terminal.dirty = true;
+        self.window.request_redraw();
+    }
+
+    /// "+" in the terminal header: one more shell.
+    fn new_terminal(&mut self) {
+        if self.terminal.count() == 0 {
+            self.toggle_terminal_on();
+            return;
+        }
+        if let Err(e) = self.terminal.add() {
+            self.show(e);
+        }
+        self.dock.show(Panel::Terminal);
+        self.focus = Focus::Terminal;
+        self.dock_changed();
+    }
+
+    /// Ends terminal `i`; the panel closes with the last one.
+    fn close_terminal(&mut self, i: usize) {
+        if !self.terminal.close(i) {
+            self.terminal_started = false;
+            self.dock.hide(Panel::Terminal);
+            if self.focus == Focus::Terminal {
+                self.focus = Focus::Editor;
+            }
+            self.dock_changed();
+        }
+        self.window.request_redraw();
+    }
+
+    /// Switches terminals: `delta` +1 next, -1 previous.
+    fn cycle_terminal(&mut self, delta: isize) {
+        let n = self.terminal.count() as isize;
+        if n > 1 {
+            let i = (self.terminal.active() as isize + delta).rem_euclid(n) as usize;
+            self.terminal.select(i);
+            self.focus = Focus::Terminal;
+            self.show(format!("Terminal {}/{}", i + 1, n));
+        }
         self.window.request_redraw();
     }
 
@@ -4182,11 +4708,10 @@ impl State {
     /// else the area closes.
     fn close_sidebar_panel(&mut self) {
         let p = self.focused_panel().unwrap_or(Panel::Search);
-        let area = self.dock.area_of(p);
-        if self.dock.area(area).panels.contains(&Panel::Explorer) && self.explorer.is_some() {
+        if self.dock.neighbours(p).contains(&Panel::Explorer) && self.explorer.is_some() {
             self.dock.show(Panel::Explorer);
         } else {
-            self.dock.hide(p);
+            self.close_panel(p);
         }
         self.focus = Focus::Editor;
         self.dock_changed();
@@ -4586,6 +5111,47 @@ impl State {
         }
     }
 
+    fn rename_terminal_key(&mut self, event: &KeyEvent, key: &Key) {
+        let ctrl = self.modifiers.control_key() && !self.modifiers.alt_key();
+        let Overlay::RenameTerminal(prompt, i) = &mut self.overlay else { return };
+        match key {
+            Key::Named(NamedKey::Escape) => self.overlay = Overlay::None,
+            Key::Named(NamedKey::Enter) => {
+                let (name, i) = (prompt.text.clone(), *i);
+                self.overlay = Overlay::None;
+                self.terminal.rename(i, &name);
+            }
+            Key::Named(NamedKey::Backspace) => prompt.backspace(ctrl),
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::End | NamedKey::Home) => prompt.keep(),
+            _ => {
+                if let Some(t) = Keymap::text(event, self.modifiers) {
+                    prompt.type_text(&t);
+                }
+            }
+        }
+    }
+
+    /// Right-click on a terminal in the list.
+    fn open_terminal_menu(&mut self, i: usize, x: f32, y: f32) {
+        use ctxmenu::CtxAction as C;
+        let mut b = ctxmenu::MenuBuilder::new().item("Rename …", "", C::RenameTerminal(i)).separator();
+        for (name, rgb) in terminal::COLORS {
+            b = b.item(&format!("Color: {name}"), "", C::ColorTerminal(i, Some(rgb)));
+        }
+        b = b.item("Color: None", "", C::ColorTerminal(i, None)).separator().item("Kill Terminal", "", C::KillTerminal(i));
+        self.show_context(b, x, y);
+    }
+
+    /// "˅" in the terminal header: the installed shells.
+    fn open_profiles_menu(&mut self, x: f32, y: f32) {
+        use ctxmenu::CtxAction as C;
+        let mut b = ctxmenu::MenuBuilder::new();
+        for (i, p) in terminal::profiles().iter().enumerate() {
+            b = b.item(&p.name, "", C::NewTerminalProfile(i));
+        }
+        self.show_context(b, x, y);
+    }
+
     fn new_branch_key(&mut self, event: &KeyEvent, key: &Key) {
         let mods = self.modifiers;
         let ctrl = mods.control_key() && !mods.alt_key();
@@ -4678,6 +5244,98 @@ impl State {
     }
 
     /// Tab, Ctrl+→ and Esc while a suggestion is shown. Returns true if the key was used.
+    /// Tab after a snippet's name inserts it; while one is being filled in, Tab / Shift+Tab
+    /// jump between its placeholders and Esc ends it.
+    fn snippet_key(&mut self, key: &Key) -> bool {
+        let mods = self.modifiers;
+        if mods.control_key() || mods.alt_key() || self.diff.is_some() || self.editor().settings_page {
+            return false;
+        }
+        if self.snippet.as_ref().is_some_and(|(tab, _)| *tab != self.active) {
+            self.snippet = None;
+        }
+        match key {
+            Key::Named(NamedKey::Tab) if self.snippet.is_some() => {
+                self.snippet_step(if mods.shift_key() { -1 } else { 1 });
+                true
+            }
+            Key::Named(NamedKey::Tab) if !mods.shift_key() => {
+                let ed = self.editor();
+                let sel = ed.doc.selection();
+                if sel.len() != 1 || !sel.primary().is_empty() {
+                    return false;
+                }
+                let head = sel.primary().head;
+                let start = ed.word_start();
+                let word = ed.doc.text().slice(start..head).to_string();
+                let Some(sn) = snippets::find(ed.language_name(), &word, &self.user_snippets) else { return false };
+                self.insert_snippet(start, head, &sn.body);
+                true
+            }
+            Key::Named(NamedKey::Escape) if self.git_peek.is_some() => {
+                self.git_peek = None;
+                true
+            }
+            Key::Named(NamedKey::Escape) if self.snippet.is_some() => {
+                self.snippet = None;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Replaces `start..end` with a snippet and selects its first placeholder.
+    fn insert_snippet(&mut self, start: usize, end: usize, body: &str) {
+        let ed = self.editor();
+        let rope = ed.doc.text();
+        let line = rope.char_to_line(start);
+        let indent: String = rope.line(line).chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let before = rope.slice(start.saturating_sub(100_000)..start).to_string();
+        let file_name = ed.doc.path().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let file_base = ed.doc.path().and_then(|p| p.file_stem()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let vars = snippets::Vars {
+            class_name: snippets::enclosing_class(&before).unwrap_or_else(|| file_base.clone()),
+            file_base,
+            file_name,
+        };
+        let unit = ed.doc.indent_unit.clone();
+        let e = snippets::expand(body, &indent, &unit, &vars);
+        let ed = self.editor_mut();
+        ed.doc.replace_range(start, end, &e.text);
+        let stops: Vec<Vec<(usize, usize)>> =
+            e.stops.iter().map(|g| g.iter().map(|&(a, b)| (a + start, b + start)).collect()).collect();
+        let len = ed.doc.text().len_chars();
+        let first = stops[0].clone();
+        Self::select_ranges(ed, &first);
+        ed.after_edit();
+        ed.ensure_cursor_visible();
+        self.snippet = (stops.len() > 1).then_some((self.active, snippets::Session { stops, current: 0, len_at: len }));
+        self.lsp_after_edit();
+    }
+
+    fn select_ranges(ed: &mut EditorView, ranges: &[(usize, usize)]) {
+        let len = ed.doc.text().len_chars();
+        let list: Vec<wyven_buffer::Range> = ranges.iter().map(|&(a, b)| wyven_buffer::Range::new(a.min(len), b.min(len))).collect();
+        if !list.is_empty() {
+            ed.doc.set_selection(wyven_buffer::Selection::new(list, 0));
+        }
+    }
+
+    /// Next (`step` 1) or previous (-1) placeholder of the snippet being filled in.
+    fn snippet_step(&mut self, step: isize) {
+        let Some((tab, mut s)) = self.snippet.take() else { return };
+        let len = self.editor().doc.text().len_chars();
+        if let Some(ranges) = s.advance(len, step) {
+            let ed = self.editor_mut();
+            Self::select_ranges(ed, &ranges);
+            ed.ensure_cursor_visible();
+            // At $0 the snippet is done.
+            if !s.at_end() {
+                self.snippet = Some((tab, s));
+            }
+        }
+    }
+
     fn ghost_key(&mut self, key: &Key) -> bool {
         let mods = self.modifiers;
         let Some((pos, text)) = self.editor().active_ghost().map(|(p, t)| (p, t.to_string())) else { return false };
@@ -5245,7 +5903,7 @@ impl State {
                     return;
                 }
                 if self.panel_shown(Panel::Explorer) {
-                    self.dock.hide(Panel::Explorer);
+                    self.close_panel(Panel::Explorer);
                     self.focus = Focus::Editor;
                 } else {
                     self.dock.show(Panel::Explorer);
@@ -5305,6 +5963,21 @@ impl State {
                     }
                 }
             }
+            OpenSnippets => {
+                let lang = self.editor().language_name();
+                let id = snippets::id_of_language(lang).unwrap_or("csharp");
+                let lang = snippets::language_of_id(id).unwrap_or("C#");
+                let Some(dir) = snippets::dir() else { return };
+                let path = dir.join(format!("{id}.json"));
+                if !path.exists() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    if let Err(e) = std::fs::write(&path, snippets::template(lang)) {
+                        self.show(format!("Snippets: {e}"));
+                        return;
+                    }
+                }
+                self.open_path(&path);
+            }
             OpenKeymap => {
                 let Some(path) = custom_keys::path() else { return };
                 if !path.exists() {
@@ -5345,6 +6018,29 @@ impl State {
             SetTheme(name) => self.set_theme(name),
             ChooseTheme => self.open_theme_picker(),
             ToggleTerminal => self.toggle_terminal(),
+            NewTerminal => self.new_terminal(),
+            Task(kind) => self.run_task(kind),
+            StopTask => {
+                if self.tasks.running.is_some() {
+                    self.tasks.stop();
+                    self.show("Task stopped");
+                }
+            }
+            ShowProblems => {
+                self.problems.view = problems::View::Problems;
+                self.activate_panel(Panel::Problems);
+            }
+            ShowOutput => {
+                self.problems.view = problems::View::Output;
+                self.activate_panel(Panel::Problems);
+            }
+            CloseTerminal => {
+                if self.terminal.count() > 0 {
+                    self.close_terminal(self.terminal.active());
+                }
+            }
+            NextTerminal => self.cycle_terminal(1),
+            PreviousTerminal => self.cycle_terminal(-1),
             ToggleTheme => {
                 let next = if self.theme.name == "dark" { "light" } else { "dark" };
                 self.set_theme(next);
@@ -5695,6 +6391,14 @@ impl State {
                 follow_cursor = false;
                 self.save_as();
             }
+            Command::Build => {
+                follow_cursor = false;
+                self.run_task(tasks::TaskKind::Build);
+            }
+            Command::SaveAll => {
+                follow_cursor = false;
+                self.save_all(true);
+            }
             Command::OpenFile => {
                 follow_cursor = false;
                 self.pick_file();
@@ -5870,7 +6574,7 @@ impl State {
             if self.terminal.selecting {
                 self.terminal.selecting = false;
                 // A click without dragging selects nothing.
-                if let Some(t) = &self.terminal.term
+                if let Some(t) = self.terminal.term()
                     && t.selection_text().is_none_or(|s| s.trim().is_empty()) {
                         t.clear_selection();
                         self.terminal.dirty = true;
@@ -5925,13 +6629,14 @@ impl State {
             return;
         }
         if button == MouseButton::Left {
-            if let Some(area) = self.splitter_at(x, y) {
-                self.resizing = Some(area);
+            if let Some(i) = self.splitter_at(x, y) {
+                let pos = if self.layout.splitters[i].dir == dock::Dir::Row { x } else { y };
+                self.resizing = Some((i, pos));
                 return;
             }
             match self.dock_bar.hit(x, y) {
                 Some(dock::HeaderHit::Tab(tab)) => {
-                    self.panel_drag = Some(PanelDrag { what: Dragged::Panel(tab.panel), from: (x, y), moved: false, targets: Vec::new(), target: None });
+                    self.panel_drag = Some(PanelDrag { what: Dragged::Panel(tab.panel), from: (x, y), at: (x, y), moved: false, targets: Vec::new(), target: None });
                     self.activate_panel(tab.panel);
                     return;
                 }
@@ -5959,7 +6664,7 @@ impl State {
                         self.activate(i);
                         self.focus = Focus::Editor;
                         // Dragging a tab shows the compass to split the editor.
-                        self.panel_drag = Some(PanelDrag { what: Dragged::Tab(i), from: (x, y), moved: false, targets: Vec::new(), target: None });
+                        self.panel_drag = Some(PanelDrag { what: Dragged::Tab(i), from: (x, y), at: (x, y), moved: false, targets: Vec::new(), target: None });
                     }
                     _ => {}
                 }
@@ -5969,9 +6674,18 @@ impl State {
 
         if self.panel_shown(Panel::Terminal) && self.terminal.contains(x, y) {
             self.focus = Focus::Terminal;
+            if let Some((i, close)) = self.terminal.list_hit(x, y) {
+                match (button, close) {
+                    (MouseButton::Left, false) => self.terminal.select(i),
+                    (MouseButton::Left, true) | (MouseButton::Middle, _) => self.close_terminal(i),
+                    (MouseButton::Right, _) => self.open_terminal_menu(i, x, y),
+                    _ => {}
+                }
+                return;
+            }
             if button == MouseButton::Left {
                 let (row, col) = self.terminal.cell_at(x, y);
-                if let Some(t) = &self.terminal.term {
+                if let Some(t) = self.terminal.term() {
                     t.select_start(row, col);
                 }
                 self.terminal.selecting = true;
@@ -5997,6 +6711,14 @@ impl State {
             if button == MouseButton::Left {
                 let action = self.git.click(y);
                 self.apply_git_action(action);
+            }
+            return;
+        }
+        if self.panel_shown(Panel::Problems) && self.problems.contains(x, y) {
+            self.focus = Focus::Problems;
+            if button == MouseButton::Left {
+                let action = self.problems.click(y);
+                self.apply_problem_action(action);
             }
             return;
         }
@@ -6074,6 +6796,16 @@ impl State {
             self.find.focused = false;
             return;
         }
+        if self.git_peek.is_some() && self.git_peek_click(x, y) {
+            return;
+        }
+        if self.diff.is_none()
+            && let Some(line) = self.editor().git_mark_at(x, y)
+        {
+            self.open_git_peek(line);
+            self.focus = Focus::Editor;
+            return;
+        }
         if self.diff.is_none()
             && let Some(line) = self.editor().line_number_at(x, y)
         {
@@ -6120,7 +6852,7 @@ impl State {
         };
         let (x, y) = (self.mouse.x, self.mouse.y);
         if self.panel_shown(Panel::Terminal) && self.terminal.contains(x, y) {
-            if let Some(t) = &self.terminal.term {
+            if let Some(t) = self.terminal.term() {
                 t.scroll(dy.round() as i32);
             }
             self.terminal.dirty = true;
@@ -6134,6 +6866,11 @@ impl State {
         }
         if self.panel_shown(Panel::Git) && self.git.contains(x, y) {
             self.git.scroll_by(-dy.round() as isize);
+            self.window.request_redraw();
+            return;
+        }
+        if self.panel_shown(Panel::Problems) && self.problems.contains(x, y) {
+            self.problems.scroll_by(-dy.round() as isize);
             self.window.request_redraw();
             return;
         }
@@ -6245,7 +6982,7 @@ impl State {
         if self.focus == Focus::Explorer {
             left.push_str("   ·   Explorer (Esc = back to the editor)");
         }
-        if self.focus == Focus::Terminal && self.panel_shown(Panel::Terminal) {
+        if self.focus == Focus::Terminal && self.panel_open(Panel::Terminal) {
             left = "Terminal".to_string();
         }
         if let Some(d) = &self.diff {
@@ -6320,6 +7057,11 @@ impl State {
     }
 
     fn redraw(&mut self) {
+        // The peek belongs to one tab and one version of its text.
+        if self.git_peek.as_ref().is_some_and(|p| p.tab != self.active || self.tabs.get(p.tab).map(|t| t.doc.version()) != Some(p.version)) {
+            self.git_peek = None;
+        }
+        self.redraw_floats();
         self.sync_split_twins();
         if !self.terminal_started && self.panel_shown(Panel::Terminal) {
             self.start_terminal();
@@ -6359,7 +7101,7 @@ impl State {
                 m.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
             Overlay::ExplorerPrompt { prompt, .. } => prompt.prepare(self.renderer.font_system(), &self.theme, &self.family),
-            Overlay::Watch(prompt) | Overlay::ApiKey(prompt) => {
+            Overlay::Watch(prompt) | Overlay::ApiKey(prompt) | Overlay::RenameTerminal(prompt, _) => {
                 prompt.prepare(self.renderer.font_system(), &self.theme, &self.family)
             }
             _ => {}
@@ -6369,6 +7111,20 @@ impl State {
             let fs = self.renderer.font_system();
             self.terminal.prepare(fs, &self.theme, focused);
         }
+        self.update_task_line();
+        if self.panel_shown(Panel::Problems) {
+            let focused = self.focus == Focus::Problems;
+            self.problems.prepare(self.renderer.font_system(), &self.theme, focused);
+        }
+        // The error count on the Problems icon.
+        let (errors, warnings) = self.problems.counts();
+        let badge = match (errors, warnings) {
+            (0, 0) => None,
+            (0, w) => Some((Panel::Problems, w.min(99).to_string(), self.theme.warning)),
+            (e, _) => Some((Panel::Problems, e.min(99).to_string(), self.theme.error)),
+        };
+        let family = self.family.clone();
+        self.activity.set_badge(self.renderer.font_system(), &family, badge);
         let active_path = self.editor().doc.path().map(Path::to_path_buf);
         {
             let theme = &self.theme;
@@ -6414,13 +7170,10 @@ impl State {
         // Which panels show (before the panels hand out their text for this frame).
         let shown = Panel::ALL.map(|p| self.panel_shown(p));
         let focused_panel = self.focused_panel();
-        let strips: Vec<(Area, Rect, Option<Panel>)> = Area::ALL
-            .into_iter()
-            .filter_map(|a| self.layout_area(a).map(|r| (a, r, self.dock.area(a).active)))
-            .collect();
+        let strips = self.strips();
         let theme = &self.theme;
         let scale = self.renderer.scale_factor();
-        let l = self.layout;
+        let l = self.layout.clone();
         let mut under = Vec::with_capacity(64);
         if self.zen {
             let (w, h) = self.renderer.size();
@@ -6433,6 +7186,7 @@ impl State {
         let mut cards: Vec<RoundRect> = Vec::new();
         let mut masks: Vec<RoundRect> = Vec::new();
         let mut overlay_cards: Vec<RoundRect> = Vec::new();
+        let mut git_peek_rects: Option<(Rect, Rect, Rect)> = None;
         // The cards everything sits on, rounded; the focused one gets a colored edge.
         if !self.zen {
             let rad = l.radius;
@@ -6441,15 +7195,15 @@ impl State {
                 None => theme.accent,
             };
             let focused_card = match focused_panel {
-                Some(p) => self.layout_area(self.dock.area_of(p)),
+                Some(p) => self.pane_rect(p),
                 None => Some(l.editor_card),
             };
             let mut all: Vec<(Rect, Rgba)> = vec![(l.editor_card, theme.background)];
             if let Some(c) = l.editor2_card {
                 all.push((c, theme.background));
             }
-            for r in [l.left, l.right, l.bottom].into_iter().flatten() {
-                all.push((r, theme.panel_bg));
+            for b in &l.panes {
+                all.push((b.rect, theme.panel_bg));
             }
             for (r, color) in all {
                 cards.push(RoundRect::new(r.x, r.y, r.w, r.h, color, rad));
@@ -6461,7 +7215,7 @@ impl State {
                     masks.push(RoundRect::outline(r.x, r.y, r.w, r.h, theme.divider, rad, scale.round().max(1.0)));
                 }
             }
-            let shown_panels: Vec<Panel> = Panel::ALL.into_iter().filter(|p| self.panel_shown(*p)).collect();
+            let shown_panels: Vec<Panel> = Panel::ALL.into_iter().filter(|p| self.panel_open(*p)).collect();
             self.activity.draw(theme, scale, &shown_panels, focused_panel, &mut cards, &mut text);
         }
 
@@ -6474,14 +7228,11 @@ impl State {
         if shown[3] {
             self.debugger.draw(theme, self.focus == Focus::Debug, &mut under, &mut text);
         }
+        if shown[5] {
+            self.problems.draw(theme, self.focus == Focus::Problems, &mut under, &mut text);
+        }
         if let (Some(ex), true) = (&self.explorer, shown[0]) {
             ex.draw(theme, self.focus == Focus::Explorer, &mut under, &mut text);
-        }
-        if let Some(r) = l.left {
-            under.push(Quad { x: r.x + r.w - 1.0, y: r.y, w: 1.0, h: r.h, color: theme.divider });
-        }
-        if let Some(r) = l.right {
-            under.push(Quad { x: r.x, y: r.y, w: 1.0, h: r.h, color: theme.divider });
         }
         self.dock_bar.draw(theme, scale, &strips, focused_panel, &mut under, &mut cards, &mut text);
 
@@ -6639,13 +7390,21 @@ impl State {
                     let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
                     m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
                 }
-                Overlay::ExplorerPrompt { prompt, .. } => {
-                    let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
-                    prompt.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
+                // New file / folder and rename: typed right in the explorer tree when it is on
+                // screen, else in a dialog card in the middle.
+                Overlay::ExplorerPrompt { prompt, op, target } => {
+                    let slot = self
+                        .explorer
+                        .as_ref()
+                        .filter(|_| shown[0])
+                        .and_then(|ex| ex.input_slot(target, *op != ExplorerOp::Rename));
+                    match slot {
+                        Some(r) => prompt.draw_inline(theme, self.ui_font, r, scale, &mut overlay_cards, &mut overlay, &mut overlay_text),
+                        None => prompt.draw_dialog(theme, self.ui_font, window, scale, &mut overlay_cards, &mut overlay, &mut overlay_text),
+                    }
                 }
-                Overlay::NewBranch(prompt) | Overlay::Watch(prompt) | Overlay::ApiKey(prompt) => {
-                    let (x, y) = (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h);
-                    prompt.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
+                Overlay::NewBranch(prompt) | Overlay::Watch(prompt) | Overlay::ApiKey(prompt) | Overlay::RenameTerminal(prompt, _) => {
+                    prompt.draw_dialog(theme, self.ui_font, window, scale, &mut overlay_cards, &mut overlay, &mut overlay_text)
                 }
                 _ => {}
             }
@@ -6653,13 +7412,64 @@ impl State {
         if let Overlay::Context(menu) = &self.overlay {
             menu.draw(theme, scale, &mut overlay_cards, &mut overlay, &mut overlay_text);
         }
+        // The committed version of a changed block, under it.
+        if let Some(p) = &self.git_peek
+            && p.tab == self.active
+            && let Some(bottom) = self.tabs[self.active].line_bottom(p.line)
+        {
+            let e = l.editor;
+            let (lh, ulh, cw) = (self.font.line_h, self.ui_font.line_h, self.font.cell_w);
+            let rows = p.hunk.old_lines.len().min(15) + usize::from(p.hunk.old_lines.len() > 15);
+            let head_h = (ulh * 1.5).round();
+            let h = head_h + rows as f32 * lh + if rows > 0 { lh * 0.4 } else { 0.0 };
+            let x = e.x + cw * 4.0;
+            let w = (e.w - cw * 6.0).max(cw * 30.0);
+            let y = bottom.min(e.y + e.h - h).max(e.y);
+            let r = (6.0 * scale).round();
+            overlay_cards.push(RoundRect::shadow(x, y, w, h, Rgba(0, 0, 0, if theme.dark { 0x90 } else { 0x40 }), r, (10.0 * scale).round()));
+            overlay_cards.push(RoundRect::new(x, y, w, h, theme.popup_border, r));
+            overlay_cards.push(RoundRect::new(x + 1.0, y + 1.0, w - 2.0, h - 2.0, theme.popup_bg, r - 1.0));
+            let color = if p.hunk.old_lines.is_empty() { theme.git_added } else if p.hunk.new_len == 0 { theme.git_deleted } else { theme.git_modified };
+            overlay_cards.push(RoundRect::new(x + 1.0, y + r, (3.0 * scale).round(), h - 2.0 * r, color, scale));
+            if rows > 0 {
+                overlay.push(Quad { x: x + 1.0, y: y + head_h, w: w - 2.0, h: rows as f32 * lh + lh * 0.2, color: theme.git_deleted.with_alpha(0x22) });
+            }
+            let hx = x + cw * 1.5;
+            overlay_text.push(TextBlock { buffer: &p.header, x: hx, y: y + (head_h - ulh) / 2.0, color: theme.panel_text, clip: Some([x as i32, y as i32, (x + w) as i32, (y + head_h) as i32]) });
+            overlay_text.push(TextBlock { buffer: &p.body, x: hx, y: y + head_h, color: theme.text, clip: Some([x as i32, y as i32, (x + w) as i32, (y + h) as i32]) });
+            // Button positions: measured from the header text (the last two spans).
+            let run_w = p.header.layout_runs().next().map_or(0.0, |r| r.line_w);
+            let close_w = cw * 3.0;
+            let revert_w = self.ui_font.cell_w * 8.0;
+            let close = Rect { x: hx + run_w - close_w, y, w: close_w + cw, h: head_h };
+            let revert = Rect { x: close.x - self.ui_font.cell_w * 2.0 - revert_w, y, w: revert_w + self.ui_font.cell_w * 2.0, h: head_h };
+            git_peek_rects = Some((Rect { x, y, w, h }, revert, close));
+        }
         // The docking compass while a panel or tab is dragged.
         if let Some(d) = self.panel_drag.as_ref().filter(|d| d.moved) {
             let color = match d.what {
                 Dragged::Panel(p) => chrome::panel_color(p, theme.dark),
                 Dragged::Tab(_) => theme.accent,
             };
-            compass::draw(&d.targets, d.target, color, theme, scale, &mut overlay_cards);
+            compass::draw(&d.targets, d.target.as_ref(), color, theme, scale, &mut overlay_cards);
+            // The panel follows the mouse as a see-through card.
+            if let Dragged::Panel(p) = d.what {
+                let (gw, gh) = ((self.ui_font.cell_w * 26.0).round(), (self.ui_font.line_h * 7.0).round());
+                let (gx, gy) = ((d.at.0 - self.ui_font.cell_w * 4.0).round(), (d.at.1 - self.ui_font.line_h * 0.8).round());
+                let r = (7.0 * scale).round();
+                overlay_cards.push(RoundRect::shadow(gx, gy, gw, gh, Rgba(0, 0, 0, 0x50), r, (10.0 * scale).round()));
+                overlay_cards.push(RoundRect::new(gx, gy, gw, gh, theme.panel_bg.with_alpha(0xB0), r));
+                overlay_cards.push(RoundRect::outline(gx, gy, gw, gh, color.with_alpha(0xC0), r, (1.5 * scale).max(1.0)));
+                let sh = dock::strip_h(self.ui_font);
+                overlay_cards.push(RoundRect::new(gx + self.ui_font.cell_w, gy + sh - 3.0 * scale, self.dock_bar.tab_w(p) - 1.5 * self.ui_font.cell_w, (2.0 * scale).round(), color, scale));
+                overlay_text.push(TextBlock {
+                    buffer: self.dock_bar.label(p),
+                    x: gx + self.ui_font.cell_w * 1.2,
+                    y: gy + (sh - self.ui_font.line_h) / 2.0,
+                    color: theme.panel_text,
+                    clip: None,
+                });
+            }
         }
         if matches!(self.overlay, Overlay::Palette) {
             let top = l.tabs.y + l.tabs.h * 0.5;
@@ -6677,7 +7487,13 @@ impl State {
             overlay: &overlay,
             overlay_text: &overlay_text,
         };
-        if self.renderer.draw(&scene) {
+        let drawn = self.renderer.draw(&scene);
+        if let (Some((card, revert, close)), Some(p)) = (git_peek_rects, &mut self.git_peek) {
+            p.card = card;
+            p.revert = revert;
+            p.close = close;
+        }
+        if drawn {
             self.latency.presented();
             if self.first_frame.is_none() {
                 self.first_frame = Some(self.started.elapsed());

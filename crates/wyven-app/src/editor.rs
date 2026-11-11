@@ -1311,6 +1311,58 @@ impl EditorView {
 
     /// The line whose number was clicked (for toggling a breakpoint), if (x, y) is on a
     /// line number.
+    /// A git change bar at the left edge of the text under the mouse: the line it belongs to
+    /// (`usize::MAX`: lines deleted at the very top).
+    pub fn git_mark_at(&self, x: f32, y: f32) -> Option<usize> {
+        let a = self.area;
+        let edge = a.x + self.gutter_w();
+        let cw = self.font.cell_w;
+        if self.git_marks.is_empty() || x < edge - cw * 1.3 || x > edge + cw * 0.2 || y < a.y + self.sticky_h() || y >= a.y + a.h {
+            return None;
+        }
+        let lh = self.font.line_h;
+        let row = ((y - a.y) / lh) as usize;
+        let (line, kind) = self.row_map().at(row)?;
+        if kind != RowKind::Text {
+            return None;
+        }
+        let frac = (y - a.y) / lh - row as f32;
+        let has = |l: usize, m: wyven_git::LineMark| self.git_marks.iter().any(|&(ml, mm)| ml == l && mm == m);
+        use wyven_git::LineMark::*;
+        if has(line, Added) || has(line, Modified) {
+            return Some(line);
+        }
+        // Deletion marks sit on the border between two lines.
+        if frac > 0.6 && has(line, DeletedAfter) {
+            return Some(line);
+        }
+        if frac < 0.4 {
+            if line == 0 && has(usize::MAX, DeletedAfter) {
+                return Some(usize::MAX);
+            }
+            if line > 0 && has(line - 1, DeletedAfter) {
+                return Some(line - 1);
+            }
+        }
+        None
+    }
+
+    /// The changed block at a marked line, compared with the committed version.
+    pub fn git_hunk(&self, line: usize) -> Option<wyven_git::Hunk> {
+        let base = self.git_base.as_ref()?;
+        wyven_git::hunk_at(base, &self.doc.text().to_string(), line)
+    }
+
+    /// Screen y below a line (with its wrapped rows), if it is visible.
+    pub fn line_bottom(&self, line: usize) -> Option<f32> {
+        let map = self.row_map();
+        if line == usize::MAX {
+            return (self.scroll_line == 0).then_some(self.area.y);
+        }
+        let row = map.row(line)?;
+        Some(self.area.y + (row + 1 + map.wrap_rows(line)) as f32 * self.font.line_h)
+    }
+
     pub fn line_number_at(&self, x: f32, y: f32) -> Option<usize> {
         let a = self.area;
         let number_right = a.x + (self.gutter_cells as f32 + 1.0) * self.font.cell_w;

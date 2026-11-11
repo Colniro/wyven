@@ -83,6 +83,12 @@ learn the keys by heart. The letters follow the English command names:
 | `Ctrl+M Ctrl+M`, `Ctrl+M Ctrl+L`, `Ctrl+M Ctrl+O` | fold block, fold all, fold to definitions |
 | `Ctrl+Space`, `Ctrl+.` , `F2` | completion, quick actions, rename |
 | `Alt c o` | organize usings / imports |
+| snippet name + `Tab` | insert a snippet; `Tab` / `Shift+Tab` next / previous placeholder, `Esc` done |
+
+**Snippets** work like in Visual Studio: type `prop`, `propfull`, `ctor`, `class`, `foreach`, `try`,
+`cw` … in C# (also JavaScript/TypeScript, HTML, CSS and Rust) and press `Tab`, or pick them in the
+completion list. Placeholders that appear several times change together. Your own snippets go
+into `%APPDATA%\Wyven\snippets\` in VS Code's format ("Preferences: Configure User Snippets").
 
 **Word wrap** (`Alt v w`) continues long lines in the next row at word boundaries, indented like
 the line. **Zen mode** (`Alt v z`) shows only the text, fullscreen; `Esc` twice leaves it.
@@ -108,12 +114,21 @@ colored edge. The **activity bar** at the left edge holds colored icons for Expl
 Debug and Terminal (and Settings at the bottom): a click opens the panel next to it, another click
 closes it.
 
-Panels live in three areas around the editor: left, right and bottom. **Drag a panel's header**
-(or an editor tab) and a **docking compass** appears, like in Visual Studio: targets in the middle
-of the part under the mouse and at the window edges; the hovered target shades where the panel
-lands (left, right, bottom, or as a tab of that area). Dragging an editor tab splits the editor.
-Hold `Ctrl` to move without docking. **Drag the gap between areas** to resize them. The layout is
-remembered; `Alt w r` resets it.
+Docking works like in Visual Studio: the window is a tree of rows, columns and panes (a pane holds
+panels as tabs). **Drag a panel's header** and the panel follows the mouse as a see-through card
+while a **docking compass** appears. Over a pane it has five targets: left, top, right and bottom
+split the pane, the middle adds the panel as a tab. Over the editor the panel docks next to the
+editor; the four targets at the window edges put it along a whole edge. The hovered target shades
+where the panel lands. Released anywhere else (or with `Ctrl` held), the panel gets a **window of
+its own**: drag its tab strip back over the main window to dock it again, close the window to
+close the panel (it comes back where it was docked). Dragging an editor tab splits the editor.
+**Drag the gap between panes** to resize them. The layout is remembered; `Alt w r` resets it.
+
+The activity bar shows the panels docked left of the editor above a line and the ones at the
+bottom, right or floating below it; moving a panel moves its icon.
+
+Files save by themselves shortly after you stop typing (settings "Auto save" and "Auto save
+delay"); `Ctrl+Shift+S` saves all changed files at once.
 
 **Right-click** explorer entries (new file/folder, rename, delete, copy path, reveal in File
 Explorer, open in terminal), tabs (close others/to the right/all, split) and text (definition,
@@ -147,10 +162,29 @@ Change bars in the gutter, the Git panel (`Alt g g`) with commit message and cha
 side-by-side diffs (`Alt g d`, `F8` jumps between changes), sync, branches and blame. Everything
 runs in the background with the `git` you have installed.
 
+## Problems, build and test
+
+The **Problems** panel (`Alt r p`) lists every error and warning of the project, from the language
+servers and from the last build, grouped by file; a click or `Enter` jumps there, and the error
+count shows on its icon in the activity bar. `Tab` switches to the output of the last task.
+
+`Ctrl+Shift+B` (or `Alt r b`) builds the project in the background after saving all files: Wyven
+finds `dotnet` (.sln/.csproj), `cargo` (Cargo.toml) or `npm` (package.json). `Alt r t` tests,
+`Alt r c` cleans, `Alt r x` stops, `Alt r r` runs the program in a new terminal. Errors open the
+Problems panel.
+
+**Git changes:** click a change bar left of the text to see the lines of the last commit in a card
+below; "Revert" puts them back.
+
 ## Terminal
 
 `Alt t` opens a terminal in the folder of the active file (PowerShell 7 if installed). All keys go
 to the shell; `Ctrl+Shift+C` / `Ctrl+Shift+V` copy and paste. Choose another shell in the settings.
+
+**Several terminals:** `+` in the terminal header starts another one. From two terminals on, a list
+at the right edge switches between them; its × (or a middle click) ends one. The command palette
+has "Terminal: New / Close / Next / Previous Terminal". `˅` next to `+` picks a shell (PowerShell,
+Command Prompt, Git Bash, WSL); right-click a terminal in the list to rename, color or kill it.
 
 ## Debugging (.NET)
 

@@ -21,6 +21,10 @@ pub const ICON_NEW_FOLDER: char = '\u{E8F4}';
 pub const ICON_REFRESH: char = '\u{E72C}';
 pub const ICON_COLLAPSE: char = '\u{E92C}';
 pub const ICON_CLOSE: char = '\u{E711}';
+pub const ICON_ADD: char = '\u{E710}';
+pub const ICON_PROBLEMS: char = '\u{E7BA}';
+pub const ICON_OUTPUT: char = '\u{E8A5}';
+pub const ICON_CHEVRON_DOWN: char = '\u{E70D}';
 
 /// The icon font: Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets.
 pub fn icon_family(fs: &FontSystem) -> String {
@@ -39,6 +43,7 @@ pub fn panel_icon(p: Panel) -> char {
         Panel::Git => ICON_GIT,
         Panel::Debug => ICON_DEBUG,
         Panel::Terminal => ICON_TERMINAL,
+        Panel::Problems => ICON_PROBLEMS,
     }
 }
 
@@ -50,6 +55,7 @@ pub fn panel_color(p: Panel, dark: bool) -> Rgba {
         Panel::Git => (Rgba::rgb(0xF2, 0x6B, 0x4F), Rgba::rgb(0xC8, 0x3A, 0x1E)),
         Panel::Debug => (Rgba::rgb(0x5C, 0xD6, 0x8E), Rgba::rgb(0x1E, 0x9A, 0x55)),
         Panel::Terminal => (Rgba::rgb(0xB9, 0x92, 0xF7), Rgba::rgb(0x7A, 0x4C, 0xD1)),
+        Panel::Problems => (Rgba::rgb(0xE8, 0xC5, 0x47), Rgba::rgb(0xA8, 0x84, 0x00)),
     };
     if dark { d } else { l }
 }
@@ -120,6 +126,7 @@ impl ActItem {
             ActItem::Panel(Panel::Search) => "Search (Ctrl+Shift+F)",
             ActItem::Panel(Panel::Git) => "Git (Alt → g → g)",
             ActItem::Panel(Panel::Debug) => "Run and Debug (Alt → d → d)",
+            ActItem::Panel(Panel::Problems) => "Problems (Alt → r → p, build: Ctrl+Shift+B)",
             ActItem::Panel(Panel::Terminal) => "Terminal (Alt → t)",
             ActItem::Settings => "Settings (Alt → ,)",
         }
@@ -131,6 +138,11 @@ pub struct ActivityBar {
     icons: Vec<(ActItem, Buffer)>,
     pub slots: Vec<(ActItem, Rect)>,
     pub hover: Option<ActItem>,
+    /// The line between the panels docked left/top of the editor and those at the bottom
+    /// (or right, or floating): x, y, width.
+    divider: Option<(f32, f32, f32)>,
+    /// A count on a panel's icon (errors on Problems): panel, text, color, shaped text.
+    badge: Option<(Panel, String, Rgba, Buffer)>,
     family: String,
     ui: FontMetrics,
 }
@@ -138,7 +150,7 @@ pub struct ActivityBar {
 impl ActivityBar {
     pub fn new(fs: &mut FontSystem, ui: FontMetrics) -> Self {
         let family = icon_family(fs);
-        let mut bar = Self { icons: Vec::new(), slots: Vec::new(), hover: None, family, ui };
+        let mut bar = Self { icons: Vec::new(), slots: Vec::new(), hover: None, divider: None, badge: None, family, ui };
         bar.shape(fs);
         bar
     }
@@ -168,20 +180,51 @@ impl ActivityBar {
             .collect();
     }
 
-    /// Lays the icons out in the bar `r` (panels from the top, settings at the bottom).
-    pub fn place(&mut self, r: Rect) {
+    /// Lays the icons out in the bar `r`: the panels of `upper` (docked left of the editor)
+    /// from the top, a line, the panels of `lower` (docked at the bottom), settings at the end.
+    pub fn place(&mut self, r: Rect, upper: &[Panel], lower: &[Panel]) {
         self.slots.clear();
+        self.divider = None;
         let slot = r.w.round();
         let mut y = r.y + (slot * 0.25).round();
-        for (item, _) in &self.icons {
-            let rect = if *item == ActItem::Settings {
-                Rect { x: r.x, y: r.y + r.h - slot * 1.1, w: r.w, h: slot }
-            } else {
-                let rect = Rect { x: r.x, y, w: r.w, h: slot };
+        for p in upper {
+            self.slots.push((ActItem::Panel(*p), Rect { x: r.x, y, w: r.w, h: slot }));
+            y += slot;
+        }
+        if !lower.is_empty() {
+            let gap = (slot * 0.4).round();
+            if !upper.is_empty() {
+                let w = (r.w * 0.5).round();
+                self.divider = Some(((r.x + (r.w - w) / 2.0).round(), (y + gap / 2.0).round(), w));
+                y += gap;
+            }
+            for p in lower {
+                self.slots.push((ActItem::Panel(*p), Rect { x: r.x, y, w: r.w, h: slot }));
                 y += slot;
-                rect
-            };
-            self.slots.push((*item, rect));
+            }
+        }
+        self.slots.push((ActItem::Settings, Rect { x: r.x, y: r.y + r.h - slot * 1.1, w: r.w, h: slot }));
+    }
+
+    /// Sets the badge (`None` removes it); shapes the text only when it changed.
+    pub fn set_badge(&mut self, fs: &mut FontSystem, ui_family: &str, badge: Option<(Panel, String, Rgba)>) {
+        match badge {
+            None => self.badge = None,
+            Some((p, t, c)) => {
+                if self.badge.as_ref().is_some_and(|b| b.0 == p && b.1 == t) {
+                    if let Some(b) = &mut self.badge {
+                        b.2 = c;
+                    }
+                    return;
+                }
+                let size = (self.ui.size * 0.72).round();
+                let mut buf = Buffer::new(fs, Metrics::new(size, size * 1.2));
+                buf.set_wrap(Wrap::None);
+                let attrs = Attrs::new().family(Family::Name(ui_family)).weight(wyven_render::Weight::BOLD);
+                buf.set_text(&t, &attrs, Shaping::Advanced, None);
+                buf.shape_until_scroll(fs, false);
+                self.badge = Some((p, t, c, buf));
+            }
         }
     }
 
@@ -200,6 +243,28 @@ impl ActivityBar {
         text: &mut Vec<TextBlock<'a>>,
     ) {
         let size = self.icon_size();
+        if let Some((p, _, color, buf)) = &self.badge
+            && let Some((_, r)) = self.slots.iter().find(|(i, _)| *i == ActItem::Panel(*p))
+        {
+            let size = (self.ui.size * 0.72).round();
+            let tw = buf.layout_runs().next().map_or(size, |run| run.line_w);
+            let h = (size * 1.3).round();
+            let w = (tw + size * 0.7).max(h).round();
+            let x = (r.x + r.w * 0.58).round();
+            let y = (r.y + r.h * 0.12).round();
+            cards.push(RoundRect::new(x, y, w, h, *color, h / 2.0));
+            text.push(TextBlock {
+                buffer: buf,
+                x: (x + (w - tw) / 2.0).round(),
+                y: (y + (h - size * 1.2) / 2.0).round(),
+                color: Rgba::rgb(0xFF, 0xFF, 0xFF),
+                clip: None,
+            });
+        }
+        if let Some((x, y, w)) = self.divider {
+            let gray = if theme.dark { Rgba::rgb(0x6E, 0x6E, 0x6E) } else { Rgba::rgb(0xA8, 0xA8, 0xA8) };
+            cards.push(RoundRect::new(x, y, w, (1.5 * scale).max(1.0), gray, scale));
+        }
         for (item, r) in &self.slots {
             let Some((_, buf)) = self.icons.iter().find(|(i, _)| i == item) else { continue };
             let (on, color) = match item {

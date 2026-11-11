@@ -313,10 +313,10 @@ impl crate::State {
         self.dock.save();
         self.focus = crate::Focus::Terminal;
         self.relayout();
-        if self.terminal.term.is_none() {
+        if self.terminal.term().is_none() {
             self.start_terminal();
         }
-        if let Some(t) = &self.terminal.term {
+        if let Some(t) = self.terminal.term() {
             t.type_text("claude\r", false);
         }
         self.window.request_redraw();

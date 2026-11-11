@@ -34,6 +34,8 @@ pub enum Action {
     OpenPluginsFolder,
     /// keymap.toml: your own shortcuts.
     OpenKeymap,
+    /// Own snippets for the current language (VS Code format).
+    OpenSnippets,
     /// settings.toml itself.
     OpenSettingsFile,
     CheatSheet,
@@ -44,6 +46,10 @@ pub enum Action {
     ChooseTheme,
     /// Opens/focuses/closes the terminal panel.
     ToggleTerminal,
+    NewTerminal,
+    CloseTerminal,
+    NextTerminal,
+    PreviousTerminal,
     /// Minimap: blocks → bar → off.
     CycleMinimap,
     ToggleStickyScroll,
@@ -66,6 +72,11 @@ pub enum Action {
     /// Starts Claude Code in Wyven's terminal (it connects to the bridge there).
     ClaudeCode,
     Git(GitCmd),
+    /// Build / test / run / clean the project.
+    Task(crate::tasks::TaskKind),
+    StopTask,
+    ShowProblems,
+    ShowOutput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +118,7 @@ const ROOT: &[Item] = &[
     item('w', "window …", Group("w")),
     item('v', "view …", Group("v")),
     item('a', "ai …", Group("a")),
+    item('r', "run & build …", Group("r")),
     item('m', "markdown preview", MarkdownPreview),
     item(',', "settings", OpenSettings),
     item('h', "help: all shortcuts", CheatSheet),
@@ -191,6 +203,16 @@ const VIEW: &[Item] = &[
     item('e', "expand all folds", Run(Command::Fold(FoldCmd::ExpandAll))),
 ];
 
+const RUN: &[Item] = &[
+    item('b', "build (Ctrl+Shift+B)", Task(crate::tasks::TaskKind::Build)),
+    item('t', "test", Task(crate::tasks::TaskKind::Test)),
+    item('r', "run in a terminal", Task(crate::tasks::TaskKind::Run)),
+    item('c', "clean", Task(crate::tasks::TaskKind::Clean)),
+    item('x', "stop the running task", StopTask),
+    item('p', "problems", ShowProblems),
+    item('o', "task output", ShowOutput),
+];
+
 const AI: &[Item] = &[
     item('t', "suggestions on/off", AiToggle),
     item('m', "switch model (Haiku / Sonnet)", AiModel),
@@ -209,6 +231,7 @@ pub fn items(group: &str) -> &'static [Item] {
         "w" => WINDOW,
         "v" => VIEW,
         "a" => AI,
+        "r" => RUN,
         _ => ROOT,
     }
 }
@@ -224,6 +247,7 @@ pub fn title(group: &str) -> String {
         "w" => "window",
         "v" => "view",
         "a" => "ai",
+        "r" => "run & build",
         _ => return "Alt →".into(),
     };
     format!("Alt → {group}  ({name})")

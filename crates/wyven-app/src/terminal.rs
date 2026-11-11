@@ -1,13 +1,17 @@
 //! The terminal panel below the editor: draws a [`wyven_terminal::Terminal`] and turns keys
 //! and mouse input into what the shell expects.
+//!
+//! Several terminals can be open, like in VS Code: "+" in the header starts another one, and
+//! a list at the right edge (shown from two terminals on) switches between them; its × ends one.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use winit::event::KeyEvent;
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use wyven_render::{Attrs, Buffer, Family, FontSystem, Metrics, Quad, Rgba, Shaping, TextBlock, Weight, Style, Wrap};
-use wyven_terminal::{CursorStyle, Key, Mods, Snapshot, Terminal};
+use wyven_terminal::{CursorStyle, Key, Mods, Snapshot, TermEvent, Terminal};
 
 use crate::editor::{FontMetrics, Rect};
 use crate::theme::Theme;
@@ -32,8 +36,81 @@ pub fn default_shell() -> String {
     }
 }
 
+type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// A shell to start a terminal with ("+ ˅" in the header).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Profile {
+    pub name: String,
+    pub shell: String,
+    pub args: Vec<String>,
+}
+
+/// The shells installed on this computer.
+pub fn profiles() -> Vec<Profile> {
+    let p = |name: &str, shell: &str, args: &[&str]| Profile { name: name.into(), shell: shell.into(), args: args.iter().map(|a| a.to_string()).collect() };
+    let mut out = Vec::new();
+    if cfg!(windows) {
+        let in_path = |exe: &str| std::env::var_os("PATH").is_some_and(|v| std::env::split_paths(&v).any(|d| d.join(exe).exists()));
+        if in_path("pwsh.exe") {
+            out.push(p("PowerShell 7", "pwsh.exe", &["-NoLogo"]));
+        }
+        out.push(p("Windows PowerShell", "powershell.exe", &["-NoLogo"]));
+        out.push(p("Command Prompt", "cmd.exe", &[]));
+        for dir in [std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()), std::env::var("LOCALAPPDATA").map(|l| format!(r"{l}\Programs")).unwrap_or_default()] {
+            let bash = Path::new(&dir).join(r"Git\bin\bash.exe");
+            if bash.exists() {
+                out.push(p("Git Bash", &bash.to_string_lossy(), &["--login", "-i"]));
+                break;
+            }
+        }
+        let wsl = Path::new(&std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())).join(r"System32\wsl.exe");
+        if wsl.exists() {
+            out.push(p("WSL", &wsl.to_string_lossy(), &[]));
+        }
+    } else {
+        for (name, path) in [("bash", "/bin/bash"), ("zsh", "/bin/zsh"), ("fish", "/usr/bin/fish"), ("sh", "/bin/sh")] {
+            if Path::new(path).exists() {
+                out.push(p(name, path, &[]));
+            }
+        }
+    }
+    out
+}
+
+/// Colors for terminals in the list (name, RGB).
+pub const COLORS: [(&str, [u8; 3]); 6] = [
+    ("Red", [0xF2, 0x6B, 0x6B]),
+    ("Green", [0x5C, 0xD6, 0x8E]),
+    ("Yellow", [0xE8, 0xC5, 0x47]),
+    ("Blue", [0x5A, 0xA9, 0xFF]),
+    ("Purple", [0xB9, 0x92, 0xF7]),
+    ("Cyan", [0x4F, 0xD1, 0xD9]),
+];
+
+/// What belongs to one terminal besides the shell process.
+#[derive(Debug, Clone, Default)]
+struct Meta {
+    shell: String,
+    args: Vec<String>,
+    /// Given by the user (Rename …).
+    name: Option<String>,
+    color: Option<[u8; 3]>,
+}
+
 pub struct TerminalPanel {
-    pub term: Option<Terminal>,
+    /// The open terminals; `active` is shown.
+    terms: Vec<Terminal>,
+    /// Parallel to `terms`.
+    meta: Vec<Meta>,
+    active: usize,
+    /// Called when a shell has output (kept to start further terminals).
+    wake: Option<Wake>,
+    /// The list at the right edge: one label per terminal, the row under the mouse.
+    labels: Vec<Buffer>,
+    close_icon: Buffer,
+    pub list_hover: Option<usize>,
+    ui: FontMetrics,
     shell: String,
     args: Vec<String>,
     cwd: PathBuf,
@@ -57,8 +134,18 @@ impl TerminalPanel {
         buffer.set_monospace_width(Some(font.cell_w));
         let mut header = Buffer::new(fs, Metrics::new(ui_font.size, ui_font.line_h));
         header.set_wrap(Wrap::None);
+        let icons = crate::chrome::icon_family(fs);
+        let size = (ui_font.size * 0.85).round();
+        let close_icon = crate::chrome::label(fs, &crate::chrome::ICON_CLOSE.to_string(), &icons, size, size * 1.2);
         Self {
-            term: None,
+            terms: Vec::new(),
+            meta: Vec::new(),
+            active: 0,
+            wake: None,
+            labels: Vec::new(),
+            close_icon,
+            list_hover: None,
+            ui: ui_font,
             shell: default_shell(),
             args: Vec::new(),
             cwd: std::env::temp_dir(),
@@ -85,7 +172,98 @@ impl TerminalPanel {
         self.buffer.set_metrics(Metrics::new(font.size, font.line_h));
         self.buffer.set_monospace_width(Some(font.cell_w));
         self.header.set_metrics(Metrics::new(ui_font.size, ui_font.line_h));
+        self.ui = ui_font;
+        self.labels.clear();
         self.resize_term();
+    }
+
+    /// The shown terminal.
+    pub fn term(&self) -> Option<&Terminal> {
+        self.terms.get(self.active)
+    }
+
+    pub fn count(&self) -> usize {
+        self.terms.len()
+    }
+
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
+    /// Shows terminal `i`.
+    pub fn select(&mut self, i: usize) {
+        if i < self.terms.len() && i != self.active {
+            self.active = i;
+            self.selecting = false;
+            self.resize_term();
+        }
+    }
+
+    /// Ends terminal `i`. Returns false when none is left.
+    pub fn close(&mut self, i: usize) -> bool {
+        if i < self.terms.len() {
+            self.terms.remove(i);
+            self.meta.remove(i);
+            if self.active > i || self.active >= self.terms.len() {
+                self.active = self.active.saturating_sub(1);
+            }
+            self.labels.clear();
+            self.list_hover = None;
+            self.resize_term();
+        }
+        !self.terms.is_empty()
+    }
+
+    /// Output of every terminal; `Exited` comes with the terminal's number.
+    pub fn poll(&mut self) -> Vec<(usize, TermEvent)> {
+        let mut out = Vec::new();
+        for (i, t) in self.terms.iter_mut().enumerate() {
+            out.extend(t.poll().into_iter().map(|e| (i, e)));
+        }
+        self.labels.clear();
+        self.dirty = true;
+        out
+    }
+
+    /// Width of the terminal list at the right edge (none for a single terminal).
+    fn list_w(&self) -> f32 {
+        if self.terms.len() < 2 {
+            return 0.0;
+        }
+        (self.ui.cell_w * 22.0).min(self.area.w * 0.35).round()
+    }
+
+    fn row_h(&self) -> f32 {
+        (self.ui.line_h * 1.5).round()
+    }
+
+    /// The list row under a point: the terminal's number and whether it is its ×.
+    pub fn list_hit(&self, x: f32, y: f32) -> Option<(usize, bool)> {
+        let lw = self.list_w();
+        let a = self.area;
+        if lw == 0.0 || x < a.x + a.w - lw || x >= a.x + a.w || y < a.y || y >= a.y + a.h {
+            return None;
+        }
+        let top = a.y + self.header_h() * 0.4;
+        let i = ((y - top) / self.row_h()).floor();
+        if i < 0.0 || i as usize >= self.terms.len() {
+            return None;
+        }
+        let close = x >= a.x + a.w - self.row_h() - self.ui.cell_w * 0.4;
+        Some((i as usize, close))
+    }
+
+    /// A name for the list: the shell's title (the last part of a path), else the shell.
+    fn name(&self, i: usize) -> String {
+        let t = &self.terms[i];
+        let m = &self.meta[i];
+        if let Some(n) = &m.name {
+            return if t.exited { format!("{n} (exited)") } else { n.clone() };
+        }
+        let raw = if t.title.trim().is_empty() { m.shell.as_str() } else { t.title.trim() };
+        let last = raw.rsplit(['\\', '/']).next().unwrap_or(raw);
+        let last = last.strip_suffix(".exe").unwrap_or(last);
+        if t.exited { format!("{last} (exited)") } else { last.to_string() }
     }
 
     fn header_h(&self) -> f32 {
@@ -95,7 +273,8 @@ impl TerminalPanel {
     fn content(&self) -> Rect {
         let pad = (self.font.cell_w * 0.75).round();
         let h = self.header_h();
-        Rect { x: self.area.x + pad, y: self.area.y + h, w: self.area.w - 2.0 * pad, h: self.area.h - h }
+        let w = self.area.w - 2.0 * pad - self.list_w();
+        Rect { x: self.area.x + pad, y: self.area.y + h, w: w.max(self.font.cell_w * 2.0), h: self.area.h - h }
     }
 
     fn grid_size(&self) -> (usize, usize) {
@@ -113,20 +292,77 @@ impl TerminalPanel {
     fn resize_term(&mut self) {
         let (cols, rows) = self.grid_size();
         let cell = (self.font.cell_w.round() as u16, self.font.line_h.round() as u16);
-        if let Some(t) = &mut self.term {
+        if let Some(t) = self.terms.get_mut(self.active) {
             t.resize(cols, rows, cell);
         }
         self.dirty = true;
     }
 
-    /// Starts the shell (again). `wake` is called when output arrives.
-    pub fn start(&mut self, wake: impl Fn() + Send + Sync + 'static) -> Result<(), String> {
+    fn spawn(&self, shell: &str, args: &[String], wake: &Wake) -> Result<Terminal, String> {
         let (cols, rows) = self.grid_size();
         let cell = (self.font.cell_w.round() as u16, self.font.line_h.round() as u16);
-        let t = Terminal::spawn(&self.shell, &self.args, &self.cwd, cols, rows, cell, &self.env, wake)
-            .map_err(|e| format!("Terminal “{}” does not start: {e}", self.shell))?;
-        self.term = Some(t);
+        let w = wake.clone();
+        Terminal::spawn(shell, args, &self.cwd, cols, rows, cell, &self.env, move || w())
+            .map_err(|e| format!("Terminal “{shell}” does not start: {e}"))
+    }
+
+    /// Gives terminal `i` a name of its own (empty: back to the shell's title).
+    pub fn rename(&mut self, i: usize, name: &str) {
+        if let Some(m) = self.meta.get_mut(i) {
+            m.name = (!name.trim().is_empty()).then(|| name.trim().to_string());
+            self.labels.clear();
+        }
+    }
+
+    pub fn set_color(&mut self, i: usize, color: Option<[u8; 3]>) {
+        if let Some(m) = self.meta.get_mut(i) {
+            m.color = color;
+        }
+    }
+
+    /// The name shown for terminal `i` (for the rename field).
+    pub fn display_name(&self, i: usize) -> String {
+        if i < self.terms.len() { self.meta[i].name.clone().unwrap_or_else(|| self.name(i)) } else { String::new() }
+    }
+
+    /// Starts the shell (again, in place of the shown terminal). `wake` is called when output
+    /// arrives.
+    pub fn start(&mut self, wake: impl Fn() + Send + Sync + 'static) -> Result<(), String> {
+        let wake: Wake = Arc::new(wake);
+        // A restart keeps the terminal's shell, name and color.
+        let (shell, args) = match self.meta.get(self.active) {
+            Some(m) if !self.terms.is_empty() => (m.shell.clone(), m.args.clone()),
+            _ => (self.shell.clone(), self.args.clone()),
+        };
+        let t = self.spawn(&shell, &args, &wake)?;
+        self.wake = Some(wake);
+        if self.terms.is_empty() {
+            self.terms.push(t);
+            self.meta.push(Meta { shell, args, ..Meta::default() });
+            self.active = 0;
+        } else {
+            self.terms[self.active] = t;
+        }
+        self.labels.clear();
         self.dirty = true;
+        Ok(())
+    }
+
+    /// Starts one more terminal and shows it (after [`TerminalPanel::start`]).
+    pub fn add(&mut self) -> Result<(), String> {
+        let (shell, args) = (self.shell.clone(), self.args.clone());
+        self.add_with(&shell, &args, None)
+    }
+
+    /// One more terminal with another shell (a profile); `name` shows in the list.
+    pub fn add_with(&mut self, shell: &str, args: &[String], name: Option<&str>) -> Result<(), String> {
+        let Some(wake) = self.wake.clone() else { return Err("The terminal is not running yet".into()) };
+        // The list appears: the new shell gets the narrower size right away.
+        self.terms.push(self.spawn(shell, args, &wake)?);
+        self.meta.push(Meta { shell: shell.to_string(), args: args.to_vec(), name: name.map(str::to_string), color: None });
+        self.active = self.terms.len() - 1;
+        self.labels.clear();
+        self.resize_term();
         Ok(())
     }
 
@@ -146,7 +382,7 @@ impl TerminalPanel {
 
     /// Keys while the terminal has focus. Everything goes to the shell except copy/paste.
     pub fn key(&mut self, event: &KeyEvent, mods: ModifiersState) -> KeyResult {
-        let Some(t) = &self.term else { return KeyResult::Handled };
+        let Some(t) = self.terms.get(self.active) else { return KeyResult::Handled };
         let ctrl = mods.control_key();
         let alt = mods.alt_key();
         let shift = mods.shift_key();
@@ -228,7 +464,21 @@ impl TerminalPanel {
     /// Re-reads the screen if something changed.
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, focused: bool) {
         let attrs = Attrs::new().family(Family::Name(&self.family));
-        let title = match &self.term {
+        if self.labels.len() != self.terms.len() {
+            let names: Vec<String> = (0..self.terms.len()).map(|i| format!("{}  {}", i + 1, self.name(i))).collect();
+            let m = Metrics::new(self.ui.size * 0.95, self.ui.line_h);
+            self.labels = names
+                .iter()
+                .map(|n| {
+                    let mut b = Buffer::new(fs, m);
+                    b.set_wrap(Wrap::None);
+                    b.set_text(n, &attrs, Shaping::Advanced, None);
+                    b.shape_until_scroll(fs, false);
+                    b
+                })
+                .collect();
+        }
+        let title = match self.terms.get(self.active) {
             Some(t) if t.exited => "process exited – Enter restarts it".to_string(),
             Some(t) if !t.title.is_empty() => t.title.clone(),
             _ => self.shell.clone(),
@@ -240,7 +490,7 @@ impl TerminalPanel {
             return;
         }
         self.dirty = false;
-        let Some(t) = &self.term else { return };
+        let Some(t) = self.terms.get(self.active) else { return };
         let palette = theme.terminal_palette();
         let mut snap = t.snapshot(&palette);
         // Block cursor: draw the character under it in the background color.
@@ -349,12 +599,58 @@ impl TerminalPanel {
                 }
             }
         }
+        let lw = self.list_w();
         text.push(TextBlock {
             buffer: &self.buffer,
             x: c.x,
             y: c.y,
             color: theme.text,
-            clip: Some([a.x as i32, (a.y + hh) as i32, (a.x + a.w) as i32, (a.y + a.h) as i32]),
+            clip: Some([a.x as i32, (a.y + hh) as i32, (a.x + a.w - lw) as i32, (a.y + a.h) as i32]),
         });
+        // The terminal list at the right edge: the shown one highlighted with a colored bar.
+        if lw > 0.0 {
+            let lx = a.x + a.w - lw;
+            under.push(Quad { x: lx, y: a.y, w: 1.0, h: a.h, color: theme.divider });
+            let rh = self.row_h();
+            let top = a.y + hh * 0.4;
+            let accent = crate::chrome::panel_color(crate::dock::Panel::Terminal, theme.dark);
+            let icon_size = (self.ui.size * 0.85).round();
+            for (i, label) in self.labels.iter().enumerate() {
+                let y = top + i as f32 * rh;
+                if y + rh > a.y + a.h {
+                    break;
+                }
+                let hover = self.list_hover.map(|h| h == i);
+                if i == self.active {
+                    under.push(Quad { x: lx + 1.0, y, w: lw - 1.0, h: rh, color: theme.tab_active });
+                    under.push(Quad { x: lx + 1.0, y: y + rh * 0.2, w: (2.0 * scale).round(), h: rh * 0.6, color: accent });
+                } else if hover.is_some() {
+                    under.push(Quad { x: lx + 1.0, y, w: lw - 1.0, h: rh, color: theme.tab_active.with_alpha(0x80) });
+                }
+                let ty = y + (rh - self.ui.line_h) / 2.0;
+                let close_x = a.x + a.w - rh;
+                if let Some(c) = self.meta.get(i).and_then(|m| m.color) {
+                    let d = (self.ui.line_h * 0.4).round();
+                    under.push(Quad { x: lx + self.ui.cell_w * 0.5, y: y + (rh - d) / 2.0, w: (3.0 * scale).round(), h: d, color: Rgba::rgb(c[0], c[1], c[2]) });
+                }
+                text.push(TextBlock {
+                    buffer: label,
+                    x: lx + self.ui.cell_w * 1.2,
+                    y: ty,
+                    color: if i == self.active { theme.panel_text } else { theme.panel_dim },
+                    clip: Some([lx as i32, y as i32, (if hover.is_some() { close_x } else { a.x + a.w }) as i32, (y + rh) as i32]),
+                });
+                if hover.is_some() {
+                    let iw = self.close_icon.layout_runs().next().map_or(icon_size, |r| r.line_w);
+                    text.push(TextBlock {
+                        buffer: &self.close_icon,
+                        x: (close_x + (rh - iw) / 2.0).round(),
+                        y: (y + (rh - icon_size * 1.2) / 2.0).round(),
+                        color: theme.panel_text,
+                        clip: None,
+                    });
+                }
+            }
+        }
     }
 }

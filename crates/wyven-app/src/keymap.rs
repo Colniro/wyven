@@ -38,6 +38,10 @@ pub enum Command {
     Comment(CommentMode),
     Save,
     SaveAs,
+    /// Ctrl+Shift+S: every open file with changes.
+    SaveAll,
+    /// Ctrl+Shift+B: builds the project (Problems panel shows the errors).
+    Build,
     OpenFile,
     NewFile,
     CloseTab,
@@ -184,7 +188,8 @@ impl Keymap {
                 ("z", false) => Undo,
                 ("z", true) | ("y", false) => Redo,
                 ("s", false) => Save,
-                ("s", true) => SaveAs,
+                ("s", true) => SaveAll,
+                ("b", true) => Build,
                 ("o", false) => OpenFile,
                 ("n", false) => NewFile,
                 ("w", false) => CloseTab,

@@ -33,6 +33,10 @@ tab_width = 4
 indent = "spaces"
 # Show suggestions automatically while typing (Ctrl+Space always works)
 auto_complete = true
+# Save changed files by themselves shortly after you stop typing
+auto_save = true
+# How long to wait after the last change, in milliseconds
+auto_save_delay_ms = 1000
 # Show info when the mouse rests on a name for a moment
 hover = true
 # Minimap on the right: "blocks" (shape of the code), "bar" (narrow marker bar) or "off".
@@ -162,6 +166,8 @@ pub struct EditorSettings {
     pub tab_width: usize,
     pub indent: String,
     pub auto_complete: bool,
+    pub auto_save: bool,
+    pub auto_save_delay_ms: u64,
     pub hover: bool,
     pub minimap: String,
     pub sticky_scroll: bool,
@@ -199,7 +205,7 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
     }
 }
 

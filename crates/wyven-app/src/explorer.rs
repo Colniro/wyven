@@ -262,6 +262,45 @@ impl Explorer {
                 }
     }
 
+    /// Opens a folder (and its parents) so a new entry can be typed below it.
+    pub fn expand(&mut self, dir: &Path) {
+        let mut changed = false;
+        for p in dir.ancestors() {
+            if self.root_of(p).is_none() {
+                break;
+            }
+            changed |= self.expanded.insert(p.to_path_buf());
+        }
+        if changed {
+            self.refresh();
+        }
+        if let Some(i) = self.rows.iter().position(|r| r.path == dir) {
+            self.selected = i;
+            self.keep_selection_visible();
+        }
+    }
+
+    /// Where to type a name in place: for a rename the row of `path`, for a new entry the row
+    /// below the folder `path` (one level deeper). Returns (x, y, width, height) in the window.
+    pub fn input_slot(&self, path: &Path, new_entry: bool) -> Option<(f32, f32, f32, f32)> {
+        let top = self.area.y + self.header_h();
+        let lh = self.font.line_h;
+        let visible = self.scroll..self.scroll + self.rows_visible();
+        let (row, depth) = match self.rows.iter().position(|r| r.path == path) {
+            Some(i) if new_entry => (i + 1, self.rows[i].depth + 1),
+            Some(i) => (i, self.rows[i].depth),
+            // The main folder in a one-folder explorer has no row: new entries go on top.
+            None if new_entry && self.roots.iter().any(|r| r == path) => (self.scroll, 0),
+            None => return None,
+        };
+        if !visible.contains(&row) {
+            return None;
+        }
+        let x = self.area.x + self.font.cell_w * (1.0 + 2.0 * depth as f32);
+        let y = top + (row - self.scroll) as f32 * lh;
+        Some((x, y - 1.0, self.area.x + self.area.w - x - self.font.cell_w * 0.6, lh + 2.0))
+    }
+
     /// Closes every folder (workspace folders stay open).
     pub fn collapse_all(&mut self) {
         self.expanded.retain(|p| self.roots.contains(p));

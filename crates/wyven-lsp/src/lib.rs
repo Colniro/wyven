@@ -241,7 +241,7 @@ pub fn initialize_params(root: &Path, process_id: u32) -> Value {
                 "diagnostic": { "dynamicRegistration": false },
                 "completion": {
                     "completionItem": {
-                        "snippetSupport": false,
+                        "snippetSupport": true,
                         "documentationFormat": ["plaintext", "markdown"],
                         "insertReplaceSupport": false
                     },

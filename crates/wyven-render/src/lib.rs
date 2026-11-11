@@ -89,7 +89,15 @@ pub struct GpuInfo {
     pub present_mode: String,
 }
 
+/// A further window drawn with the same device, fonts and glyph atlas (floating panels).
+struct Extra {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    window: Arc<Window>,
+}
+
 pub struct Renderer {
+    extra: Vec<Extra>,
     instance: wgpu::Instance,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -226,6 +234,7 @@ impl Renderer {
         let quads = QuadPipeline::new(&device, format);
 
         Self {
+            extra: Vec::new(),
             quads,
             instance,
             device,
@@ -268,9 +277,62 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
+    /// Adds a window to draw into (with [`Renderer::draw_window`]). `false` if the GPU cannot
+    /// draw there.
+    pub fn add_window(&mut self, window: Arc<Window>) -> bool {
+        let Ok(surface) = self.instance.create_surface(window.clone()) else { return false };
+        let size = window.inner_size();
+        let config = wgpu::SurfaceConfiguration {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            ..self.config.clone()
+        };
+        surface.configure(&self.device, &config);
+        self.extra.push(Extra { surface, config, window });
+        true
+    }
+
+    pub fn remove_window(&mut self, id: winit::window::WindowId) {
+        self.extra.retain(|e| e.window.id() != id);
+    }
+
+    pub fn has_window(&self, id: winit::window::WindowId) -> bool {
+        self.extra.iter().any(|e| e.window.id() == id)
+    }
+
+    pub fn window_size(&self, id: winit::window::WindowId) -> Option<(u32, u32)> {
+        self.extra.iter().find(|e| e.window.id() == id).map(|e| (e.config.width, e.config.height))
+    }
+
+    pub fn resize_window(&mut self, id: winit::window::WindowId, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        if let Some(e) = self.extra.iter_mut().find(|e| e.window.id() == id) {
+            e.config.width = width;
+            e.config.height = height;
+            e.surface.configure(&self.device, &e.config);
+        }
+    }
+
     /// Draws one frame. Returns `false` if the frame was skipped and should be retried.
     pub fn draw(&mut self, scene: &Scene<'_>) -> bool {
-        let (width, height) = self.size();
+        self.draw_on(None, scene)
+    }
+
+    /// Draws one frame into an added window.
+    pub fn draw_window(&mut self, id: winit::window::WindowId, scene: &Scene<'_>) -> bool {
+        match self.extra.iter().position(|e| e.window.id() == id) {
+            Some(i) => self.draw_on(Some(i), scene),
+            None => true,
+        }
+    }
+
+    fn draw_on(&mut self, target: Option<usize>, scene: &Scene<'_>) -> bool {
+        let (width, height) = match target {
+            Some(i) => (self.extra[i].config.width, self.extra[i].config.height),
+            None => self.size(),
+        };
         self.viewport
             .update(&self.queue, Resolution { width, height });
         let ranges = self.quads.prepare(
@@ -317,21 +379,28 @@ impl Renderer {
             }
         }
 
-        let frame = match self.surface.get_current_texture() {
+        let (surface, config, window) = match target {
+            Some(i) => {
+                let e = &mut self.extra[i];
+                (&mut e.surface, &e.config, &e.window)
+            }
+            None => (&mut self.surface, &self.config, &self.window),
+        };
+        let frame = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return false;
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&self.device, config);
                 return false;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface = self
+                *surface = self
                     .instance
-                    .create_surface(self.window.clone())
+                    .create_surface(window.clone())
                     .expect("failed to recreate GPU surface");
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&self.device, config);
                 return false;
             }
             wgpu::CurrentSurfaceTexture::Validation => panic!("GPU validation error"),
@@ -381,7 +450,7 @@ impl Renderer {
         }
 
         self.queue.submit(Some(encoder.finish()));
-        self.window.pre_present_notify();
+        window.pre_present_notify();
         self.queue.present(frame);
         self.atlas.trim();
         true
