@@ -65,7 +65,8 @@ pub struct SearchPanel {
     /// When the next search should start (debounced typing).
     pub due: Option<Instant>,
     rx: Option<Receiver<(u64, Msg)>>,
-    root: Option<PathBuf>,
+    /// The workspace folders to search.
+    roots: Vec<PathBuf>,
     area: Rect,
     font: FontMetrics,
     family: String,
@@ -97,7 +98,7 @@ impl SearchPanel {
             cancel: None,
             due: None,
             rx: None,
-            root: None,
+            roots: Vec::new(),
             area: Rect::default(),
             font,
             family,
@@ -126,11 +127,22 @@ impl SearchPanel {
     /// Opens the panel, optionally with a prefilled query (selection or word).
     /// Was opened for a folder before (a click on its tab can just show it again).
     pub fn has_root(&self) -> bool {
-        self.root.is_some()
+        !self.roots.is_empty()
     }
 
-    pub fn show(&mut self, root: &Path, with_replace: bool, prefill: Option<String>) {
-        self.root = Some(root.to_path_buf());
+    /// The workspace folders changed: search them again if the panel was used.
+    pub fn set_roots(&mut self, roots: &[PathBuf]) {
+        if self.has_root() && roots != self.roots.as_slice() {
+            self.roots = roots.to_vec();
+            self.due = Some(Instant::now());
+        }
+    }
+
+    pub fn show(&mut self, roots: &[PathBuf], with_replace: bool, prefill: Option<String>) {
+        if roots != self.roots.as_slice() {
+            self.roots = roots.to_vec();
+            self.due = Some(Instant::now());
+        }
         self.replace_open |= with_replace;
         self.field = Field::Find;
         if let Some(t) = prefill.filter(|t| !t.is_empty() && !t.contains('\n'))
@@ -162,7 +174,10 @@ impl SearchPanel {
         self.searched = 0;
         self.error = None;
         self.running = false;
-        let (Some(root), q) = (self.root.clone(), self.query.clone()) else { return None };
+        if self.roots.is_empty() {
+            return None;
+        }
+        let (roots, q) = (self.roots.clone(), self.query.clone());
         let re = match q.compile() {
             Ok(Some(re)) => re,
             Ok(None) => return None,
@@ -180,11 +195,14 @@ impl SearchPanel {
         std::thread::Builder::new()
             .name("project-search".into())
             .spawn(move || {
-                let searched = search_project(&root, &re, &cancel, |f| {
-                    if tx.send((generation, Msg::File(f))).is_ok() {
-                        wake();
-                    }
-                });
+                let mut searched = 0;
+                for root in &roots {
+                    searched += search_project(root, &re, &cancel, |f| {
+                        if tx.send((generation, Msg::File(f))).is_ok() {
+                            wake();
+                        }
+                    });
+                }
                 let _ = tx.send((generation, Msg::Done(searched)));
                 wake();
             })
@@ -398,7 +416,19 @@ impl SearchPanel {
         self.top.shape_until_scroll(fs, false);
 
         // Result rows (only the visible ones).
-        let root = self.root.clone().unwrap_or_default();
+        let roots = self.roots.clone();
+        // With several folders the folder name comes first, like in the explorer.
+        let rel_of = |p: &Path| -> String {
+            let slash = |q: &Path| q.to_string_lossy().replace('\\', "/");
+            match roots.iter().find(|r| p.starts_with(r)) {
+                Some(r) if roots.len() > 1 => {
+                    let name = r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    format!("{name}/{}", slash(p.strip_prefix(r).unwrap_or(p)))
+                }
+                Some(r) => slash(p.strip_prefix(r).unwrap_or(p)),
+                None => slash(p),
+            }
+        };
         let width_cells = ((self.area.w / self.font.cell_w) as usize).saturating_sub(2).max(10);
         let mut spans: Vec<(String, Rgba)> = Vec::new();
         let rows = self.rows();
@@ -407,7 +437,7 @@ impl SearchPanel {
             match *row {
                 Row::File(fi) => {
                     let f = &self.results[fi];
-                    let rel = f.path.strip_prefix(&root).unwrap_or(&f.path).to_string_lossy().replace('\\', "/");
+                    let rel = rel_of(&f.path);
                     spans.push((format!("▾ {rel}"), theme.panel_text));
                     spans.push((format!("  {}\n", f.count()), theme.panel_dim));
                 }

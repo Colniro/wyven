@@ -22,6 +22,11 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyven.exe`.
   - `Enter` / `F3` nächster Treffer, `Shift+Enter` / `Shift+F3` vorheriger, `Tab` wechselt zwischen Suchen und Ersetzen, `Esc` schließt.
   - `Alt+C` Groß/Klein, `Alt+W` ganzes Wort, `Alt+E` regulärer Ausdruck (Ersetzen mit `$1`, `$2` …), `Alt+R` ersetzt den Treffer, `Alt+A` alle (ein Rückgängig-Schritt).
   - Alle Treffer sind im Editor hinterlegt, der aktuelle kräftiger.
+- **Mehrere Ordner in einem Fenster** (Multi-Root):
+  - `Alt → p → a` fügt einen Ordner hinzu. Im Explorer hat dann jeder Ordner eine eigene Zeile; das `×` dahinter nimmt ihn wieder heraus.
+  - Dateisuche (`Ctrl+Q`) und Projektsuche durchsuchen alle Ordner; Dateien weiterer Ordner beginnen mit deren Namen (`lib/src/x.rs`).
+  - Git zeigt das Repository der aktiven Datei, das Terminal startet in ihrem Ordner, Language-Server und Debugger nehmen ebenfalls ihren Ordner. Claude Code sieht alle Ordner.
+  - Gemerkt wird das auf zwei Arten: automatisch beim Hauptordner (`%APPDATA%\Wyven\workspaces.json`; „zuletzt geöffnet“ bringt die weiteren Ordner zurück) und als VS-Code-Datei: `Alt → p → w` speichert eine `.code-workspace`-Datei, `Alt → p → f` öffnet eine (auch `wyven datei.code-workspace`). Änderungen an den Ordnern werden dann in die Datei geschrieben, ihre übrigen Einträge bleiben.
 - **Andockbare Panels**: Explorer, Suche, Git, Debug und Terminal liegen in drei Bereichen um den Editor: links, rechts und unten.
   - Jeder Bereich zeigt oben eine Leiste mit seinen Panels als Tabs; ein Klick wechselt das Panel.
   - Einen Tab mit der Maus ziehen verschiebt das Panel: auf die Tab-Leiste eines Bereichs, an den linken oder rechten Fensterrand oder nach unten. Der Zielbereich leuchtet beim Ziehen auf.

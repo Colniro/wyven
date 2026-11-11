@@ -54,7 +54,7 @@ fn claude_dir() -> Option<PathBuf> {
 
 impl Bridge {
     /// Starts listening and writes the lock file. `wake` wakes the UI thread.
-    pub fn start(workspace: Option<&Path>, wake: impl Fn() + Send + Sync + 'static) -> Result<Self, String> {
+    pub fn start(workspace: &[PathBuf], wake: impl Fn() + Send + Sync + 'static) -> Result<Self, String> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("Claude Code bridge: {e}"))?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let token = uuid::Uuid::new_v4().to_string();
@@ -76,8 +76,8 @@ impl Bridge {
     }
 
     /// (Re)writes the lock file, e.g. after opening another folder.
-    pub fn write_lock(&self, workspace: Option<&Path>) -> Result<(), String> {
-        let folders: Vec<String> = workspace.map(|p| p.display().to_string()).into_iter().collect();
+    pub fn write_lock(&self, workspace: &[PathBuf]) -> Result<(), String> {
+        let folders: Vec<String> = workspace.iter().map(|p| p.display().to_string()).collect();
         let lock = json!({
             "pid": std::process::id(),
             "workspaceFolders": folders,
@@ -283,7 +283,7 @@ impl crate::State {
     /// Starts the bridge (once, at startup) and tells the terminal how to find it.
     pub(crate) fn start_claude_bridge(&mut self) {
         let proxy = self.proxy.clone();
-        match Bridge::start(self.project_root(), move || {
+        match Bridge::start(&self.roots(), move || {
             let _ = proxy.send_event(crate::UserEvent::Claude);
         }) {
             Ok(b) => {
@@ -299,9 +299,9 @@ impl crate::State {
 
     /// After opening another folder: Claude Code matches IDEs by their folders.
     pub(crate) fn claude_workspace_changed(&mut self) {
-        let root = self.project_root().map(Path::to_path_buf);
+        let roots = self.roots();
         if let Some(b) = &self.claude
-            && let Err(e) = b.write_lock(root.as_deref())
+            && let Err(e) = b.write_lock(&roots)
         {
             log::warn!("{e}");
         }
@@ -416,7 +416,8 @@ impl crate::State {
             }
             "getWorkspaceFolders" => {
                 let folders: Vec<Value> = self
-                    .project_root()
+                    .roots()
+                    .iter()
                     .map(|p| {
                         json!({
                             "name": p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
@@ -424,7 +425,6 @@ impl crate::State {
                             "path": p.display().to_string(),
                         })
                     })
-                    .into_iter()
                     .collect();
                 let root = self.project_root().map(|p| p.display().to_string());
                 json_result(json!({ "success": true, "folders": folders, "rootPath": root }))
@@ -648,7 +648,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wyven-claude-test-{}", std::process::id()));
         // SAFETY: tests in this module run single-threaded for this variable.
         unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
-        let bridge = Bridge::start(Some(Path::new("C:/project")), || {}).unwrap();
+        let bridge = Bridge::start(&[PathBuf::from("C:/project")], || {}).unwrap();
         let lock: Value = serde_json::from_str(&std::fs::read_to_string(&bridge.lock_path).unwrap()).unwrap();
         assert_eq!(lock["ideName"], "Wyven");
         assert_eq!(lock["transport"], "ws");

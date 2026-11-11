@@ -19,15 +19,21 @@ pub struct FileIndex {
 }
 
 impl FileIndex {
-    /// Starts (re)building the index for `root` in the background.
-    pub fn rebuild(&self, root: &Path) {
-        let root = root.to_path_buf();
+    /// Starts (re)building the index for the workspace folders in the background. Files of the
+    /// first folder are relative to it; files of further folders start with that folder's name
+    /// (`lib/src/x.rs`), see [`resolve`].
+    pub fn rebuild(&self, roots: &[PathBuf]) {
+        let roots = roots.to_vec();
         let slot = self.files.clone();
         std::thread::Builder::new()
             .name("file-index".into())
             .spawn(move || {
                 let started = Instant::now();
-                let files = walk(&root);
+                let mut files = Vec::new();
+                for (i, root) in roots.iter().enumerate() {
+                    let prefix = if i == 0 { String::new() } else { format!("{}/", folder_name(root)) };
+                    files.extend(walk(root).into_iter().map(|f| format!("{prefix}{f}")));
+                }
                 log::info!("indexed {} files in {:?}", files.len(), started.elapsed());
                 *slot.lock().unwrap() = Some(Arc::new(files));
             })
@@ -38,6 +44,23 @@ impl FileIndex {
     pub fn files(&self) -> Option<Arc<Vec<String>>> {
         self.files.lock().unwrap().clone()
     }
+}
+
+fn folder_name(root: &Path) -> String {
+    root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// The file behind an index entry (see [`FileIndex::rebuild`]).
+pub fn resolve(roots: &[PathBuf], entry: &str) -> Option<PathBuf> {
+    let native = |s: &str| s.replace('/', std::path::MAIN_SEPARATOR_STR);
+    let first = roots.first()?.join(native(entry));
+    if first.exists() {
+        return Some(first);
+    }
+    roots.iter().skip(1).find_map(|r| {
+        let rest = entry.strip_prefix(&format!("{}/", folder_name(r)))?;
+        Some(r.join(native(rest)))
+    })
 }
 
 fn walk(root: &PathBuf) -> Vec<String> {

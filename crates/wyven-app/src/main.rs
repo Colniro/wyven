@@ -34,6 +34,7 @@ mod settings_page;
 mod terminal;
 mod theme;
 mod vscode_theme;
+mod workspace;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -112,7 +113,7 @@ fn main() {
     config::migrate_old_config_dir();
     install_crash_log();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // wyven [folder or file] [--terminal] [--git] [--diff] [--goto=LINE] [--preview] [--settings]
+    // wyven [folder, file or .code-workspace] [--terminal] [--git] [--diff] [--goto=LINE] [--preview] [--settings]
     let mut path = None;
     let (mut open_terminal, mut open_git, mut open_diff) = (false, false, false);
     let mut goto_line: Option<usize> = None;
@@ -328,6 +329,10 @@ struct State {
     diff: Option<diff_view::DiffView>,
     settings_page: settings_page::SettingsPage,
     theme_picker: Option<ThemePicker>,
+    /// The `.code-workspace` file the workspace came from (folders are written back to it).
+    workspace_file: Option<PathBuf>,
+    /// The file Git last followed (the panel shows the repository of the active file).
+    git_followed: Option<PathBuf>,
 
     latency: InputLatency,
     started: Instant,
@@ -375,6 +380,7 @@ impl ApplicationHandler<UserEvent> for App {
         let mut state = State::new(window, renderer, started, self.proxy.clone());
         match self.path.take() {
             Some(p) if p.is_dir() => state.open_folder(&p),
+            Some(p) if workspace::is_workspace_file(&p) => state.open_folder(&p),
             Some(p) => {
                 let p = std::path::absolute(&p).unwrap_or(p);
                 if let Some(parent) = p.parent() {
@@ -436,7 +442,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if let Some(ex) = &mut state.explorer {
                     ex.refresh();
-                    state.index.rebuild(ex.root());
+                    let roots = ex.roots().to_vec();
+                    state.index.rebuild(&roots);
                 }
                 state.window.request_redraw();
             }
@@ -755,6 +762,8 @@ impl State {
             diff: None,
             settings_page,
             theme_picker: None,
+            workspace_file: None,
+            git_followed: None,
             proxy,
             servers: HashMap::new(),
             lsp_failed: HashSet::new(),
@@ -1129,21 +1138,193 @@ impl State {
 
     // ----- projects, files, tabs -----
 
+    /// Opens a folder (with the folders added to it earlier) or a `.code-workspace` file.
     fn open_folder(&mut self, path: &Path) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-        let fs = self.renderer.font_system();
-        let ex = Explorer::new(path.clone(), fs, self.ui_font, self.family.clone());
-        self.explorer = Some(ex);
-        self.dock.show(Panel::Explorer);
-        config::remember_project(&path);
-        self.index.rebuild(&path);
-        self.git.open_repo(&path);
-        for t in &mut self.tabs {
-            t.git_base = None;
+        if workspace::is_workspace_file(&path) {
+            self.open_workspace_file(&path);
+            return;
         }
-        self.load_git_heads();
+        let mut roots = vec![path.clone()];
+        roots.extend(workspace::extra_folders(&path));
+        config::remember_project(&path);
+        self.open_roots(roots, None);
+    }
+
+    fn open_workspace_file(&mut self, file: &Path) {
+        match workspace::read_file(file) {
+            Ok(folders) => {
+                let existing: Vec<PathBuf> = folders.into_iter().filter(|f| f.is_dir()).collect();
+                if existing.is_empty() {
+                    self.show(format!("{}: none of its folders exist", file_name(file)));
+                    return;
+                }
+                config::remember_project(file);
+                self.open_roots(existing, Some(file.to_path_buf()));
+            }
+            Err(e) => self.show(e),
+        }
+    }
+
+    fn workspace_title(file: Option<&Path>) -> Option<String> {
+        file.and_then(Path::file_stem).map(|s| format!("{} (Workspace)", s.to_string_lossy()))
+    }
+
+    fn open_roots(&mut self, roots: Vec<PathBuf>, file: Option<PathBuf>) {
+        let fs = self.renderer.font_system();
+        let mut ex = Explorer::new(roots[0].clone(), fs, self.ui_font, self.family.clone());
+        for r in &roots[1..] {
+            ex.add_root(r.clone());
+        }
+        ex.set_title(Self::workspace_title(file.as_deref()));
+        self.explorer = Some(ex);
+        self.workspace_file = file;
+        self.dock.show(Panel::Explorer);
+        self.index.rebuild(&roots);
+        self.search.set_roots(&roots);
+        self.follow_git(true);
         self.claude_workspace_changed();
         self.relayout();
+    }
+
+    /// Alt → p → a: another folder in this window.
+    fn add_folder(&mut self) {
+        let mut dialog = rfd::FileDialog::new().set_title("Add Folder to Workspace");
+        if let Some(dir) = self.project_root() {
+            dialog = dialog.set_directory(dir.parent().unwrap_or(dir));
+        }
+        let Some(path) = dialog.pick_folder() else { return };
+        if self.explorer.is_none() {
+            self.open_folder(&path);
+            return;
+        }
+        let added = self.explorer.as_mut().is_some_and(|ex| ex.add_root(path.clone()));
+        if !added {
+            self.show("That folder is already in the workspace.");
+            return;
+        }
+        self.workspace_changed();
+        self.show(format!("Added {} to the workspace", file_name(&path)));
+    }
+
+    /// The × on a folder in the explorer.
+    fn remove_folder(&mut self, path: &Path) {
+        if self.explorer.as_mut().is_some_and(|ex| ex.remove_root(path)) {
+            self.workspace_changed();
+            self.show(format!("Removed {} from the workspace", file_name(path)));
+        }
+    }
+
+    /// Folders added or removed: search, Git, Claude Code and the saved workspace follow.
+    fn workspace_changed(&mut self) {
+        let roots = self.roots();
+        if roots.is_empty() {
+            return;
+        }
+        self.index.rebuild(&roots);
+        self.search.set_roots(&roots);
+        match &self.workspace_file {
+            Some(f) => {
+                if let Err(e) = workspace::write_file(f, &roots) {
+                    self.show(e);
+                }
+            }
+            None => {
+                config::remember_project(&roots[0]);
+                workspace::remember_extra_folders(&roots[0], &roots[1..]);
+            }
+        }
+        self.claude_workspace_changed();
+        self.follow_git(true);
+        self.relayout();
+    }
+
+    /// Alt → p → w: the folders as a VS Code `.code-workspace` file.
+    fn save_workspace_as(&mut self) {
+        let roots = self.roots();
+        if roots.is_empty() {
+            self.show("No folder open: Alt → p → o opens one.");
+            return;
+        }
+        let dialog = rfd::FileDialog::new()
+            .set_title("Save Workspace As")
+            .add_filter("Workspace", &[workspace::EXTENSION])
+            .set_directory(&roots[0])
+            .set_file_name(format!("{}.{}", file_name(&roots[0]), workspace::EXTENSION));
+        let Some(mut file) = dialog.save_file() else { return };
+        if !workspace::is_workspace_file(&file) {
+            file.set_extension(workspace::EXTENSION);
+        }
+        match workspace::write_file(&file, &roots) {
+            Ok(()) => {
+                config::remember_project(&file);
+                if let Some(ex) = &mut self.explorer {
+                    ex.set_title(Self::workspace_title(Some(&file)));
+                }
+                self.show(format!("Workspace saved: {}", file_name(&file)));
+                self.workspace_file = Some(file);
+            }
+            Err(e) => self.show(e),
+        }
+    }
+
+    /// Alt → p → f.
+    fn open_workspace_dialog(&mut self) {
+        let mut dialog = rfd::FileDialog::new().set_title("Open Workspace").add_filter("Workspace", &[workspace::EXTENSION]);
+        if let Some(dir) = self.project_root() {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(file) = dialog.pick_file() {
+            self.open_folder(&file);
+        }
+    }
+
+    /// Git shows the repository of the active file (`force`: check again even for the same file).
+    fn follow_git(&mut self, force: bool) {
+        let path = self.editor().doc.path().map(Path::to_path_buf);
+        if !force && path == self.git_followed {
+            return;
+        }
+        self.git_followed = path.clone();
+        let inside = |p: &Path, root: &Path| {
+            let (p, r) = (p.to_string_lossy().to_lowercase(), root.to_string_lossy().to_lowercase());
+            p.starts_with(&r)
+        };
+        if let (Some(repo), Some(p)) = (&self.git.repo, &path)
+            && inside(p, repo.root())
+            && !force
+        {
+            return;
+        }
+        if !force && path.is_none() && self.git.repo.is_some() {
+            return;
+        }
+        let Some(root) = self.root_for(path.as_deref()) else { return };
+        let before = self.git.repo.as_ref().map(|r| r.root().to_path_buf());
+        self.git.open_repo(&root);
+        let after = self.git.repo.as_ref().map(|r| r.root().to_path_buf());
+        if before != after || force {
+            for t in &mut self.tabs {
+                t.git_base = None;
+            }
+            self.load_git_heads();
+        }
+    }
+
+    /// The workspace folders (the first is the main folder).
+    fn roots(&self) -> Vec<PathBuf> {
+        self.explorer.as_ref().map(|e| e.roots().to_vec()).unwrap_or_default()
+    }
+
+    /// The workspace folder that contains `path` (else the main folder).
+    fn root_for(&self, path: Option<&Path>) -> Option<PathBuf> {
+        let ex = self.explorer.as_ref()?;
+        Some(path.and_then(|p| ex.root_of(p)).unwrap_or(ex.root()).to_path_buf())
+    }
+
+    /// The workspace folder of the active file.
+    fn active_root(&self) -> Option<PathBuf> {
+        self.root_for(self.editor().doc.path())
     }
 
     fn project_root(&self) -> Option<&Path> {
@@ -1207,6 +1388,7 @@ impl State {
         if let Some(ex) = &mut self.explorer {
             ex.invalidate();
         }
+        self.follow_git(false);
         self.window.request_redraw();
     }
 
@@ -1617,8 +1799,7 @@ impl State {
                 continue;
             }
             let root = self
-                .project_root()
-                .map(Path::to_path_buf)
+                .active_root()
                 .or_else(|| self.editor().doc.path().and_then(Path::parent).map(Path::to_path_buf));
             let Some(root) = root else { continue };
             let proxy = self.proxy.clone();
@@ -2490,8 +2671,7 @@ impl State {
     fn start_terminal(&mut self) {
         self.terminal_started = true;
         let cwd = self
-            .project_root()
-            .map(Path::to_path_buf)
+            .active_root()
             .or_else(|| self.editor().doc.path().and_then(Path::parent).map(Path::to_path_buf))
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(std::env::temp_dir);
@@ -2597,12 +2777,13 @@ impl State {
 
     /// Strg+Shift+F: shows the search panel in the sidebar.
     fn open_search_panel(&mut self, replace: bool) {
-        let Some(root) = self.project_root().map(Path::to_path_buf) else {
+        let roots = self.roots();
+        if roots.is_empty() {
             self.show("No folder open: Alt → p → o opens one.");
             return;
-        };
+        }
         let prefill = find::FindBar::prefill_from(&self.editor().doc);
-        self.search.show(&root, replace, prefill);
+        self.search.show(&roots, replace, prefill);
         self.dock.show(Panel::Search);
         self.focus = Focus::Search;
         self.relayout();
@@ -3372,8 +3553,7 @@ impl State {
     fn start_debugging(&mut self, run_only: bool) {
         let active_path = self.editor().doc.path().map(Path::to_path_buf);
         let Some(root) = self
-            .project_root()
-            .map(Path::to_path_buf)
+            .active_root()
             .or_else(|| active_path.as_deref().and_then(Path::parent).map(Path::to_path_buf))
         else {
             self.show("No folder open: Alt → p → o opens one.");
@@ -3642,8 +3822,7 @@ impl State {
         self.overlay = Overlay::None;
         match action {
             A::OpenFile(rel) => {
-                if let Some(root) = self.project_root() {
-                    let path = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+                if let Some(path) = index::resolve(&self.roots(), &rel) {
                     self.open_path(&path);
                 }
             }
@@ -3707,6 +3886,9 @@ impl State {
             }
             ResetLayout => self.reset_layout(),
             OpenFolder => self.pick_folder(),
+            AddFolder => self.add_folder(),
+            OpenWorkspace => self.open_workspace_dialog(),
+            SaveWorkspace => self.save_workspace_as(),
             RecentProjects => {
                 let list = config::recent_projects();
                 if list.is_empty() {
@@ -4286,6 +4468,14 @@ impl State {
             return;
         }
         let explorer_shown = self.panel_shown(Panel::Explorer);
+        if explorer_shown
+            && button == MouseButton::Left
+            && let Some(root) = self.explorer.as_ref().and_then(|ex| ex.close_hit(x, y))
+        {
+            self.focus = Focus::Explorer;
+            self.remove_folder(&root);
+            return;
+        }
         if let Some(ex) = &mut self.explorer
             && explorer_shown && ex.contains(x, y) {
                 self.focus = Focus::Explorer;
@@ -4428,7 +4618,11 @@ impl State {
     fn update_title(&mut self) {
         let ed = self.editor();
         let dirty = if ed.doc.is_dirty() { "● " } else { "" };
-        let project = self.project_root().map(|r| format!(" – {}", file_name(r))).unwrap_or_default();
+        let project = match (&self.workspace_file, self.project_root()) {
+            (Some(f), _) => format!(" – {}", f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()),
+            (None, Some(r)) => format!(" – {}", file_name(r)),
+            (None, None) => String::new(),
+        };
         let title = format!("{dirty}{}{project} – Wyven", ed.file_name());
         if title != self.title {
             self.window.set_title(&title);

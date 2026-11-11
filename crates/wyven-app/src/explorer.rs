@@ -1,4 +1,5 @@
-//! The file explorer: a folder tree on the left.
+//! The file explorer: a folder tree on the left. With several workspace folders each one is a
+//! row of its own (with a × to remove it from the workspace).
 //!
 //! Only expanded folders are read from disk, so even huge projects open instantly. The tree is
 //! re-read when the window gets focus again (files changed outside Wyven); a real file watcher
@@ -25,10 +26,15 @@ pub struct Row {
     pub depth: usize,
     pub is_dir: bool,
     pub expanded: bool,
+    /// A workspace folder's own row (only with several folders).
+    pub is_root: bool,
 }
 
 pub struct Explorer {
-    root: PathBuf,
+    /// The workspace folders; the first is the main folder.
+    roots: Vec<PathBuf>,
+    /// Header with several folders: the workspace file's name, else "WORKSPACE".
+    title: Option<String>,
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
     pub selected: usize,
@@ -38,6 +44,8 @@ pub struct Explorer {
     family: String,
     buffer: Buffer,
     header: Buffer,
+    /// The × behind each folder row.
+    close: Buffer,
     dirty: bool,
 }
 
@@ -46,11 +54,14 @@ impl Explorer {
         let metrics = Metrics::new(font.size, font.line_h);
         let mut buffer = Buffer::new(fs, metrics);
         let mut header = Buffer::new(fs, metrics);
+        let mut close = Buffer::new(fs, metrics);
         buffer.set_wrap(Wrap::None);
         header.set_wrap(Wrap::None);
+        close.set_wrap(Wrap::None);
         let mut ex = Self {
-            root,
-            expanded: HashSet::new(),
+            expanded: HashSet::from([root.clone()]),
+            roots: vec![root],
+            title: None,
             rows: Vec::new(),
             selected: 0,
             scroll: 0,
@@ -59,14 +70,56 @@ impl Explorer {
             family,
             buffer,
             header,
+            close,
             dirty: true,
         };
         ex.refresh();
         ex
     }
 
+    /// The main folder (the first one).
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.roots[0]
+    }
+
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    fn multi(&self) -> bool {
+        self.roots.len() > 1
+    }
+
+    /// Adds a workspace folder (expanded). Returns false if it is already there.
+    pub fn add_root(&mut self, path: PathBuf) -> bool {
+        if self.roots.iter().any(|r| same_path(r, &path)) {
+            return false;
+        }
+        self.expanded.insert(path.clone());
+        self.roots.push(path);
+        self.refresh();
+        true
+    }
+
+    /// Removes a workspace folder; the last one stays. Returns false if nothing changed.
+    pub fn remove_root(&mut self, path: &Path) -> bool {
+        if self.roots.len() < 2 {
+            return false;
+        }
+        let before = self.roots.len();
+        self.roots.retain(|r| !same_path(r, path));
+        self.refresh();
+        self.roots.len() != before
+    }
+
+    pub fn set_title(&mut self, title: Option<String>) {
+        self.title = title;
+        self.dirty = true;
+    }
+
+    /// The workspace folder a path is in.
+    pub fn root_of(&self, path: &Path) -> Option<&Path> {
+        self.roots.iter().map(PathBuf::as_path).filter(|r| starts_with(path, r)).max_by_key(|r| r.as_os_str().len())
     }
 
     pub fn set_area(&mut self, area: Rect) {
@@ -88,8 +141,19 @@ impl Explorer {
     pub fn refresh(&mut self) {
         let selected = self.rows.get(self.selected).map(|r| r.path.clone());
         self.rows.clear();
-        let root = self.root.clone();
-        self.walk(&root, 0);
+        if self.multi() {
+            for root in self.roots.clone() {
+                let expanded = self.expanded.contains(&root);
+                let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
+                self.rows.push(Row { path: root.clone(), name, depth: 0, is_dir: true, expanded, is_root: true });
+                if expanded {
+                    self.walk(&root, 1);
+                }
+            }
+        } else {
+            let root = self.roots[0].clone();
+            self.walk(&root, 0);
+        }
         if let Some(p) = selected
             && let Some(i) = self.rows.iter().position(|r| r.path == p) {
                 self.selected = i;
@@ -115,7 +179,7 @@ impl Explorer {
         entries.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
         for (name, path, is_dir) in entries {
             let expanded = is_dir && self.expanded.contains(&path);
-            self.rows.push(Row { path: path.clone(), name, depth, is_dir, expanded });
+            self.rows.push(Row { path: path.clone(), name, depth, is_dir, expanded, is_root: false });
             if expanded {
                 self.walk(&path, depth + 1);
             }
@@ -182,7 +246,7 @@ impl Explorer {
         let Some(row) = self.rows.get(self.selected).cloned() else { return };
         if row.is_dir && row.expanded != open {
             self.set_expanded(&row.path, open);
-        } else if !open && row.depth > 0
+        } else if !open && row.depth > 0 && !row.is_root
             && let Some(parent) = row.path.parent()
                 && let Some(i) = self.rows.iter().position(|r| r.path == parent) {
                     self.selected = i;
@@ -202,12 +266,10 @@ impl Explorer {
 
     /// Expands all parent folders of `path` and selects it.
     pub fn reveal(&mut self, path: &Path) {
-        if !path.starts_with(&self.root) {
-            return;
-        }
-        let mut changed = false;
+        let Some(root) = self.root_of(path).map(Path::to_path_buf) else { return };
+        let mut changed = self.multi() && self.expanded.insert(root.clone());
         for parent in path.ancestors().skip(1) {
-            if parent == self.root {
+            if parent == root {
                 break;
             }
             changed |= self.expanded.insert(parent.to_path_buf());
@@ -231,11 +293,22 @@ impl Explorer {
         (i < self.rows.len()).then_some(i)
     }
 
+    /// The workspace folder whose × is under the mouse (several folders only).
+    pub fn close_hit(&self, x: f32, y: f32) -> Option<PathBuf> {
+        if !self.multi() || x < self.area.x + self.area.w - self.font.cell_w * 2.5 {
+            return None;
+        }
+        let row = self.rows.get(self.row_at(y)?)?;
+        row.is_root.then(|| row.path.clone())
+    }
+
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, active: Option<&Path>) {
-        let name = self
-            .root
-            .file_name()
-            .map_or_else(|| self.root.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let name = if self.multi() {
+            self.title.clone().unwrap_or_else(|| "Workspace".into())
+        } else {
+            let root = &self.roots[0];
+            root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned())
+        };
         let attrs = Attrs::new().family(Family::Name(&self.family));
         self.header.set_text(&name.to_uppercase(), &attrs, Shaping::Advanced, None);
         self.header.shape_until_scroll(fs, false);
@@ -244,7 +317,15 @@ impl Explorer {
         }
         let visible = self.rows_visible();
         let mut spans: Vec<(String, Rgba)> = Vec::new();
+        let mut closes = String::new();
         for row in self.rows.iter().skip(self.scroll).take(visible) {
+            closes.push_str(if row.is_root { "×\n" } else { "\n" });
+            if row.is_root {
+                let marker = if row.expanded { "▾ " } else { "▸ " };
+                spans.push((marker.to_string(), theme.panel_dim));
+                spans.push((format!("{}\n", row.name.to_uppercase()), theme.panel_text));
+                continue;
+            }
             let indent = "  ".repeat(row.depth);
             let (marker, color) = if row.is_dir {
                 (if row.expanded { "▾ " } else { "▸ " }, theme.panel_text)
@@ -263,6 +344,8 @@ impl Explorer {
             None,
         );
         self.buffer.shape_until_scroll(fs, false);
+        self.close.set_text(&closes, &attrs, Shaping::Advanced, None);
+        self.close.shape_until_scroll(fs, false);
         self.dirty = false;
     }
 
@@ -296,5 +379,51 @@ impl Explorer {
             clip,
         });
         text.push(TextBlock { buffer: &self.buffer, x: a.x + pad, y: top, color: theme.panel_text, clip });
+        if self.multi() {
+            let x = a.x + a.w - pad * 2.0;
+            text.push(TextBlock { buffer: &self.close, x, y: top, color: theme.panel_dim, clip });
+        }
+    }
+}
+
+/// Windows paths ignore case.
+fn same_path(a: &Path, b: &Path) -> bool {
+    a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+}
+
+fn starts_with(path: &Path, root: &Path) -> bool {
+    path.starts_with(root) || {
+        let (p, r) = (path.to_string_lossy().to_lowercase(), root.to_string_lossy().to_lowercase());
+        p.starts_with(&r) && p[r.len()..].starts_with(['\\', '/'])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn several_folders_get_their_own_rows() {
+        let dir = std::env::temp_dir().join(format!("wyven-explorer-test-{}", std::process::id()));
+        let (a, b) = (dir.join("app"), dir.join("lib"));
+        std::fs::create_dir_all(a.join("src")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("src").join("main.rs"), "").unwrap();
+        std::fs::write(b.join("lib.rs"), "").unwrap();
+        let mut fs = FontSystem::new();
+        let font = FontMetrics { size: 14.0, line_h: 20.0, cell_w: 8.0 };
+        let mut ex = Explorer::new(a.clone(), &mut fs, font, String::new());
+        assert_eq!(ex.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["src"]);
+        assert!(ex.add_root(b.clone()));
+        assert!(!ex.add_root(b.clone()), "no folder twice");
+        let names: Vec<(&str, usize, bool)> = ex.rows.iter().map(|r| (r.name.as_str(), r.depth, r.is_root)).collect();
+        assert_eq!(names, [("app", 0, true), ("src", 1, false), ("lib", 0, true), ("lib.rs", 1, false)]);
+        ex.reveal(&a.join("src").join("main.rs"));
+        assert_eq!(ex.rows[ex.selected].name, "main.rs");
+        assert_eq!(ex.root_of(&b.join("lib.rs")), Some(b.as_path()));
+        assert!(ex.remove_root(&a));
+        assert_eq!(ex.root(), b.as_path());
+        assert!(!ex.remove_root(&b), "the last folder stays");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

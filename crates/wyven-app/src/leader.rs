@@ -8,6 +8,11 @@ pub enum Action {
     ToggleExplorer,
     FocusExplorer,
     OpenFolder,
+    /// Another folder in the same window.
+    AddFolder,
+    /// A VS Code `.code-workspace` file.
+    OpenWorkspace,
+    SaveWorkspace,
     RecentProjects,
     OpenFile,
     NewFile,
@@ -104,7 +109,9 @@ const PROJECT: &[Item] = &[
     item('o', "open folder", OpenFolder),
     item('r', "recent projects", RecentProjects),
     item('e', "focus explorer", FocusExplorer),
-    item('a', "add folder", Later("Multiple folders come in phase 4")),
+    item('a', "add folder to workspace", AddFolder),
+    item('f', "open workspace file …", OpenWorkspace),
+    item('w', "save workspace as …", SaveWorkspace),
 ];
 
 const GIT: &[Item] = &[
