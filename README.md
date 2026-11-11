@@ -1,10 +1,10 @@
-# Wyvern
+# Wyven
 
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 und 2 fertig, Phase 3 läuft (Debugger und KI-Vorschläge fertig).** Wyvern öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Noch offen in Phase 3: Inlay Hints, CodeLens, Markdown-Vorschau, Claude-Code-Brücke, Web-Sprachen (siehe [PLAN.md](PLAN.md)).
+**Stand: Phase 1, 2 und 3 fertig.** Wyven öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Dazu kommen Debugger, KI-Vorschläge, Inlay Hints, CodeLens, Markdown-Vorschau, die Claude-Code-Brücke und Web-Sprachen per LSP. Als Nächstes kommt Phase 4 (siehe [PLAN.md](PLAN.md)).
 
 ## Starten
 
@@ -14,7 +14,7 @@ cargo run --release -- pfad/zum/Projektordner
 
 Mit einem Ordner öffnet sich dieser als Projekt, mit einer Datei die Datei samt ihrem Ordner. Ohne Pfad öffnet sich das zuletzt benutzte Projekt.
 `cargo run` (ohne `--release`) baut schneller nach Änderungen, läuft aber langsamer und zeigt ein Konsolenfenster mit Logs.
-Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
+Die fertige Exe liegt nach dem Bauen unter `target\release\wyven.exe`.
 
 ## Was schon geht
 
@@ -26,7 +26,7 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - Sucht beim Tippen im Hintergrund, beachtet `.gitignore`, überspringt `bin`/`obj` und Binärdateien. Gleiche Optionen wie oben.
   - `↑`/`↓` + `Enter` oder Klick öffnet den Treffer. `Alt+A` ersetzt im ganzen Projekt: offene Dateien werden im Editor geändert (Rückgängig möglich), alle anderen sofort gespeichert.
 
-- **Terminal** unter dem Editor: `Alt → t` öffnet es (beim ersten Mal startet die Shell im Projektordner), springt hinein oder schließt es. Start direkt mit Terminal: `wyvern <Ordner> --terminal`.
+- **Terminal** unter dem Editor: `Alt → t` öffnet es (beim ersten Mal startet die Shell im Projektordner), springt hinein oder schließt es. Start direkt mit Terminal: `wyven <Ordner> --terminal`.
   - Alle Tasten gehen an die Shell, auch `Esc`, `Strg+C` und `Strg+V`. So laufen auch Programme wie Claude Code oder `dotnet watch` darin. `Alt` antippen öffnet weiterhin das Leader-Menü.
   - Kopieren/Einfügen: `Strg+Shift+C` / `Strg+Shift+V`, Auswahl mit der Maus. Mausrad scrollt zurück (bis 5000 Zeilen).
   - Volle Farben (256 und True Color), Shell und Höhe in `settings.toml` unter `[terminal]`. Standard: PowerShell 7, sonst Windows PowerShell.
@@ -40,8 +40,8 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - **Blame auf Abruf** (`Alt → g → l`): Autor, Alter und Commit-Nachricht der Cursorzeile als Tooltip.
 - **Dateien, die sich auf der Festplatte ändern** (Branch-Wechsel, Pull, Claude Code, Formatter), werden automatisch neu geladen, solange sie im Editor keine ungespeicherten Änderungen haben.
 
-- **Einstellungen** in `settings.toml` (`%APPDATA%\Wyvern\settings.toml`, öffnen mit `Alt → ,`): Theme, Schriftart/-größe, Zeilenhöhe, Tab-Breite, Einrückung, Autovervollständigung und Info-Tooltip an/aus, Oberflächenschrift und Explorer-Breite. Die Datei wird beim ersten Start mit allen Optionen und Erklärungen angelegt. Speichern in Wyvern wendet sie sofort an. Tippfehler bei Optionsnamen werden in der Statusleiste gemeldet, die alten Einstellungen bleiben dann aktiv.
-- **Themes** „Wyvern Dark“ und „Wyvern Light“: umschalten mit `Alt → v → t` oder im Suchfeld `>Theme`. Die Wahl wird in `settings.toml` gespeichert.
+- **Einstellungen** in `settings.toml` (`%APPDATA%\Wyven\settings.toml`, öffnen mit `Alt → ,`): Theme, Schriftart/-größe, Zeilenhöhe, Tab-Breite, Einrückung, Autovervollständigung und Info-Tooltip an/aus, Oberflächenschrift und Explorer-Breite. Die Datei wird beim ersten Start mit allen Optionen und Erklärungen angelegt. Speichern in Wyven wendet sie sofort an. Tippfehler bei Optionsnamen werden in der Statusleiste gemeldet, die alten Einstellungen bleiben dann aktiv.
+- **Themes** „Wyven Dark“ und „Wyven Light“: umschalten mit `Alt → v → t` oder im Suchfeld `>Theme`. Die Wahl wird in `settings.toml` gespeichert.
 - **Minimap** rechts statt Scrollbalken: zeigt die Form des Codes als farbige Blöcke und einen Kasten für den sichtbaren Bereich (heller, wenn die Maus darüber ist). Ganz rechts liegt ein schmaler Streifen mit Markierungen für die ganze Datei: Git-Änderungen, Suchtreffer, Fehler/Warnungen und die Cursorzeile.
   - Klick springt an die Stelle, Ziehen des Kastens scrollt. Bei langen Dateien scrollt die Minimap mit.
   - `Alt → v → m` schaltet um: Blöcke → schmale Markierungsleiste → aus. Die Wahl steht in `settings.toml` unter `[editor] minimap`.
@@ -51,20 +51,29 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - Steht `{` allein in der Zeile (C#-Stil), bleibt die Signatur sichtbar. Hinter einer gefalteten Zeile steht ein `…`.
   - Fährt die Maus über den Zeilenrand, erscheinen `▾`-Pfeile; gefaltete Stellen zeigen immer `▸`. Klick auf den Pfeil oder das `…` faltet bzw. öffnet.
   - Der Cursor springt mit den Pfeiltasten über gefaltete Blöcke. Springen Suche, „Gehe zu“ oder Gehe-zu-Definition hinein, öffnet sich der Block. Änderungen darüber verschieben die Faltung, Änderungen darin öffnen sie.
-- **Debugger** für .NET mit [netcoredbg](https://github.com/Samsung/netcoredbg) (MIT; gesucht im `PATH` und in `%APPDATA%\Wyvern\netcoredbg`):
-  - `F5` baut das Projekt (`dotnet build`, vorher werden offene Dateien gespeichert) und startet es im **eigenen Konsolenfenster** mit Debugger; `Console.ReadLine` funktioniert dort. Bei mehreren startbaren Projekten fragt Wyvern einmal. `Ctrl+F5` startet ohne Debugger.
+- **Debugger** für .NET mit [netcoredbg](https://github.com/Samsung/netcoredbg) (MIT; gesucht im `PATH` und in `%APPDATA%\Wyven\netcoredbg`):
+  - `F5` baut das Projekt (`dotnet build`, vorher werden offene Dateien gespeichert) und startet es im **eigenen Konsolenfenster** mit Debugger; `Console.ReadLine` funktioniert dort. Bei mehreren startbaren Projekten fragt Wyven einmal. `Ctrl+F5` startet ohne Debugger.
   - Breakpoints mit `F9` oder Klick auf die Zeilennummer (roter Punkt); sie wandern beim Tippen mit und bleiben beim Schließen der Datei erhalten.
-  - Angehalten: gelb hinterlegte Zeile mit Pfeil, Wyvern kommt nach vorne. `F5` weiter, `F10` Step Over, `F11` Step Into, `Shift+F11` Step Out, `Shift+F5` beenden.
+  - Angehalten: gelb hinterlegte Zeile mit Pfeil, Wyven kommt nach vorne. `F5` weiter, `F10` Step Over, `F11` Step Into, `Shift+F11` Step Out, `Shift+F5` beenden.
   - Debug-Panel links (`Alt → d → d`): Variablen (aufklappbar mit `Enter`/`→`), Watch-Ausdrücke (`Alt → d → w`), Aufrufliste (Klick wechselt den Frame) und alle Breakpoints (`Entf` löscht).
   - Maus kurz auf einem Namen: zeigt seinen Wert (auch `spieler.Position.X`).
   - `Alt → d → a` hängt sich an einen laufenden `dotnet`- oder Godot-Prozess.
-  - Technik: netcoredbg leitet die Konsole eines selbst gestarteten Programms immer um. Deshalb startet Wyvern das Programm selbst und hängt den Debugger an; ein kleiner Startup-Hook (einmalig nach `%APPDATA%\Wyvern\debughook` gebaut) lässt das Programm so lange warten und hält das Fenster am Ende offen.
+  - Technik: netcoredbg leitet die Konsole eines selbst gestarteten Programms immer um. Deshalb startet Wyven das Programm selbst und hängt den Debugger an; ein kleiner Startup-Hook (einmalig nach `%APPDATA%\Wyven\debughook` gebaut) lässt das Programm so lange warten und hält das Fenster am Ende offen.
 - **KI-Vorschläge** beim Tippen, standardmäßig **kostenlos und lokal**:
   - Nach ~400 ms Tipp-Pause erscheint der Vorschlag grau am Cursor, bis zu 10 Zeilen; weitere Zeilen schieben den Code darunter nach unten. `Tab` nimmt alles an, `Ctrl+→` ein Wort, `Esc` verwirft. Vorschläge kommen nur, wenn rechts vom Cursor höchstens schließende Klammern, `;` oder `,` stehen.
-  - **Lokal (Standard):** das Code-Modell **Qwen2.5-Coder 7B (Base)** läuft über [Ollama](https://ollama.com) auf der eigenen Grafikkarte. Nichts verlässt den PC, es kostet nichts und geht auch offline. Einrichtung einmalig: Ollama installieren (`winget install Ollama.Ollama`), dann `ollama pull qwen2.5-coder:7b-base`. Wichtig ist die *Base*-Variante: Die Chat-Variante antwortet mit Erklärungen statt nur mit Code. Läuft Ollama nicht, sagt Wyvern es in der Statusleiste.
+  - **Lokal (Standard):** das Code-Modell **Qwen2.5-Coder 7B (Base)** läuft über [Ollama](https://ollama.com) auf der eigenen Grafikkarte. Nichts verlässt den PC, es kostet nichts und geht auch offline. Einrichtung einmalig: Ollama installieren (`winget install Ollama.Ollama`), dann `ollama pull qwen2.5-coder:7b-base`. Wichtig ist die *Base*-Variante: Die Chat-Variante antwortet mit Erklärungen statt nur mit Code. Läuft Ollama nicht, sagt Wyven es in der Statusleiste.
   - **Claude (optional):** Claude Haiku 5.5 oder Sonnet 5.5 über die Anthropic-API mit eigenem, kostenpflichtigem API-Key (zählt nicht zum Pro-Abo). Key setzen mit `Alt → a → k`; er liegt im Windows-Tresor. Dann wechselt `Alt → a → m` zwischen lokal, Haiku und Sonnet. Gesendet wird nur die offene Datei; der Dateianfang wird zwischengespeichert (Prompt Caching), bei Sonnet springt bei einer Ablehnung durch die Sicherheitsfilter ein anderes Modell ein.
   - An/aus mit `Alt → a → t` oder Klick auf den Schalter in der Statusleiste („✦ Qwen2.5-Coder 7B (local)“). Einstellungen in `settings.toml` unter `[ai]`: `provider`, `local_model`, `model`, `delay_ms`.
-- **Startoptionen**: `wyvern <Datei> --goto=120` springt zu Zeile 120; `--terminal`, `--git` und `--diff` öffnen gleich Terminal, Git-Panel bzw. Diff der Datei.
+- **Claude Code** arbeitet mit Wyven zusammen wie mit VS Code:
+  - `Alt → a → c` öffnet das Terminal und startet dort `claude`; es verbindet sich von selbst. Läuft Claude Code in einem anderen Terminal, findet es Wyven über `/ide`.
+  - Claude Code sieht die offene Datei, die Auswahl (auch ihre Änderungen) und die Fehler der Language-Server und kann Dateien öffnen und speichern.
+  - Will Claude etwas ändern, zeigt Wyven die Änderung nebeneinander: links der jetzige Stand, rechts der Vorschlag. `Strg+Enter` nimmt an, `Esc` lehnt ab; Claude Code wartet auf die Antwort und schreibt die Datei nach dem Annehmen selbst.
+  - Technik: Wyven startet einen MCP-Server über WebSocket, nur auf `127.0.0.1` und mit Zufalls-Token, und meldet ihn in `~/.claude/ide/<port>.lock` an. Das Terminal bekommt `CLAUDE_CODE_SSE_PORT`.
+- **Inlay Hints** (`Alt → v → i`): Typen und Parameternamen grau im Code, für C# und TypeScript/JavaScript.
+- **CodeLens** (`Alt → v → l`): „N references“ über Typen und Methoden; ein Klick listet sie auf. `Shift+F12` bzw. `Alt → j → r` zeigt alle Referenzen am Cursor.
+- **Markdown-Vorschau** (`Alt → m`): rechts neben der Datei, aktualisiert sich beim Tippen und scrollt mit.
+- **Web-Sprachen per LSP**: TypeScript/JavaScript (TypeScript 7, `tsc --lsp`), HTML, CSS/SCSS/Less und JSON (die Server aus VS Code) mit Fehlern, Vervollständigung, Hover, Gehe zu Definition, Umbenennen und Formatieren. Einrichtung einmalig: `cd %APPDATA%\Wyven\servers` und `npm install typescript vscode-langservers-extracted` (braucht Node.js).
+- **Startoptionen**: `wyven <Datei> --goto=120` springt zu Zeile 120; `--terminal`, `--git`, `--diff` und `--preview` öffnen gleich Terminal, Git-Panel, Diff bzw. Markdown-Vorschau.
 - **Oberfläche auf Englisch**: Leader-Menü, Befehle im Suchfeld (`File: Save`, `Git: Commit All` …), Spickzettel, Panels, Statusmeldungen und die Vorlage der `settings.toml`. Tasten heißen `Ctrl`, `PgUp` usw. In `settings.toml` gelten `theme = "dark"`/`"light"` und `indent = "spaces"`/`"tabs"`, die alten Werte `dunkel`/`hell`/`leerzeichen` funktionieren weiter.
 - **Spickzettel** mit allen Kürzeln: `Alt → h`. Er wird aus denselben Listen erzeugt wie Suchfeld und Leader-Menü und ist deshalb immer aktuell.
 
@@ -78,8 +87,8 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
   - Quick Actions: `Strg+.` zeigt die Vorschläge von Roslyn (Tippfehler korrigieren, Feld/Methode erzeugen, `using` ergänzen …). Auswahl per Ziffer oder Pfeiltasten + `Enter`.
   - Nächster Fehler: `F8` (wie in Visual Studio)
 
-  Der Server startet automatisch, sobald eine `.cs`-Datei offen ist. Wyvern meldet ihm die `.sln`/`.slnx` im Projektordner an, oder wenn es keine gibt, alle `.csproj` bis drei Ordner tief. Das Laden dauert ein paar Sekunden (beim ersten Mal inkl. `dotnet restore`), die Statusleiste zeigt den Fortschritt. Ohne Projektdatei arbeitet Roslyn im Einzeldatei-Modus.
-  Woher der Server kommt, in dieser Reihenfolge: Umgebungsvariable `WYVERN_CSHARP_SERVER`, dann der Roslyn-Server aus der **C#-Extension von VS Code**, dann `csharp-ls` im PATH. Er braucht das .NET SDK.
+  Der Server startet automatisch, sobald eine `.cs`-Datei offen ist. Wyven meldet ihm die `.sln`/`.slnx` im Projektordner an, oder wenn es keine gibt, alle `.csproj` bis drei Ordner tief. Das Laden dauert ein paar Sekunden (beim ersten Mal inkl. `dotnet restore`), die Statusleiste zeigt den Fortschritt. Ohne Projektdatei arbeitet Roslyn im Einzeldatei-Modus.
+  Woher der Server kommt, in dieser Reihenfolge: Umgebungsvariable `WYVEN_CSHARP_SERVER`, dann der Roslyn-Server aus der **C#-Extension von VS Code**, dann `csharp-ls` im PATH. Er braucht das .NET SDK.
 
 - **Suchfeld** `Strg+Q`, ein Feld für alles:
   - ohne Präfix: Dateien im Projekt, unscharf (`prgcs` findet `Program.cs`). Beachtet `.gitignore`.
@@ -112,16 +121,16 @@ Die fertige Exe liegt nach dem Bauen unter `target\release\wyvern.exe`.
 
 | Crate | Aufgabe |
 |---|---|
-| `crates/wyvern-app` | Startpunkt (`wyvern.exe`), Fenster, Tastenbelegung, Editor-Ansicht, Statusleiste |
-| `crates/wyvern-buffer` | Textpuffer (Rope), Multi-Cursor, Transaktionen, Undo/Redo, Laden/Speichern |
-| `crates/wyvern-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting, Symbole |
-| `crates/wyvern-search` | Suchen/Ersetzen: Abfragen (Text, Wort, Groß/Klein, Regex), Projektsuche |
-| `crates/wyvern-ai` | KI-Vorschläge: lokal über Ollama oder über die Anthropic-API (beides Streaming über HTTP), Prompt-Aufbau, API-Key im Windows-Tresor |
-| `crates/wyvern-dap` | Debug-Adapter-Client (DAP) für netcoredbg |
-| `crates/wyvern-git` | Git über die `git`-Kommandozeile: Status, Commit, Sync, Branches, Blame, Zeilen-Diffs |
-| `crates/wyvern-terminal` | Terminal: Shell in ConPTY, Emulation mit `alacritty_terminal`, Tasten-Kodierung |
-| `crates/wyvern-lsp` | Language-Server-Client: JSON-RPC über stdio, UTF-16-Positionen |
-| `crates/wyvern-render` | GPU-Rendering (wgpu): Rechtecke und Text (glyphon / cosmic-text) |
+| `crates/wyven-app` | Startpunkt (`wyven.exe`), Fenster, Tastenbelegung, Editor-Ansicht, Statusleiste |
+| `crates/wyven-buffer` | Textpuffer (Rope), Multi-Cursor, Transaktionen, Undo/Redo, Laden/Speichern |
+| `crates/wyven-syntax` | Tree-sitter: Sprachen erkennen, inkrementell parsen, Highlighting, Symbole |
+| `crates/wyven-search` | Suchen/Ersetzen: Abfragen (Text, Wort, Groß/Klein, Regex), Projektsuche |
+| `crates/wyven-ai` | KI-Vorschläge: lokal über Ollama oder über die Anthropic-API (beides Streaming über HTTP), Prompt-Aufbau, API-Key im Windows-Tresor |
+| `crates/wyven-dap` | Debug-Adapter-Client (DAP) für netcoredbg |
+| `crates/wyven-git` | Git über die `git`-Kommandozeile: Status, Commit, Sync, Branches, Blame, Zeilen-Diffs |
+| `crates/wyven-terminal` | Terminal: Shell in ConPTY, Emulation mit `alacritty_terminal`, Tasten-Kodierung |
+| `crates/wyven-lsp` | Language-Server-Client: JSON-RPC über stdio, UTF-16-Positionen |
+| `crates/wyven-render` | GPU-Rendering (wgpu): Rechtecke und Text (glyphon / cosmic-text) |
 
 Tests: `cargo test --workspace`
 
@@ -146,7 +155,7 @@ Die Statuszeile im Fenster zeigt den *Working Set* (inkl. geteilter Treiber-Bibl
 | Variable | Wirkung |
 |---|---|
 | `WGPU_BACKEND=dx12` / `vulkan` / `gl` | Grafik-Backend erzwingen |
-| `WYVERN_GPU=high` | Die starke (dedizierte) Grafikkarte statt der integrierten nutzen |
+| `WYVEN_GPU=high` | Die starke (dedizierte) Grafikkarte statt der integrierten nutzen |
 | `RUST_LOG=info` | Log-Ausgabe, z. B. Startzeiten pro Phase |
 
 ## Lizenz

@@ -1,4 +1,4 @@
-# Wyvern – Tastenkürzel-Schema
+# Wyven – Tastenkürzel-Schema
 
 Stand: 10.11.2026. Gehört zu [PLAN.md](PLAN.md).
 
@@ -20,7 +20,7 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 - Nach ~300 ms erscheint ein **Popup** mit allen möglichen nächsten Tasten (wie „which-key“). Wer die Folge kennt, tippt einfach weiter, dann erscheint gar kein Popup.
 - `Esc` oder ein Klick bricht ab.
 - `Alt+Klick` und `Alt+Taste` (z. B. `Alt+↑`) lösen **keinen** Leader-Modus aus.
-- Technisch: Windows öffnet bei einem einzelnen `Alt` sonst das Systemmenü des Fensters. Das muss Wyvern unterdrücken.
+- Technisch: Windows öffnet bei einem einzelnen `Alt` sonst das Systemmenü des Fensters. Das muss Wyven unterdrücken.
 
 ## Direkte Kürzel
 
@@ -66,6 +66,8 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 | Kürzel | Aktion |
 |---|---|
 | `F12` / `Strg+Klick` | Gehe zu Definition |
+| `Shift+F12` | Alle Referenzen |
+| `Strg+Enter` / `Esc` | Im Diff von Claude Code: Änderung annehmen / ablehnen |
 | `Strg+Tab` | Zuletzt benutzte Datei; gedrückt halten zeigt die Liste (wie VS) |
 | `Strg+W` | Tab schließen |
 | `Strg+Shift+T` | Zuletzt geschlossenen Tab wieder öffnen *(Vorschlag)* |
@@ -89,7 +91,7 @@ Mit *Vorschlag* markierte Einträge habe ich ergänzt; sie wurden nicht einzeln 
 
 ## Leader-Menü (`Alt`, dann …)
 
-Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englischen Befehle, Wyvern zeigt die Beschriftungen ebenfalls auf Englisch.
+Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englischen Befehle, Wyven zeigt die Beschriftungen ebenfalls auf Englisch.
 
 | Taste | Gruppe | Folgetasten |
 |---|---|---|
@@ -103,8 +105,8 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 | `f` | **f**ile | `n` new file · `o` open file · `s` save as · `r` rename · `c` close all |
 | `p` | **p**roject | `o` Ordner öffnen · `r` zuletzt geöffnet (Projekt-Wechsler) · `a` Ordner zum Workspace hinzufügen |
 | `w` | **w**indow | `v` rechts teilen · `h` unten teilen · `←↑→↓` Fokus wechseln · `c` Teilung schließen |
-| `v` | **v**iew | `m` Minimap (Blöcke / Leiste / aus) · `s` Sticky Scroll an/aus · `i` Inlay Hints · `w` Zeilenumbruch · `z` Zen-Modus · `f` Faltung am Cursor · `a` alles falten/öffnen · `d` auf Definitionen falten · `e` alles öffnen |
-| `a` | **a**i | `t` Vorschläge an/aus · `m` Modell wechseln (Haiku/Sonnet) · `k` API-Key setzen · `c` Claude Code im Terminal öffnen *(kommt mit der Claude-Code-Brücke)* |
+| `v` | **v**iew | `m` Minimap (Blöcke / Leiste / aus) · `s` Sticky Scroll an/aus · `i` Inlay Hints · `l` CodeLens · `w` Zeilenumbruch · `z` Zen-Modus · `f` Faltung am Cursor · `a` alles falten/öffnen · `d` auf Definitionen falten · `e` alles öffnen |
+| `a` | **a**i | `t` Vorschläge an/aus · `m` Modell wechseln (Haiku/Sonnet) · `k` API-Key setzen · `c` Claude Code im Terminal öffnen |
 | `m` | **m**arkdown | Vorschau ein/aus |
 | `,` | Einstellungen | Einstellungsseite öffnen |
 | `h` | **h**elp | Spickzettel mit allen Kürzeln |
@@ -113,11 +115,11 @@ Die Navigation ist englisch: Die Buchstaben sind Anfangsbuchstaben der englische
 
 - **Leader-Popup:** zeigt nach `Alt` alle nächsten Tasten.
 - **Spickzettel** (`Alt` → `h`): durchsuchbare Übersicht aller Kürzel, auch selbst geänderter.
-- **Tipps:** Wenn du einen Befehl per Maus oder Suchfeld startest, für den es ein Kürzel gibt, zeigt Wyvern es einmal klein in der Statusleiste an. Tipps lassen sich abschalten.
+- **Tipps:** Wenn du einen Befehl per Maus oder Suchfeld startest, für den es ein Kürzel gibt, zeigt Wyven es einmal klein in der Statusleiste an. Tipps lassen sich abschalten.
 
 ## Eigene Belegung: `keymap.toml`
 
-Liegt im Wyvern-Konfigurationsordner. Es stehen nur Abweichungen vom Standard drin:
+Liegt im Wyven-Konfigurationsordner. Es stehen nur Abweichungen vom Standard drin:
 
 ```toml
 # Direktes Kürzel ändern
@@ -143,4 +145,4 @@ Kürzel beziehen sich auf die **angezeigte Taste** (das Zeichen auf der Taste), 
 - `Strg+→` heißt „Wort annehmen“ nur, solange ein KI-Vorschlag sichtbar ist, sonst „Wort weiter“.
 - `Tab` heißt „KI annehmen“ nur bei sichtbarem Vorschlag, sonst einrücken.
 - Im Terminal gehen `Strg+C` und Co. an das laufende Programm. Kopieren dort mit `Strg+Shift+C` *(Vorschlag)*.
-- `Strg+Q` beendet unter Linux in vielen Programmen die App. In Wyvern öffnet es das Suchfeld; beendet wird mit `Alt+F4` bzw. über das Fenster.
+- `Strg+Q` beendet unter Linux in vielen Programmen die App. In Wyven öffnet es das Suchfeld; beendet wird mit `Alt+F4` bzw. über das Fenster.

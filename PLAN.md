@@ -1,4 +1,4 @@
-# Plan: Wyvern – eigener Code-Editor in Rust
+# Plan: Wyven – eigener Code-Editor in Rust
 
 Stand: 10.11.2026
 
@@ -54,7 +54,7 @@ Insgesamt ~11.500 TypeScript-Dateien auf Electron (Chromium + Node.js). Daher ko
 Ein Cargo-Workspace mit klar getrennten Crates:
 
 ```
-wyvern/
+wyven/
 ├─ crates/
 │  ├─ app          Startpunkt, Fenster (winit), Event-Schleife
 │  ├─ render       GPU-Rendering (wgpu: DX12 auf Windows, Vulkan auf Linux), Glyphen-Atlas
@@ -113,8 +113,8 @@ Cargo-Workspace, Fenster, wgpu-Rendering, Text auf dem Bildschirm, Benchmarks f�
 **Phase 2 – Arbeitsumgebung**
 ~~Integriertes Terminal~~ ✅, ~~Git (Status, Diff nebeneinander, Commit von allem, Sync, Branches, Blame auf Abruf)~~ ✅, ~~globale Suche/Ersetzen~~ ✅, ~~Minimap (Blöcke / Leiste / aus)~~ ✅, ~~Sticky Scroll~~ ✅, ~~Folding~~ ✅ – **Phase 2 fertig**.
 
-**Phase 3 – Profi-Features**
-~~Debugger (netcoredbg)~~ ✅, Inlay Hints, CodeLens, Markdown-Vorschau, ~~KI-Inline-Vorschläge~~ ✅, Claude-Code-Brücke, Web-Sprachen per LSP.
+**Phase 3 – Profi-Features** ✅
+~~Debugger (netcoredbg)~~ ✅, ~~Inlay Hints~~ ✅, ~~CodeLens~~ ✅, ~~Markdown-Vorschau~~ ✅, ~~KI-Inline-Vorschläge~~ ✅, ~~Claude-Code-Brücke~~ ✅, ~~Web-Sprachen per LSP~~ ✅.
 
 **Phase 4 – Anpassbarkeit**
 Andockbare Panels im VS-2026-Stil, grafische Einstellungsseite, Import von VS-Code-Themes, Multi-Root-Workspaces, WASM-Plugin-System.
@@ -124,8 +124,8 @@ Installer (Windows MSI/winget, Linux AppImage/Flatpak), Auto-Update, Doku, Websi
 
 ## 7. Name
 
-**Wyvern**, ein geflügelter Drache aus der Wappenkunde.
-Der Name `wyvern` ist auf crates.io schon vergeben. Die Rust-Pakete heißen deshalb `wyvern-*` (z. B. `wyvern-editor`), App und Programm heißen trotzdem „Wyvern“.
+**Wyven** – angelehnt an den Wyvern, einen geflügelten Drachen aus der Wappenkunde. Bis November 2026 hieß das Projekt „Wyvern“.
+Die Rust-Pakete heißen `wyven-*` (z. B. `wyven-app`), App und Programm „Wyven“. Der alte Einstellungsordner `%APPDATA%\Wyvern` wird beim ersten Start einmalig nach `%APPDATA%\Wyven` verschoben.
 
 ## 8. Offene Fragen für später
 

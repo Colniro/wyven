@@ -1,4 +1,4 @@
-# Wyvern – Oberfläche (UI-Leitfaden)
+# Wyven – Oberfläche (UI-Leitfaden)
 
 Stand: 10.11.2026. Gilt für alles, was ab jetzt gebaut oder umgebaut wird.
 Gehört zu [PLAN.md](PLAN.md) und [SHORTCUTS.md](SHORTCUTS.md).

@@ -1,0 +1,12 @@
+[package]
+name = "wyven-terminal"
+description = "Integrated terminal for the Wyven editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+log.workspace = true
+

@@ -1,0 +1,11 @@
+[package]
+name = "wyven-buffer"
+description = "Text buffer for the Wyven editor: rope, multi-cursor selections, undo/redo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ropey.workspace = true
+unicode-width.workspace = true

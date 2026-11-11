@@ -9,15 +9,15 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.90"
 
 [workspace.dependencies]
-wyvern-render = { path = "crates/wyvern-render" }
-wyvern-buffer = { path = "crates/wyvern-buffer" }
-wyvern-syntax = { path = "crates/wyvern-syntax" }
-wyvern-lsp = { path = "crates/wyvern-lsp" }
-wyvern-dap = { path = "crates/wyvern-dap" }
-wyvern-ai = { path = "crates/wyvern-ai" }
-wyvern-terminal = { path = "crates/wyvern-terminal" }
-wyvern-search = { path = "crates/wyvern-search" }
-wyvern-git = { path = "crates/wyvern-git" }
+wyven-render = { path = "crates/wyven-render" }
+wyven-buffer = { path = "crates/wyven-buffer" }
+wyven-syntax = { path = "crates/wyven-syntax" }
+wyven-lsp = { path = "crates/wyven-lsp" }
+wyven-dap = { path = "crates/wyven-dap" }
+wyven-ai = { path = "crates/wyven-ai" }
+wyven-terminal = { path = "crates/wyven-terminal" }
+wyven-search = { path = "crates/wyven-search" }
+wyven-git = { path = "crates/wyven-git" }
 similar = "3.2"
 regex = "1.13"
 serde_json = "1"

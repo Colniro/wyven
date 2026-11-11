@@ -1,0 +1,12 @@
+[package]
+name = "wyven-search"
+description = "Find and replace for the Wyven editor: in one text and across a project"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+regex.workspace = true
+ignore.workspace = true
+log.workspace = true
