@@ -324,6 +324,8 @@ pub struct EditorView {
     cache: Option<CacheKey>,
     /// Tab title for documents without a file (e.g. the shortcut cheat sheet).
     title: Option<String>,
+    /// This tab shows the settings page instead of text.
+    pub settings_page: bool,
     pub minimap: MinimapMode,
     /// The mouse is over the minimap (the visible-area box is drawn brighter).
     pub minimap_hover: bool,
@@ -414,6 +416,7 @@ impl EditorView {
             gutter_buf,
             cache: None,
             title: None,
+            settings_page: false,
             minimap: MinimapMode::Off,
             minimap_hover: false,
             scale: 1.0,

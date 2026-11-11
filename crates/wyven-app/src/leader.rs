@@ -19,7 +19,10 @@ pub enum Action {
     Run(crate::keymap::Command),
     /// Known, but built in a later phase.
     Later(&'static str),
+    /// The settings page (a tab).
     OpenSettings,
+    /// settings.toml itself.
+    OpenSettingsFile,
     CheatSheet,
     /// Switches to a theme by its settings name ("dark", "light") and stores it.
     SetTheme(&'static str),

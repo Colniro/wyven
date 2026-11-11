@@ -30,6 +30,7 @@ mod palette;
 mod popup;
 mod search_panel;
 mod settings;
+mod settings_page;
 mod terminal;
 mod theme;
 
@@ -110,11 +111,12 @@ fn main() {
     config::migrate_old_config_dir();
     install_crash_log();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // wyven [folder or file] [--terminal] [--git] [--diff] [--goto=LINE] [--preview]
+    // wyven [folder or file] [--terminal] [--git] [--diff] [--goto=LINE] [--preview] [--settings]
     let mut path = None;
     let (mut open_terminal, mut open_git, mut open_diff) = (false, false, false);
     let mut goto_line: Option<usize> = None;
     let mut open_preview = false;
+    let mut open_settings = false;
     for arg in std::env::args_os().skip(1) {
         if arg == "--terminal" {
             open_terminal = true;
@@ -124,6 +126,8 @@ fn main() {
             open_diff = true;
         } else if arg == "--preview" {
             open_preview = true;
+        } else if arg == "--settings" {
+            open_settings = true;
         } else if let Some(n) = arg.to_str().and_then(|a| a.strip_prefix("--goto=")) {
             goto_line = n.parse().ok();
         } else if path.is_none() {
@@ -135,7 +139,7 @@ fn main() {
         .expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
-    let mut app = App { path, open_terminal, open_git, open_diff, goto_line, open_preview, state: None, proxy };
+    let mut app = App { path, open_terminal, open_git, open_diff, goto_line, open_preview, open_settings, state: None, proxy };
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
@@ -146,6 +150,7 @@ struct App {
     open_diff: bool,
     goto_line: Option<usize>,
     open_preview: bool,
+    open_settings: bool,
     state: Option<State>,
     proxy: EventLoopProxy<UserEvent>,
 }
@@ -310,6 +315,7 @@ struct State {
     run_only: bool,
     /// Side-by-side diff shown instead of the editor.
     diff: Option<diff_view::DiffView>,
+    settings_page: settings_page::SettingsPage,
 
     latency: InputLatency,
     started: Instant,
@@ -379,6 +385,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if let Some(line) = self.goto_line {
             state.editor_mut().jump_to_line(line, None);
+        }
+        if self.open_settings {
+            state.open_settings_page();
         }
         if self.open_preview {
             state.toggle_preview();
@@ -654,6 +663,7 @@ impl State {
         let palette = Palette::new(fs, ui_font);
         let terminal_panel = terminal::TerminalPanel::new(fs, font, ui_font, family.clone());
         let dock_bar = dock::DockBar::new(fs, ui_font, family.clone());
+        let settings_page = settings_page::SettingsPage::new(ui_font, family.clone());
         let find_bar = find::FindBar::new(fs, ui_font);
         let initial_theme = Theme::by_name(&settings.theme).unwrap_or_else(Theme::dark);
         let find_labels = find::ToggleLabels::new(fs, ui_font, &family, &initial_theme);
@@ -728,6 +738,7 @@ impl State {
             prose_family: String::new(),
             run_only: false,
             diff: None,
+            settings_page,
             proxy,
             servers: HashMap::new(),
             lsp_failed: HashSet::new(),
@@ -829,6 +840,7 @@ impl State {
         if let Some(d) = &mut self.diff {
             d.set_area(area);
         }
+        self.settings_page.set_area(area);
         if let (Some(p), Some(r)) = (&mut self.preview, self.layout.preview) {
             p.set_area(r);
         }
@@ -1067,6 +1079,7 @@ impl State {
         self.search.set_font(ui);
         self.git.set_font(ui);
         self.debugger.set_font(ui);
+        self.settings_page.set_font(ui, self.family.clone());
         self.dock_bar.set_font(self.renderer.font_system(), ui);
         // The diff view keeps its own fonts; reopening is cheaper than re-measuring it.
         self.diff = None;
@@ -1469,6 +1482,13 @@ impl State {
         }
         if self.diff.is_some() && self.focus == Focus::Editor {
             self.diff_key(event);
+            return;
+        }
+        if self.focus == Focus::Editor
+            && self.editor().settings_page
+            && !(mods.control_key() && key == Key::Named(NamedKey::Tab))
+        {
+            self.settings_key(event);
             return;
         }
         if self.focus == Focus::Editor && self.find.open && self.find.focused {
@@ -2170,6 +2190,74 @@ impl State {
     }
 
     /// Re-reads settings.toml and applies what changed. A broken file keeps the old settings.
+    /// Alt → ,: the settings page as a tab (switches to it if it is open).
+    fn open_settings_page(&mut self) {
+        settings::ensure_file();
+        if let Some(i) = self.tabs.iter().position(|t| t.settings_page) {
+            self.activate(i);
+        } else {
+            let fs = self.renderer.font_system();
+            let mut view = EditorView::virtual_doc("Settings", "", "settings", fs, self.font, self.family.clone());
+            view.settings_page = true;
+            view.set_area(self.layout.editor);
+            self.tabs.push(view);
+            self.mru.push(self.tabs.len() - 1);
+            self.activate(self.tabs.len() - 1);
+        }
+        self.focus = Focus::Editor;
+        self.window.request_redraw();
+    }
+
+    fn settings_key(&mut self, event: &KeyEvent) {
+        let mods = self.modifiers;
+        let ctrl = mods.control_key() && !mods.alt_key();
+        let page_lines = (self.layout.editor.h / self.ui_font.line_h).max(1.0);
+        match event.key_without_modifiers() {
+            Key::Character(c) if ctrl && c.as_str() == "w" => self.close_tab(self.active),
+            Key::Character(c) if ctrl && c.as_str() == "q" => self.open_palette(""),
+            Key::Character(c) if ctrl && c.as_str() == "v" => {
+                if let Some((t, _)) = self.get_clipboard() {
+                    self.settings_page.type_text(&t);
+                }
+            }
+            Key::Named(NamedKey::Escape) => self.settings_page.escape(),
+            Key::Named(NamedKey::Backspace) => self.settings_page.backspace(),
+            Key::Named(NamedKey::Enter) => {
+                let action = self.settings_page.commit(&self.settings);
+                self.apply_settings_action(action);
+            }
+            Key::Named(NamedKey::ArrowUp) => self.settings_page.scroll_by(-1.0),
+            Key::Named(NamedKey::ArrowDown) => self.settings_page.scroll_by(1.0),
+            Key::Named(NamedKey::PageUp) => self.settings_page.scroll_by(-page_lines),
+            Key::Named(NamedKey::PageDown) => self.settings_page.scroll_by(page_lines),
+            _ if !ctrl && !mods.alt_key() => {
+                if let Some(t) = &event.text {
+                    self.settings_page.type_text(t);
+                }
+            }
+            _ => {}
+        }
+        self.window.request_redraw();
+    }
+
+    fn apply_settings_action(&mut self, action: settings_page::PageAction) {
+        use settings_page::PageAction as P;
+        match action {
+            P::None => {}
+            P::Store { table, key, value } => match settings::store_value(table, key, &value) {
+                Ok(()) => self.reload_settings(),
+                Err(e) => self.show(format!("settings.toml: {e}")),
+            },
+            P::OpenFile => {
+                if let Some(path) = settings::ensure_file() {
+                    self.open_path(&path);
+                }
+            }
+            P::Message(m) => self.show(m),
+        }
+        self.window.request_redraw();
+    }
+
     fn reload_settings(&mut self) {
         self.settings_mtime = settings::modified();
         let new = match settings::load() {
@@ -3489,7 +3577,8 @@ impl State {
             SaveAs => self.save_as(),
             CloseAll => self.close_all(),
             Later(msg) => self.show(msg),
-            OpenSettings => {
+            OpenSettings => self.open_settings_page(),
+            OpenSettingsFile => {
                 if let Some(path) = settings::ensure_file() {
                     self.open_path(&path);
                 }
@@ -4042,6 +4131,14 @@ impl State {
                 self.focus = Focus::Editor;
                 return;
             }
+        if self.editor().settings_page && self.settings_page.contains(x, y) {
+            self.focus = Focus::Editor;
+            if button == MouseButton::Left {
+                let action = self.settings_page.click(x, y, &self.settings);
+                self.apply_settings_action(action);
+            }
+            return;
+        }
         let explorer_shown = self.panel_shown(Panel::Explorer);
         if let Some(ex) = &mut self.explorer
             && explorer_shown && ex.contains(x, y) {
@@ -4141,6 +4238,11 @@ impl State {
         }
         if self.panel_shown(Panel::Debug) && self.debugger.contains(x, y) {
             self.debugger.scroll_by(-dy.round() as isize);
+            self.window.request_redraw();
+            return;
+        }
+        if self.diff.is_none() && self.editor().settings_page && self.settings_page.contains(x, y) {
+            self.settings_page.scroll_by(-dy.round());
             self.window.request_redraw();
             return;
         }
@@ -4342,6 +4444,7 @@ impl State {
             let fs = self.renderer.font_system();
             match &mut self.diff {
                 Some(d) => d.prepare(fs, theme),
+                None if self.tabs[self.active].settings_page => self.settings_page.prepare(fs, theme, &self.settings),
                 None => self.tabs[self.active].prepare(fs, theme),
             }
             if let Some(ex) = &mut self.explorer {
@@ -4440,6 +4543,7 @@ impl State {
 
         match &self.diff {
             Some(d) => d.draw(theme, scale, &mut under, &mut over, &mut text),
+            None if self.tabs[self.active].settings_page => self.settings_page.draw(theme, &mut under, &mut text),
             None => self.tabs[self.active].draw(theme, scale, &mut under, &mut over, &mut text),
         }
         if let Some(p) = &self.preview {
