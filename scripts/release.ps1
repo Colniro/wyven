@@ -3,11 +3,11 @@
 #   wyven-setup.exe             the same, with a stable name for download links
 #   update.json                 what Wyven's update check reads (version, installer, SHA-256)
 #
-# Usage:  powershell -File scripts\release.ps1 [-Notes "What's new"]
+# Usage:  powershell -File scripts\release.ps1 [-Notes "What's new"] [-Publish]
 # Publishing: put both files in one place (web server, GitHub release, network share) and set
 # that update.json address in Wyven's settings (Updates → Update address).
 
-param([string]$Notes = "")
+param([string]$Notes = "", [switch]$Publish)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -45,3 +45,12 @@ $manifest = [ordered]@{ version = $version; url = $setup; sha256 = $hash; notes 
 $size = [math]::Round((Get-Item "dist\$setup").Length / 1MB, 1)
 Write-Host "dist\$setup ($size MB)"
 Write-Host "dist\update.json (sha256 $hash)"
+
+# -Publish: a GitHub release v<version> with the installer and update.json (gh must be logged in).
+# Wyven's update check reads https://github.com/Colniro/wyven/releases/latest/download/update.json.
+if ($Publish) {
+    Write-Host "Publishing release v$version on GitHub ..."
+    $text = if ($Notes) { $Notes } else { "Wyven $version" }
+    gh release create "v$version" "dist\$setup" dist\wyven-setup.exe dist\update.json --title "Wyven $version" --notes $text
+    if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+}

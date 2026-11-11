@@ -1,0 +1,16 @@
+name: Feature request
+description: An idea that would make Wyven better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the feature and how you would use it.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: What does it make easier? How do other editors (VS Code, Visual Studio) do it?

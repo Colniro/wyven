@@ -149,6 +149,7 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Preferences: Configure User Snippets", "", Ld(L::OpenSnippets)),
         ("Help: All Keyboard Shortcuts", "Alt h", Ld(L::CheatSheet)),
         ("Help: Check for Updates", "", Ld(L::CheckUpdates)),
+        ("Help: Report a Bug / Suggest a Feature", "", Ld(L::ReportBug)),
         ("Plugins: Show Installed Plugins", "", Ld(L::ShowPlugins)),
         ("Plugins: Reload Plugins", "", Ld(L::ReloadPlugins)),
         ("Plugins: Open Plugins Folder", "", Ld(L::OpenPluginsFolder)),

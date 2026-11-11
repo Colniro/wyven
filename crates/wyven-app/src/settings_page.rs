@@ -89,8 +89,8 @@ pub const ITEMS: &[Item] = &[
     item("Terminal", T, "shell", "Shell", "For example cmd.exe, pwsh.exe or the path to Git's bash.exe. Applies to new terminals.",
          Kind::Text { empty: "automatic (PowerShell)" }),
     item("Terminal", T, "height", "Bottom panel height", "In percent of the window (dragging its edge overrides it).", num(15.0, 85.0, 5.0, 0)),
-    item("Updates", UP, "url", "Update address", "Where update.json is: https://… or a folder path. Empty = no update checks.",
-         Kind::Text { empty: "none (no update checks)" }),
+    item("Updates", UP, "url", "Update address", "Where update.json is: https://… or a folder path. Empty = the official releases on GitHub, \"off\" = no update checks.",
+         Kind::Text { empty: "official releases (GitHub)" }),
     item("Updates", UP, "check", "Check automatically", "At most once a day; Wyven always asks before installing. \"Help: Check for Updates\" checks now.", Kind::Toggle),
 ];
 

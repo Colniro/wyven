@@ -82,6 +82,7 @@ impl Welcome {
             ("Go to File / Command …".into(), "Ctrl+Q".into(), Some(WelcomeAction::Leader(L::Palette(""))), false),
             ("Settings".into(), "Alt → ,".into(), Some(WelcomeAction::Leader(L::OpenSettings)), false),
             ("All Keyboard Shortcuts".into(), "Alt → h".into(), Some(WelcomeAction::Leader(L::CheatSheet)), false),
+            ("Report a Bug / Suggest a Feature".into(), "GitHub".into(), Some(WelcomeAction::Leader(L::ReportBug)), false),
         ];
         if !recent.is_empty() {
             list.push(("Recent".into(), String::new(), None, true));

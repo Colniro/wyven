@@ -97,7 +97,7 @@ height = 35
 
 [update]
 # Where Wyven looks for new versions: the address of update.json (https://… or a folder path
-# like '\\server\wyven\update.json'). Empty = no update checks.
+# like '\\server\wyven\update.json'). Empty = the official releases on GitHub; "off" = none.
 url = ""
 # Check automatically (at most once a day). "Help: Check for Updates" always works.
 check = true
@@ -120,6 +120,24 @@ pub struct Settings {
 pub struct UpdateSettings {
     pub url: String,
     pub check: bool,
+}
+
+/// Wyven's releases on GitHub (the newest one's update.json).
+pub const OFFICIAL_UPDATES: &str = "https://github.com/Colniro/wyven/releases/latest/download/update.json";
+
+/// The project page (issues for bug reports).
+pub const PROJECT_URL: &str = "https://github.com/Colniro/wyven";
+
+impl UpdateSettings {
+    /// Where to look for updates: the set address, the official releases when empty, none
+    /// when "off".
+    pub fn source(&self) -> Option<String> {
+        match self.url.trim() {
+            "" => Some(OFFICIAL_UPDATES.to_string()),
+            u if u.eq_ignore_ascii_case("off") || u.eq_ignore_ascii_case("none") => None,
+            u => Some(u.to_string()),
+        }
+    }
 }
 
 impl Default for UpdateSettings {

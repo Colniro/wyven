@@ -106,6 +106,25 @@ fn log_stage(stage: &str, started: Instant) {
 
 /// Release builds have no console, so a crash would vanish without a trace: write the panic
 /// message, where it happened and a backtrace to `%APPDATA%\Wyven\crash.log`.
+/// Windows version like "10.0.26200" (from `ver`), for bug reports.
+fn os_version() -> String {
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/C", "ver"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // no console window
+    }
+    cmd.output()
+        .ok()
+        .and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).to_string();
+            let v = s.split("Version").nth(1)?.trim().trim_end_matches(']').trim().to_string();
+            Some(v)
+        })
+        .unwrap_or_default()
+}
+
 fn install_crash_log() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -651,6 +670,10 @@ impl ApplicationHandler<UserEvent> for App {
             } else {
                 state.open_path(&f);
             }
+        }
+        // A crash last time: offer to report it.
+        if config::config_dir().is_some_and(|d| d.join("crash.log").exists()) {
+            state.show("Wyven crashed last time – Help: Report a Bug sends the report to GitHub (Ctrl+Q)");
         }
         log_stage("state", started);
         if self.open_terminal {
@@ -4542,15 +4565,51 @@ impl State {
         view.invalidate();
     }
 
+    /// Opens a new GitHub issue in the browser with Wyven's version and the system filled in;
+    /// after a crash also its report (then the report counts as sent).
+    fn report_bug(&mut self) {
+        let enc = |s: &str| -> String {
+            s.bytes()
+                .map(|b| match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+                    _ => format!("%{b:02X}"),
+                })
+                .collect()
+        };
+        let gpu = self.renderer.gpu_info();
+        let system = format!("{} {} · {} ({}, {})", std::env::consts::OS, os_version(), gpu.name, gpu.backend, gpu.present_mode);
+        let crash_file = config::config_dir().map(|d| d.join("crash.log"));
+        let crash = crash_file.as_ref().and_then(|p| std::fs::read_to_string(p).ok());
+        let mut url = format!(
+            "{}/issues/new?template=bug.yml&version={}&system={}",
+            settings::PROJECT_URL,
+            env!("CARGO_PKG_VERSION"),
+            enc(&system)
+        );
+        if let Some(c) = &crash {
+            // Long backtraces would make the address too long for the browser.
+            let short: String = c.chars().take(1500).collect();
+            url.push_str(&format!("&logs={}", enc(&short)));
+        }
+        match std::process::Command::new("explorer.exe").arg(&url).spawn() {
+            Ok(_) => {
+                self.show("Opened a new bug report on GitHub in the browser");
+                if let (Some(p), Some(_)) = (crash_file, crash) {
+                    let _ = std::fs::rename(&p, p.with_file_name("crash-reported.log"));
+                }
+            }
+            Err(e) => self.show(format!("Browser: {e} – {}/issues", settings::PROJECT_URL)),
+        }
+    }
+
     /// Looks for a newer version (`manual`: now, and say the result; else at most daily).
     fn check_updates(&mut self, manual: bool) {
-        let source = self.settings.update.url.trim().to_string();
-        if source.is_empty() {
+        let Some(source) = self.settings.update.source() else {
             if manual {
-                self.show("No update address set: Settings (Alt → ,) → Updates");
+                self.show("Update checks are off: Settings (Alt → ,) → Updates");
             }
             return;
-        }
+        };
         if !manual && (!self.settings.update.check || !update::due()) {
             return;
         }
@@ -4632,7 +4691,7 @@ impl State {
             return;
         }
         self.show(format!("Downloading Wyven {} …", m.version));
-        let source = self.settings.update.url.trim().to_string();
+        let Some(source) = self.settings.update.source() else { return };
         let proxy = self.proxy.clone();
         self.update_rx = Some(update::download(source, m, move || {
             let _ = proxy.send_event(UserEvent::Update);
@@ -6617,6 +6676,7 @@ impl State {
             OpenSettings => self.open_settings_page(),
             ReloadPlugins => self.reload_plugins(true),
             CheckUpdates => self.check_updates(true),
+            ReportBug => self.report_bug(),
             ShowPlugins => {
                 let list = self.plugins.summary();
                 let dir = plugins::dir().map(|d| d.display().to_string()).unwrap_or_default();

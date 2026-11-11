@@ -30,6 +30,8 @@ pub enum Action {
     ReloadPlugins,
     /// Looks for a new Wyven version now.
     CheckUpdates,
+    /// Opens a new GitHub issue with version and system filled in (and the last crash).
+    ReportBug,
     ShowPlugins,
     OpenPluginsFolder,
     /// keymap.toml: your own shortcuts.

@@ -121,7 +121,7 @@ Cargo-Workspace, Fenster, wgpu-Rendering, Text auf dem Bildschirm, Benchmarks f�
 
 **Phase 5 – Veröffentlichung**
 ~~Installer für Windows (Inno Setup)~~ ✅, ~~Auto-Update~~ ✅, ~~Doku~~ ✅, ~~Website (vorbereitet für GitHub Pages)~~ ✅.
-Noch offen, sobald es ein öffentliches Repository gibt: veröffentlichen (Releases, Website online, winget-Eintrag) und Linux-Pakete (AppImage/Flatpak, brauchen einen Linux-Build).
+~~Veröffentlichung auf GitHub (Releases, Auto-Update von dort, Website über GitHub Pages, Issue-Vorlagen)~~ ✅. Noch offen: winget-Eintrag und Linux-Pakete (AppImage/Flatpak, brauchen einen Linux-Build).
 
 ## 7. Name
 

@@ -1,0 +1,34 @@
+name: Bug report
+description: Something in Wyven does not work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a C# project
+        2. Press …
+  - type: input
+    id: version
+    attributes:
+      label: Wyven version
+      description: "Help: Report a Bug in Wyven fills this in."
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: Windows version and graphics card (filled in by Wyven).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Crash report or log
+      description: After a crash, Wyven fills in the start of %APPDATA%\Wyven\crash.log.
+      render: text

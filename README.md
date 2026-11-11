@@ -3,8 +3,12 @@
 Ein schneller, sparsamer Code-Editor in Rust, mit VS Code als Vorbild.
 Der ganze Plan steht in [PLAN.md](PLAN.md).
 
-**Stand: Phase 1 bis 4 fertig.** Wyven öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
-Dazu kommen Debugger, KI-Vorschläge, Inlay Hints, CodeLens, Markdown-Vorschau, die Claude-Code-Brücke und Web-Sprachen per LSP. Phase 4 brachte andockbare Panels, eine Einstellungsseite, VS-Code-Themes, mehrere Ordner pro Fenster und Plugins. Als Nächstes kommt Phase 5 (siehe [PLAN.md](PLAN.md)).
+**[⬇ Download für Windows](https://github.com/Colniro/wyven/releases/latest/download/wyven-setup.exe)** · [Website](https://colniro.github.io/wyven/) · [Fehler melden / Ideen](https://github.com/Colniro/wyven/issues/new/choose) · [Alle Versionen](https://github.com/Colniro/wyven/releases)
+
+Installierte Versionen holen sich Updates von selbst (höchstens einmal am Tag, mit Rückfrage). In Wyven öffnet „Help: Report a Bug“ ein neues Issue mit Version und System schon ausgefüllt, nach einem Absturz auch mit dem Absturzbericht.
+
+**Stand: Phase 1 bis 5 fertig.** Wyven öffnet Projektordner mit Explorer, Tabs und Suchfeld, bearbeitet Dateien mit Syntax-Highlighting und mehreren Cursorn, hat die Leader-Taste aus [SHORTCUTS.md](SHORTCUTS.md) und versteht C# über den Roslyn-Language-Server.
+Dazu kommen Debugger, KI-Vorschläge, Inlay Hints, CodeLens, Markdown-Vorschau, die Claude-Code-Brücke und Web-Sprachen per LSP. Phase 4 brachte andockbare Panels, eine Einstellungsseite, VS-Code-Themes, mehrere Ordner pro Fenster und Plugins. Phase 5: Installer, Auto-Update, Website und Veröffentlichung auf GitHub.
 
 ## Starten
 
@@ -23,7 +27,7 @@ powershell -File scripts\release.ps1 -Notes "Was neu ist"
 ```
 
 baut `dist\wyven-setup-<version>.exe` (Inno Setup 6, installiert ohne Adminrechte nach `%LOCALAPPDATA%\Programs\Wyven`, mit Startmenü, „Open with Wyven“ im Explorer, optional `wyven` im PATH und `.code-workspace`-Verknüpfung) und `dist\update.json` (Version, Installer, SHA-256).
-Zum Veröffentlichen beide Dateien an einen Ort legen (Webserver, GitHub-Release, Netzlaufwerk) und dessen `update.json`-Adresse in den Einstellungen unter *Updates* eintragen. Wyven prüft dann höchstens einmal am Tag, fragt vor dem Installieren, prüft die Prüfsumme und startet neu; „Help: Check for Updates“ prüft sofort.
+Mit `-Publish` lädt das Skript Installer und `update.json` gleich als GitHub-Release `v<version>` hoch (`gh` muss angemeldet sein). Wyven sucht standardmäßig dort nach Updates (`[update] url` leer = offizielle Releases, `"off"` = keine; eigene Adressen wie Webserver oder Netzlaufwerk gehen auch). Wyven prüft dann höchstens einmal am Tag, fragt vor dem Installieren, prüft die Prüfsumme und startet neu; „Help: Check for Updates“ prüft sofort.
 Benutzerhandbuch (englisch): [docs/guide.md](docs/guide.md), Plugins: [docs/plugins.md](docs/plugins.md). `docs/` ist zugleich die Website (für GitHub Pages: Quelle „docs“-Ordner); das Icon erzeugt `python assets/make_icon.py`.
 
 ## Was schon geht
@@ -224,4 +228,4 @@ Die Statuszeile im Fenster zeigt den *Working Set* (inkl. geteilter Treiber-Bibl
 
 ## Lizenz
 
-MIT oder Apache-2.0, nach Wahl.
+MIT oder Apache-2.0, nach Wahl ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
