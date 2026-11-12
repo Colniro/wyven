@@ -4020,8 +4020,10 @@ impl State {
                         && anchor <= head
                         && rope.char_to_line(anchor) == rope.char_to_line(head);
                     let mut items = items;
-                    // The built-in snippets of the language join the list.
-                    for sn in snippets::for_language(ed.language_name(), &self.user_snippets) {
+                    // The built-in snippets of the language join the list (not after a dot:
+                    // `connection.op` wants members, not `prop`).
+                    let after_dot = anchor > 0 && anchor <= rope.len_chars() && rope.char(anchor - 1) == '.';
+                    for sn in snippets::for_language(ed.language_name(), &self.user_snippets).into_iter().filter(|_| !after_dot) {
                         if !items.iter().any(|i| i.label == sn.prefix && i.snippet) {
                             items.push(lsp::CompletionItem {
                                 label: sn.prefix.clone(),
@@ -4030,6 +4032,7 @@ impl State {
                                 filter: sn.prefix.clone(),
                                 sort: format!("~{}", sn.prefix),
                                 snippet: true,
+                                kind: 15,
                             });
                         }
                     }
@@ -4298,11 +4301,16 @@ impl State {
             t.diagnostics = list
                 .iter()
                 .filter(|d| d.severity <= 3)
-                .map(|d| editor::DiagSpan {
-                    start: wyven_lsp::from_lsp(rope, &d.start),
-                    end: wyven_lsp::from_lsp(rope, &d.end),
-                    start_byte: rope.char_to_byte(wyven_lsp::from_lsp(rope, &d.start).min(rope.len_chars())),
-                    end_byte: rope.char_to_byte(wyven_lsp::from_lsp(rope, &d.end).min(rope.len_chars())),
+                .map(|d| {
+                    let (start, end) = editor::place_empty_diagnostic(rope, wyven_lsp::from_lsp(rope, &d.start), wyven_lsp::from_lsp(rope, &d.end));
+                    let end = end.min(rope.len_chars());
+                    (d, start, end)
+                })
+                .map(|(d, start, end)| editor::DiagSpan {
+                    start,
+                    end,
+                    start_byte: rope.char_to_byte(start),
+                    end_byte: rope.char_to_byte(end),
                     severity: d.severity,
                     raw: d.raw.clone(),
                     message: if d.code.is_empty() { d.message.clone() } else { format!("{}: {}", d.code, d.message) },

@@ -444,6 +444,32 @@ pub struct EditorView {
     bracket_depths: Option<(u64, Vec<i32>)>,
 }
 
+/// An empty error range in front of a line's code (servers put "; expected" there, at the start
+/// of the next line) moves to the end of the code on the line above, where the `;` is missing.
+pub fn place_empty_diagnostic(rope: &Rope, start: usize, end: usize) -> (usize, usize) {
+    let start = start.min(rope.len_chars());
+    if end > start {
+        return (start, end);
+    }
+    let line = rope.char_to_line(start);
+    let line_start = rope.line_to_char(line);
+    let in_front = (line_start..start).all(|i| rope.char(i).is_whitespace());
+    if !in_front || line == 0 {
+        return (start, start);
+    }
+    // The nearest line above with code; after its last non-blank character.
+    for l in (line.saturating_sub(5)..line).rev() {
+        let ls = rope.line_to_char(l);
+        let text = rope.line(l);
+        let len = text.chars().count();
+        if let Some(last) = (0..len).rev().find(|&i| !text.char(i).is_whitespace()) {
+            let pos = ls + last + 1;
+            return (pos, pos);
+        }
+    }
+    (start, start)
+}
+
 /// Where a byte position (start or end of a range) is after an edit.
 fn shift_byte(p: usize, e: &TextEdit, is_end: bool) -> usize {
     if p < e.start_byte || (is_end && p == e.start_byte) {
@@ -2722,6 +2748,20 @@ mod tests {
 
     fn from(top: usize) -> Vec<usize> {
         (top..top + 10).collect()
+    }
+
+    #[test]
+    fn a_missing_semicolon_is_marked_at_the_end_of_its_line() {
+        let rope = wyven_buffer::Rope::from_str("    string s = \"x\"\r\n    using (a)\n");
+        let next = rope.line_to_char(1);
+        // Reported at the start of the next line: moves behind "x".
+        let end_of_code = "    string s = \"x\"".chars().count();
+        assert_eq!(super::place_empty_diagnostic(&rope, next, next), (end_of_code, end_of_code));
+        // In front of the next line's code too.
+        assert_eq!(super::place_empty_diagnostic(&rope, next + 2, next + 2), (end_of_code, end_of_code));
+        // A real range or one inside code stays.
+        assert_eq!(super::place_empty_diagnostic(&rope, next + 4, next + 9), (next + 4, next + 9));
+        assert_eq!(super::place_empty_diagnostic(&rope, next + 6, next + 6), (next + 6, next + 6));
     }
 
     #[test]

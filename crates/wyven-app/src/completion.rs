@@ -15,6 +15,42 @@ use crate::theme::Theme;
 
 const ROWS: usize = 10;
 
+/// A letter and color for the kind of a completion (LSP CompletionItemKind), like the
+/// symbols in Visual Studio's list: methods purple, properties and fields blue, types orange.
+pub fn kind_badge(kind: u8, dark: bool) -> (&'static str, Rgba) {
+    let pick = |d: (u8, u8, u8), l: (u8, u8, u8)| if dark { Rgba::rgb(d.0, d.1, d.2) } else { Rgba::rgb(l.0, l.1, l.2) };
+    let purple = pick((0xB1, 0x80, 0xF5), (0x78, 0x3B, 0xD0));
+    let blue = pick((0x4F, 0xA9, 0xF2), (0x1F, 0x6F, 0xB5));
+    let teal = pick((0x4E, 0xC9, 0xB0), (0x16, 0x82, 0x6C));
+    let orange = pick((0xEE, 0x9D, 0x28), (0xB0, 0x60, 0x00));
+    let gray = pick((0x9A, 0xA4, 0xB2), (0x5A, 0x63, 0x70));
+    match kind {
+        2 => ("ƒ", purple),          // method
+        3 => ("ƒ", purple),          // function
+        4 => ("ƒ", orange),          // constructor
+        5 => ("F", blue),            // field
+        6 => ("v", blue),            // variable
+        7 => ("C", orange),          // class
+        8 => ("I", teal),            // interface
+        9 => ("N", gray),            // module / namespace
+        10 => ("P", blue),           // property
+        11 => ("u", gray),           // unit
+        12 => ("=", blue),           // value
+        13 => ("E", orange),         // enum
+        14 => ("k", gray),           // keyword
+        15 => ("⌁", gray),           // snippet
+        16 => ("●", orange),         // color
+        17 | 19 => ("▤", gray),      // file, folder
+        20 => ("e", teal),           // enum member
+        21 => ("π", blue),           // constant
+        22 => ("S", orange),         // struct
+        23 => ("⚡", pick((0xE8, 0xC5, 0x47), (0xA8, 0x84, 0x00))), // event
+        24 => ("±", gray),           // operator
+        25 => ("T", teal),           // type parameter
+        _ => ("·", gray),
+    }
+}
+
 pub struct Completion {
     pub path: PathBuf,
     /// Start of the word being completed (char position).
@@ -27,6 +63,8 @@ pub struct Completion {
     matcher: Matcher,
     buffer: Buffer,
     width_cells: usize,
+    /// The kind colors of the shown rows (for the tinted square behind each symbol).
+    row_colors: Vec<Rgba>,
 }
 
 impl Completion {
@@ -45,6 +83,7 @@ impl Completion {
             matcher: Matcher::new(Config::DEFAULT),
             buffer,
             width_cells: 0,
+            row_colors: Vec::new(),
         }
     }
 
@@ -115,10 +154,16 @@ impl Completion {
         let rows: Vec<&(usize, Vec<u32>)> = self.shown.iter().skip(self.scroll).take(ROWS).collect();
         let label_w = rows.iter().map(|(i, _)| self.items[*i].label.chars().count()).max().unwrap_or(10).min(40);
         let detail_w = rows.iter().map(|(i, _)| self.items[*i].detail.chars().count()).max().unwrap_or(0).min(36);
-        self.width_cells = label_w + if detail_w > 0 { detail_w + 3 } else { 0 };
+        // Room for the kind symbol in front.
+        self.width_cells = 3 + label_w + if detail_w > 0 { detail_w + 3 } else { 0 };
         let mut spans: Vec<(String, Rgba)> = Vec::new();
+        self.row_colors.clear();
         for (i, hits) in rows {
             let it = &self.items[*i];
+            let kind = if it.snippet && it.kind == 0 { 15 } else { it.kind };
+            let (letter, color) = kind_badge(kind, theme.dark);
+            self.row_colors.push(color);
+            spans.push((format!("{letter}  "), color));
             for (ci, ch) in it.label.chars().take(label_w).enumerate() {
                 let color = if hits.binary_search(&(ci as u32)).is_ok() { theme.accent } else { theme.panel_text };
                 match spans.last_mut() {
@@ -167,6 +212,12 @@ impl Completion {
         if self.selected >= self.scroll {
             let sy = y + (self.selected - self.scroll) as f32 * font.line_h;
             quads.push(Quad { x, y: sy, w, h: font.line_h, color: theme.row_selected });
+        }
+        // A tinted square behind each kind symbol.
+        let side = (font.line_h * 0.8).round();
+        for (r, c) in self.row_colors.iter().enumerate() {
+            let ry = y + r as f32 * font.line_h + (font.line_h - side) / 2.0;
+            quads.push(Quad { x: x + pad - (side - font.cell_w) / 2.0, y: ry, w: side, h: side, color: c.with_alpha(0x2A) });
         }
         text.push(TextBlock {
             buffer: &self.buffer,
@@ -222,7 +273,7 @@ mod tests {
     use super::*;
 
     fn item(label: &str, sort: &str, snippet: bool) -> CompletionItem {
-        CompletionItem { label: label.into(), detail: String::new(), insert: label.into(), filter: label.into(), sort: sort.into(), snippet }
+        CompletionItem { label: label.into(), detail: String::new(), insert: label.into(), filter: label.into(), sort: sort.into(), snippet, kind: 0 }
     }
 
     #[test]

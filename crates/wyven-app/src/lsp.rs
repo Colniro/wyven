@@ -50,6 +50,8 @@ pub struct CompletionItem {
     pub sort: String,
     /// `insert` is a snippet (placeholders like `$1`, `${2:name}`).
     pub snippet: bool,
+    /// LSP CompletionItemKind (2 method, 5 field, 7 class, 10 property, 15 snippet …; 0 unknown).
+    pub kind: u8,
 }
 
 /// What the UI has to do after the server answered.
@@ -1140,6 +1142,7 @@ fn parse_completion(item: &Value) -> CompletionItem {
         .unwrap_or_else(|| kind_name(item["kind"].as_u64().unwrap_or(0)).to_string());
     CompletionItem {
         snippet: item["insertTextFormat"].as_u64() == Some(2),
+        kind: item["kind"].as_u64().unwrap_or(0).min(255) as u8,
         filter: item["filterText"].as_str().unwrap_or(&label).to_string(),
         sort: item["sortText"].as_str().unwrap_or(&label).to_string(),
         insert,
