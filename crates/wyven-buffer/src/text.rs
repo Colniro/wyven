@@ -55,6 +55,8 @@ pub fn display_col_to_char(line: RopeSlice<'_>, display_col: usize, tab_width: u
 pub(crate) enum CharClass {
     Word,
     Punct,
+    /// " ' ` – each one a stop of its own, so Ctrl+Backspace in a string ends at its quote.
+    Quote,
     Space,
     Newline,
 }
@@ -66,6 +68,8 @@ pub(crate) fn class(c: char) -> CharClass {
         CharClass::Space
     } else if c.is_alphanumeric() || c == '_' {
         CharClass::Word
+    } else if matches!(c, '"' | '\'' | '`') {
+        CharClass::Quote
     } else {
         CharClass::Punct
     }
@@ -82,6 +86,9 @@ pub(crate) fn prev_word_start(rope: &Rope, pos: usize) -> usize {
     }
     if i > 0 {
         let k = class(rope.char(i - 1));
+        if k == CharClass::Quote {
+            return i - 1;
+        }
         while i > 0 && class(rope.char(i - 1)) == k {
             i -= 1;
         }
@@ -101,6 +108,9 @@ pub(crate) fn next_word_end(rope: &Rope, pos: usize) -> usize {
     }
     if i < len {
         let k = class(rope.char(i));
+        if k == CharClass::Quote {
+            return i + 1;
+        }
         while i < len && class(rope.char(i)) == k {
             i += 1;
         }

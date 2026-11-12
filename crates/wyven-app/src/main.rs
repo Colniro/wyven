@@ -582,6 +582,10 @@ struct State {
     git_peek: Option<GitPeek>,
     /// Explorer folders on disk: when they were last looked at, and their fingerprint.
     explorer_disk: (Instant, u64),
+    /// The last keystroke that changed text, and inlay hints waiting for a pause in typing
+    /// (when, file, document version, hints).
+    last_typed: Option<Instant>,
+    held_hints: Option<(Instant, PathBuf, u64, Vec<editor::InlayHint>)>,
     /// When to write layout.json (after a floating window stopped moving).
     layout_save_due: Option<Instant>,
     /// The close dialog decided to quit (handled in `about_to_wait`).
@@ -1011,6 +1015,19 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let mut wake = state.next_stats;
         state.explorer_disk_tick(now);
+        if let Some(due) = state.held_hints.as_ref().map(|h| h.0) {
+            if now >= due {
+                if let Some((_, path, version, hints)) = state.held_hints.take()
+                    && let Some(i) = state.tab_for(&path)
+                    && state.tabs[i].doc.version() == version
+                {
+                    state.tabs[i].set_inlay_hints(hints);
+                    state.window.request_redraw();
+                }
+            } else {
+                wake = wake.min(due);
+            }
+        }
         if let Some(due) = state.layout_save_due {
             if now >= due {
                 state.layout_save_due = None;
@@ -1322,6 +1339,8 @@ impl State {
             snippet: None,
             quit: false,
             layout_save_due: None,
+            last_typed: None,
+            held_hints: None,
             explorer_disk: (Instant::now(), 0),
             user_snippets: snippets::UserSnippets::load(),
             git_peek: None,
@@ -4094,7 +4113,13 @@ impl State {
                                 }
                             })
                             .collect();
-                        self.tabs[i].set_inlay_hints(hints);
+                        // While typing, new hints wait for a pause (they would jump in between
+                        // the words being typed).
+                        let delay = Duration::from_millis(self.settings.editor.hints_delay_ms.min(30_000));
+                        match self.last_typed {
+                            Some(t) if t.elapsed() < delay => self.held_hints = Some((t + delay, path.clone(), version, hints)),
+                            _ => self.tabs[i].set_inlay_hints(hints),
+                        }
                     }
                 }
                 lsp::Event::CodeLens { path, version, lenses } => {
@@ -7343,6 +7368,12 @@ impl State {
         }
         self.update_completion(typed.as_deref(), trigger);
         self.editor_mut().set_ghost(None);
+        if typing {
+            self.last_typed = Some(Instant::now());
+            if let Some(h) = &mut self.held_hints {
+                h.0 = Instant::now() + Duration::from_millis(self.settings.editor.hints_delay_ms.min(30_000));
+            }
+        }
         if typing && self.focus == Focus::Editor {
             self.ai.schedule(Instant::now());
         } else {

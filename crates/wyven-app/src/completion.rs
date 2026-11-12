@@ -15,6 +15,10 @@ use crate::theme::Theme;
 
 const ROWS: usize = 10;
 
+/// Control structures that come first as soon as their first letters are typed (`i` → `if`),
+/// in this order; their snippet before the plain keyword.
+const CONTROL: &[&str] = &["if", "else", "for", "foreach", "while", "do", "switch", "try", "return", "using", "new", "var"];
+
 /// A letter and color for the kind of a completion (LSP CompletionItemKind), like the
 /// symbols in Visual Studio's list: methods purple, properties and fields blue, types orange.
 pub fn kind_badge(kind: u8, dark: bool) -> (&'static str, Rgba) {
@@ -108,8 +112,12 @@ impl Completion {
                     // Exact prefix matches first, like Visual Studio.
                     let (f, p) = (it.filter.to_lowercase(), prefix.to_lowercase());
                     // Exactly the typed word first (a snippet before the keyword), then prefixes.
+                    let control = CONTROL.iter().position(|c| *c == f);
                     let bonus = if f == p {
                         if it.snippet { 4000 } else { 3000 }
+                    } else if let (Some(rank), true) = (control, f.starts_with(&p)) {
+                        // `i` → if, `w` → while: one Tab away.
+                        2500 - rank as u32 * 10 + if it.snippet { 5 } else { 0 }
                     } else if f.starts_with(&p) {
                         1000
                     } else {
@@ -274,6 +282,26 @@ mod tests {
 
     fn item(label: &str, sort: &str, snippet: bool) -> CompletionItem {
         CompletionItem { label: label.into(), detail: String::new(), insert: label.into(), filter: label.into(), sort: sort.into(), snippet, kind: 0 }
+    }
+
+    #[test]
+    fn control_structures_come_first_from_the_first_letter() {
+        let mut fs = FontSystem::new();
+        let font = FontMetrics { size: 14.0, line_h: 20.0, cell_w: 8.0 };
+        let items = vec![
+            item("int", "a", false),
+            item("interface", "b", false),
+            item("IDisposable", "c", false),
+            item("if", "d", false),
+            item("if", "~if", true),
+        ];
+        let mut c = Completion::new(&mut fs, font, PathBuf::new(), 0, items);
+        c.filter("i");
+        assert!(c.selected().is_some_and(|i| i.label == "if" && i.snippet));
+        c.move_selection(1);
+        assert!(c.selected().is_some_and(|i| i.label == "if" && !i.snippet));
+        c.filter("in");
+        assert_eq!(c.selected().map(|i| i.label.as_str()), Some("int"));
     }
 
     #[test]

@@ -557,6 +557,13 @@ impl Document {
                 (r.from(), r.to())
             } else if forward {
                 (r.head, text::next_word_end(rope, r.head))
+            } else if r.head > 0
+                && r.head < rope.len_chars()
+                && matches!(rope.char(r.head - 1), '"' | '\'' | '`')
+                && rope.char(r.head) == rope.char(r.head - 1)
+            {
+                // An empty string `"|"`: both quotes go.
+                (r.head - 1, r.head + 1)
             } else {
                 (text::prev_word_start(rope, r.head), r.head)
             };
@@ -1235,5 +1242,23 @@ mod tests {
         d.newline();
         assert!(d.text().to_string().starts_with("f() {
 "));
+    }
+
+    #[test]
+    fn ctrl_backspace_in_strings_stops_at_the_quote() {
+        let del = |text: &str, at: usize| {
+            let mut d = Document::from_str(text);
+            d.set_cursor(at);
+            d.delete_word(false);
+            d.text().to_string()
+        };
+        let line = "Console.WriteLine(\"Hallo Welt\");";
+        let end = line.find("\");").unwrap();
+        assert_eq!(del(line, end), "Console.WriteLine(\"Hallo \");");
+        let start = line.find("Hallo").unwrap();
+        // Right after the opening quote: only the quote, not the bracket in front.
+        assert_eq!(del(line, start), "Console.WriteLine(Hallo Welt\");");
+        // An empty string: both quotes.
+        assert_eq!(del("f(\"\");", 3), "f();");
     }
 }
