@@ -33,6 +33,9 @@ tab_width = 4
 indent = "spaces"
 # Show suggestions automatically while typing (Ctrl+Space always works)
 auto_complete = true
+# Enter after a { at the end of a line moves the brace to a line of its own (like Visual Studio):
+# "csharp" (C# only), "all" (every language) or "off"
+brace_new_line = "csharp"
 # Type ( [ { " ' and the closing partner appears too
 auto_close = true
 # Brackets in colors by nesting depth
@@ -200,6 +203,7 @@ pub struct EditorSettings {
     pub auto_complete: bool,
     pub auto_save: bool,
     pub auto_close: bool,
+    pub brace_new_line: String,
     pub bracket_colors: bool,
     pub indent_guides: bool,
     pub color_preview: bool,
@@ -242,7 +246,7 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_close: true, bracket_colors: true, indent_guides: true, color_preview: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_close: true, brace_new_line: "csharp".into(), bracket_colors: true, indent_guides: true, color_preview: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
     }
 }
 

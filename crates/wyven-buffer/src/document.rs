@@ -360,7 +360,9 @@ impl Document {
                 return (Change { start: r.from(), end: r.from(), text: String::new() }, 1);
             }
             let Some(cl) = close else { return plain };
-            let free_after = next.is_none_or(|n| n.is_whitespace() || matches!(n, ')' | ']' | '}' | ';' | ',' | '.' | ':' | '>'));
+            // Brackets also pair right before a closing quote: "insert into T (|" .
+            let free_after = next.is_none_or(|n| n.is_whitespace() || matches!(n, ')' | ']' | '}' | ';' | ',' | '.' | ':' | '>'))
+                || (!quote && matches!(next, Some('"' | '\'' | '`')));
             // A quote right after a letter is an apostrophe (don't), not a string.
             let word_before = prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == c);
             // Rust lifetimes and generics: <'a>, &'a.
@@ -375,8 +377,34 @@ impl Document {
     /// Enter: new line with the indentation of the current line. Between brackets like `{|}`
     /// the closing bracket moves to its own line.
     pub fn newline(&mut self) {
+        self.newline_with(false);
+    }
+
+    /// Enter; with `brace_own_line` (Visual Studio's C# style) a `{` at the end of a line of code
+    /// first moves to a line of its own:
+    /// `if (x) {|}` becomes `if (x)` / `{` / `    |` / `}`.
+    pub fn newline_with(&mut self, brace_own_line: bool) {
         let unit = self.indent_unit.clone();
         self.replace_each(EditKind::Other, true, |rope, r| {
+            if brace_own_line && r.is_empty() {
+                let line = rope.char_to_line(r.from());
+                let line_start = rope.line_to_char(line);
+                // The `{` right before the cursor (only blanks between them).
+                let brace = (line_start..r.from()).rev().find(|&i| !rope.char(i).is_whitespace()).filter(|&i| rope.char(i) == '{');
+                // Code in front of it on the same line (else the brace is on its own line already).
+                let code_end = brace.and_then(|b| (line_start..b).rev().find(|&i| !rope.char(i).is_whitespace()));
+                if let (Some(_), Some(code_end)) = (brace, code_end) {
+                    let indent = text::indentation(rope, line);
+                    let after = (r.to() < rope.len_chars()).then(|| rope.char(r.to()));
+                    let mut text = format!("\n{indent}{{\n{indent}{unit}");
+                    let cursor = text.chars().count();
+                    if after == Some('}') {
+                        text.push('\n');
+                        text.push_str(&indent);
+                    }
+                    return (Change { start: code_end + 1, end: r.to(), text }, cursor);
+                }
+            }
             let line = rope.char_to_line(r.from());
             let line_start = rope.line_to_char(line);
             let indent: String = text::indentation(rope, line)
@@ -1174,10 +1202,38 @@ mod tests {
         // A quote before an existing string starts a new one; lifetimes get no pair.
         assert_eq!(typed("x = \"abc\"", 4, "\""), ("x = \"\"abc\"".into(), 5));
         assert_eq!(typed("fn f<>", 5, "'"), ("fn f<'>".into(), 6));
+        // Inside a string, before its closing quote.
+        assert_eq!(typed("s = \"insert into T \";", 19, "("), ("s = \"insert into T ()\";".into(), 20));
         // Backspace in an empty pair removes both.
         let mut d = Document::from_str("f()");
         d.set_cursor(2);
         d.backspace();
         assert_eq!(d.text().to_string(), "f");
+    }
+
+    #[test]
+    fn enter_after_a_brace_moves_it_to_its_own_line() {
+        let mut d = Document::from_str("    if (x) {}");
+        d.indent_unit = "    ".into();
+        d.set_cursor(12);
+        d.newline_with(true);
+        assert_eq!(d.text().to_string(), "    if (x)
+    {
+        
+    }");
+        assert_eq!(d.selection().primary().head, "    if (x)
+    {
+        ".chars().count());
+        // A brace alone on its line stays; without the option nothing moves.
+        let mut d = Document::from_str("{}");
+        d.set_cursor(1);
+        d.newline_with(true);
+        assert!(d.text().to_string().starts_with("{
+"));
+        let mut d = Document::from_str("f() {}");
+        d.set_cursor(5);
+        d.newline();
+        assert!(d.text().to_string().starts_with("f() {
+"));
     }
 }

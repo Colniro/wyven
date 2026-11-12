@@ -347,6 +347,10 @@ impl RowMap {
 pub struct DiagSpan {
     pub start: usize,
     pub end: usize,
+    /// The same range in bytes: moved along with every edit until the server sends new ones,
+    /// so the squiggles stay under their words while typing.
+    pub start_byte: usize,
+    pub end_byte: usize,
     /// 1 error, 2 warning, 3 info.
     pub severity: u8,
     pub message: String,
@@ -438,6 +442,19 @@ pub struct EditorView {
     pub color_preview: bool,
     /// Bracket depth at the start of each line (for the document version), up to some line.
     bracket_depths: Option<(u64, Vec<i32>)>,
+}
+
+/// Where a byte position (start or end of a range) is after an edit.
+fn shift_byte(p: usize, e: &TextEdit, is_end: bool) -> usize {
+    if p < e.start_byte || (is_end && p == e.start_byte) {
+        p
+    } else if p >= e.old_end_byte {
+        p + e.new_end_byte - e.old_end_byte
+    } else if is_end {
+        e.new_end_byte
+    } else {
+        e.start_byte
+    }
 }
 
 /// Bracket colors by depth (gold, orchid, blue – like VS Code), dark and light.
@@ -859,6 +876,23 @@ impl EditorView {
     }
 
     /// The most severe problem touching the primary cursor.
+    /// The errors and warnings at a char position, worst first, as tooltip text.
+    pub fn diagnostics_at(&self, pos: usize) -> String {
+        let mut here: Vec<&DiagSpan> = self.diagnostics.iter().filter(|d| d.start <= pos && pos < d.end.max(d.start + 1)).collect();
+        here.sort_by_key(|d| d.severity);
+        here.iter()
+            .map(|d| {
+                let kind = match d.severity {
+                    1 => "Error",
+                    2 => "Warning",
+                    _ => "Info",
+                };
+                format!("{kind}: {}", d.message)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn diagnostic_at_cursor(&self) -> Option<&DiagSpan> {
         let head = self.doc.selection().primary().head;
         self.diagnostics
@@ -1063,6 +1097,7 @@ impl EditorView {
         self.shift_folds(&edits);
         self.shift_breakpoints(&edits);
         self.shift_line_items(&edits);
+        self.shift_diagnostics(&edits);
         if let Some(syntax) = &mut self.syntax {
             syntax.update(self.doc.text(), &edits);
         }
@@ -1302,8 +1337,29 @@ impl EditorView {
         }
     }
 
-    /// Hints and lenses on edited lines go away until the server sends new ones; those below
-    /// an edit move with their lines.
+    /// Squiggles move with the text: before an edit they stay, after it they shift by its
+    /// length, inside it they shrink to it (the server sends the real ones shortly after).
+    fn shift_diagnostics(&mut self, edits: &[TextEdit]) {
+        if self.diagnostics.is_empty() || edits.is_empty() {
+            return;
+        }
+        let map = shift_byte;
+        for e in edits {
+            for d in &mut self.diagnostics {
+                d.start_byte = map(d.start_byte, e, false);
+                d.end_byte = map(d.end_byte, e, true).max(d.start_byte);
+            }
+        }
+        let rope = self.doc.text();
+        let len = rope.len_bytes();
+        for d in &mut self.diagnostics {
+            d.start = rope.byte_to_char(d.start_byte.min(len));
+            d.end = rope.byte_to_char(d.end_byte.min(len));
+        }
+    }
+
+    /// Inlay hints on edited lines go away until the server sends new ones; code lenses stay
+    /// (their numbers update when the server answers); both move with the lines below an edit.
     fn shift_line_items(&mut self, edits: &[TextEdit]) {
         if (self.inlay_hints.is_empty() && self.lenses.is_empty()) || edits.is_empty() {
             return;
@@ -1320,14 +1376,15 @@ impl EditorView {
                     h.line < sr
                 }
             });
-            self.lenses.retain_mut(|lens| {
+            for lens in &mut self.lenses {
                 if lens.line > or {
                     lens.line = moved(lens.line);
-                    true
-                } else {
-                    lens.line < sr
+                } else if lens.line > sr {
+                    // Its line was joined into the edited one.
+                    lens.line = sr;
                 }
-            });
+            }
+            self.lenses.dedup_by_key(|l| l.line);
         }
         self.marks_gen += 1;
     }
@@ -2665,6 +2722,27 @@ mod tests {
 
     fn from(top: usize) -> Vec<usize> {
         (top..top + 10).collect()
+    }
+
+    #[test]
+    fn squiggles_move_with_typing() {
+        let typed = |at: usize, n: usize| wyven_buffer::TextEdit {
+            start_byte: at,
+            old_end_byte: at,
+            new_end_byte: at + n,
+            start_point: (0, at),
+            old_end_point: (0, at),
+            new_end_point: (0, at + n),
+        };
+        // An error at bytes 20..25; typing 3 bytes before it moves it.
+        let e = typed(10, 3);
+        assert_eq!((super::shift_byte(20, &e, false), super::shift_byte(25, &e, true)), (23, 28));
+        // Typing after it leaves it; typing right at its end does not stretch it.
+        let e = typed(25, 2);
+        assert_eq!((super::shift_byte(20, &e, false), super::shift_byte(25, &e, true)), (20, 25));
+        // Deleting bytes 5..8 before it pulls it back.
+        let del = wyven_buffer::TextEdit { start_byte: 5, old_end_byte: 8, new_end_byte: 5, start_point: (0, 5), old_end_point: (0, 8), new_end_point: (0, 5) };
+        assert_eq!(super::shift_byte(20, &del, false), 17);
     }
 
     #[test]

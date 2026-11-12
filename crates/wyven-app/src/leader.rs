@@ -18,6 +18,8 @@ pub enum Action {
     RecentProjects,
     OpenFile,
     NewFile,
+    /// An unnamed tab (saved somewhere later).
+    NewUntitled,
     SaveAs,
     CloseAll,
     /// Opens the search field with a mode prefix.

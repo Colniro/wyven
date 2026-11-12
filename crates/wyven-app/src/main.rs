@@ -534,6 +534,8 @@ struct State {
     tooltip: Option<completion::Tooltip>,
     /// Where and since when the mouse rests (for hover info).
     hover_rest: Option<(Instant, f32, f32)>,
+    /// Errors shown in the hover tooltip (where, text), to combine with the server's info.
+    hover_problems: Option<(f32, f32, String)>,
 
     settings: settings::Settings,
     settings_mtime: Option<std::time::SystemTime>,
@@ -578,6 +580,8 @@ struct State {
     custom_keys: custom_keys::CustomKeys,
     /// The committed version of a changed block, shown under it (click on a git change bar).
     git_peek: Option<GitPeek>,
+    /// Explorer folders on disk: when they were last looked at, and their fingerprint.
+    explorer_disk: (Instant, u64),
     /// When to write layout.json (after a floating window stopped moving).
     layout_save_due: Option<Instant>,
     /// The close dialog decided to quit (handled in `about_to_wait`).
@@ -1006,6 +1010,7 @@ impl ApplicationHandler<UserEvent> for App {
             state.window.request_redraw();
         }
         let mut wake = state.next_stats;
+        state.explorer_disk_tick(now);
         if let Some(due) = state.layout_save_due {
             if now >= due {
                 state.layout_save_due = None;
@@ -1317,6 +1322,7 @@ impl State {
             snippet: None,
             quit: false,
             layout_save_due: None,
+            explorer_disk: (Instant::now(), 0),
             user_snippets: snippets::UserSnippets::load(),
             git_peek: None,
             header_tip_due: None,
@@ -1332,6 +1338,7 @@ impl State {
             completion: None,
             tooltip: None,
             hover_rest: None,
+            hover_problems: None,
             latency: InputLatency::default(),
             started,
             first_frame: None,
@@ -2900,6 +2907,41 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// Every 1.5 s while the explorer is on screen: new, deleted or renamed files in its open
+    /// folders show up by themselves.
+    fn explorer_disk_tick(&mut self, now: Instant) {
+        if now.duration_since(self.explorer_disk.0) < Duration::from_millis(1500) || !self.panel_open(Panel::Explorer) {
+            return;
+        }
+        self.explorer_disk.0 = now;
+        let Some(ex) = &mut self.explorer else { return };
+        let stamp = ex.disk_stamp();
+        if stamp != self.explorer_disk.1 {
+            let first = self.explorer_disk.1 == 0;
+            self.explorer_disk.1 = stamp;
+            if !first {
+                ex.refresh();
+                if self.git.repo.is_some() {
+                    self.git.refresh_status();
+                }
+                self.window.request_redraw();
+            }
+        }
+    }
+
+    /// Ctrl+N with a folder open: a new file in the explorer (name typed in place, created on
+    /// disk right away); without a folder an unnamed tab.
+    fn new_file_here(&mut self) {
+        if self.explorer.is_none() {
+            self.new_file();
+            return;
+        }
+        self.dock.show(Panel::Explorer);
+        self.dock_changed();
+        self.focus = Focus::Explorer;
+        self.start_explorer_op(ExplorerOp::NewFile);
+    }
+
     /// Alt → p → a: another folder in this window.
     fn add_folder(&mut self) {
         let mut dialog = rfd::FileDialog::new().set_title("Add Folder to Workspace");
@@ -4070,6 +4112,11 @@ impl State {
                 }
                 lsp::Event::References(refs) => self.show_references(refs),
                 lsp::Event::Hover { text, x, y } => {
+                    // Below the errors at the same place, if any.
+                    let text = match &self.hover_problems {
+                        Some((px, py, p)) if *px == x && *py == y => format!("{p}\n\n{text}"),
+                        _ => text,
+                    };
                     let fs = self.renderer.font_system();
                     self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &text, x, y));
                 }
@@ -4254,6 +4301,8 @@ impl State {
                 .map(|d| editor::DiagSpan {
                     start: wyven_lsp::from_lsp(rope, &d.start),
                     end: wyven_lsp::from_lsp(rope, &d.end),
+                    start_byte: rope.char_to_byte(wyven_lsp::from_lsp(rope, &d.start).min(rope.len_chars())),
+                    end_byte: rope.char_to_byte(wyven_lsp::from_lsp(rope, &d.end).min(rope.len_chars())),
                     severity: d.severity,
                     raw: d.raw.clone(),
                     message: if d.code.is_empty() { d.message.clone() } else { format!("{}: {}", d.code, d.message) },
@@ -4287,6 +4336,16 @@ impl State {
                     && matches!(self.overlay, Overlay::None)
                 {
                     let pos = self.editor().hit_test(x, y);
+                    // Errors and warnings under the mouse: shown right away (the language
+                    // server's info joins them when it answers).
+                    let problems = self.editor().diagnostics_at(pos);
+                    if !problems.is_empty() {
+                        let fs = self.renderer.font_system();
+                        self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &problems, x, y));
+                        self.hover_problems = Some((x, y, problems));
+                    } else {
+                        self.hover_problems = None;
+                    }
                     let rope = self.editor().doc.text();
                     let on_word = pos < rope.len_chars() && {
                         let c = rope.char(pos);
@@ -6670,7 +6729,8 @@ impl State {
             Palette(prefix) => self.open_palette(prefix),
             Run(cmd) => self.run(cmd),
             OpenFile => self.pick_file(),
-            NewFile => self.new_file(),
+            NewFile => self.new_file_here(),
+            NewUntitled => self.new_file(),
             SaveAs => self.save_as(),
             CloseAll => self.close_all(),
             OpenSettings => self.open_settings_page(),
@@ -7063,7 +7123,14 @@ impl State {
                     ed.doc.insert(&text)
                 }
             }
-            Command::Newline => ed.doc.newline(),
+            Command::Newline => {
+                let own_line = match self.settings.editor.brace_new_line.as_str() {
+                    "all" => true,
+                    "csharp" => ed.language_name() == "C#",
+                    _ => false,
+                };
+                ed.doc.newline_with(own_line)
+            }
             Command::NewlineBelow => {
                 ed.doc.move_cursors(Movement::LineEnd, false);
                 ed.doc.newline();
@@ -7141,7 +7208,7 @@ impl State {
                 follow_cursor = false;
                 self.pick_file();
             }
-            Command::NewFile => self.new_file(),
+            Command::NewFile => self.new_file_here(),
             Command::CloseTab => {
                 follow_cursor = false;
                 let a = self.active;

@@ -66,7 +66,8 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
     use Cmd::{Key as K, Leader as Ld};
     use Command as C;
     vec![
-        ("File: New File", "Ctrl+N", K(C::NewFile)),
+        ("File: New File (in the explorer)", "Ctrl+N", K(C::NewFile)),
+        ("File: New Untitled File", "", Ld(L::NewUntitled)),
         ("File: Open …", "Ctrl+O", K(C::OpenFile)),
         ("File: Save", "Ctrl+S", K(C::Save)),
         ("File: Save All", "Ctrl+Shift+S", K(C::SaveAll)),
@@ -274,7 +275,14 @@ impl Palette {
             ">" => self.match_commands(&q),
             "@" => self.match_symbols(&q, src),
             ":" => line_entries(&q, src.line_count),
-            _ => self.match_files(&q, src),
+            _ => {
+                // Commands match without ">" too: they follow the files (from 3 letters on).
+                let mut entries = self.match_files(&q, src);
+                if q.chars().count() >= 3 {
+                    entries.extend(self.match_commands(&q).into_iter().take(8));
+                }
+                entries
+            }
         };
         self.selected = self.selected.min(self.entries.len().saturating_sub(1));
         if self.query.is_empty() {

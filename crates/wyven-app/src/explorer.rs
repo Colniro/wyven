@@ -155,6 +155,20 @@ impl Explorer {
     }
 
     /// Re-reads all expanded folders from disk, keeping the selection on the same path.
+    /// A fingerprint of the shown folders on disk (their change times): when it changes,
+    /// something was created, deleted or renamed in them (by a terminal, a build, Claude Code …).
+    pub fn disk_stamp(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for dir in self.roots.iter().chain(self.expanded.iter()) {
+            dir.hash(&mut h);
+            if let Ok(t) = std::fs::metadata(dir).and_then(|m| m.modified()) {
+                t.hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+
     pub fn refresh(&mut self) {
         let selected = self.rows.get(self.selected).map(|r| r.path.clone());
         self.rows.clear();
