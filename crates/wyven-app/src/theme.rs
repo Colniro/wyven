@@ -231,11 +231,9 @@ impl Theme {
     /// faint cyan glow on the current line, and cyan as accent.
     pub const fn andromeda() -> Self {
         const CYAN: Rgba = Rgba::rgb(0x5E, 0xD4, 0xC0);
-        const PURPLE: Rgba = Rgba::rgb(0xB4, 0x86, 0xD8);
         const PINK: Rgba = Rgba::rgb(0xE0, 0x6F, 0xB4);
         const YELLOW: Rgba = Rgba::rgb(0xE6, 0xD3, 0x8A);
         const GREEN: Rgba = Rgba::rgb(0xA4, 0xCF, 0x8C);
-        const ORANGE: Rgba = Rgba::rgb(0xE0, 0xA6, 0x6A);
         const RED: Rgba = Rgba::rgb(0xDE, 0x83, 0x72);
         const BLUE: Rgba = Rgba::rgb(0x8C, 0xB6, 0xE6);
         const TEXT: Rgba = Rgba::rgb(0xD5, 0xCE, 0xD9);
@@ -296,34 +294,34 @@ impl Theme {
                 Rgba::rgb(0x5C, 0xF5, 0xDB),
                 Rgba::rgb(0xFF, 0xFF, 0xFF),
             ]),
+            // Every group on its own spot of the color wheel (soft, not glaring); related
+            // things are neighbors: true/false next to bool, fields next to variables,
+            // whole and fractional number types next to each other.
             syntax: SyntaxColors {
-                keyword: PURPLE,
-                type_: YELLOW,
-                function: YELLOW,
-                string: GREEN,
-                escape: ORANGE,
-                comment: Rgba::rgb(0x8B, 0x8D, 0x95),
-                number: ORANGE,
-                constant: RED,
-                property: BLUE,
-                punctuation: Rgba::rgb(0xB9, 0xA2, 0xB4),
-                attribute: ORANGE,
-                link: BLUE,
-                variable: Some(CYAN),
-                parameter: Some(Rgba::rgb(0xE8, 0xBC, 0x92)),
-                operator: Some(RED),
-                tag: Some(Rgba::rgb(0xE0, 0x73, 0x95)),
+                keyword: Rgba::rgb(0xB9, 0x8C, 0xEB),     // purple (class, namespace, new)
+                type_: Rgba::rgb(0xE6, 0xC4, 0x6A),       // gold (class names)
+                function: Rgba::rgb(0xE8, 0xE2, 0x7E),    // yellow
+                string: Rgba::rgb(0xA2, 0xD4, 0x80),      // green
+                escape: Rgba::rgb(0xF0, 0xA0, 0x60),      // orange
+                comment: Rgba::rgb(0x86, 0x88, 0x93),     // gray
+                number: Rgba::rgb(0xF0, 0xA0, 0x60),      // orange
+                constant: Rgba::rgb(0xF2, 0x7D, 0xA0),    // rose (true, false, null)
+                property: Rgba::rgb(0x8F, 0xE0, 0xE2),    // light cyan (next to variables)
+                punctuation: Rgba::rgb(0xB8, 0xA6, 0xB3), // gray-rose
+                attribute: Rgba::rgb(0xE9, 0xB3, 0x6A),   // gold-orange
+                link: Rgba::rgb(0x62, 0xB4, 0xF0),
+                variable: Some(Rgba::rgb(0x58, 0xD2, 0xD6)),  // cyan
+                parameter: Some(Rgba::rgb(0xE3, 0xC9, 0xA8)), // sand
+                operator: Some(Rgba::rgb(0xE8, 0x75, 0x6A)),  // red
+                tag: Some(Rgba::rgb(0xE5, 0x7F, 0xA0)),
                 groups: Some(KeywordGroups {
-                    // Control flow pink-violet, modifiers a quiet lavender, declarations purple.
-                    control: Rgba::rgb(0xD4, 0x84, 0xC0),
-                    modifier: Rgba::rgb(0x98, 0x8F, 0xBF),
-                    // Built-in types in teal-blue shades: whole and fractional numbers close
-                    // together, text greener, truth warmer.
-                    integer: Rgba::rgb(0x6F, 0xBF, 0xD6),
-                    fraction: Rgba::rgb(0x84, 0xAE, 0xDE),
-                    text: Rgba::rgb(0x7C, 0xC9, 0xAE),
-                    truth: Rgba::rgb(0xD6, 0xA6, 0x82),
-                    other_type: Rgba::rgb(0xA3, 0xAD, 0xC2),
+                    control: Rgba::rgb(0xE5, 0x7F, 0xC3),    // magenta (if, for, return)
+                    modifier: Rgba::rgb(0xB5, 0xC9, 0x7A),   // olive-lime (public, static)
+                    integer: Rgba::rgb(0x62, 0xB4, 0xF0),    // azure (int, long)
+                    fraction: Rgba::rgb(0x7F, 0x9C, 0xF2),   // blue next to it (double, float)
+                    text: Rgba::rgb(0x6E, 0xD6, 0xA4),       // mint (string, char)
+                    truth: Rgba::rgb(0xF5, 0xA3, 0xB8),      // light rose (bool, like true/false)
+                    other_type: Rgba::rgb(0x9A, 0x8C, 0xF8), // indigo (void, object, var)
                 }),
             },
         }
