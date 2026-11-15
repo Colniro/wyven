@@ -305,8 +305,10 @@ impl State {
         let step = -dy.round() as isize;
         match self.float_active(fi) {
             Panel::Terminal => {
+                let (x, y) = self.floats[wi].mouse;
+                let (row, col) = self.terminal.cell_at(x, y);
                 if let Some(t) = self.terminal.term() {
-                    t.scroll(dy.round() as i32);
+                    t.scroll_at(dy.round() as i32, row, col);
                 }
                 self.terminal.dirty = true;
             }

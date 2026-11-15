@@ -297,6 +297,31 @@ impl Terminal {
         }
     }
 
+    /// The mouse wheel over screen cell (row, col): programs that read the mouse (Claude Code,
+    /// vim, htop …) get wheel events; otherwise as [`Terminal::scroll`].
+    pub fn scroll_at(&self, lines: i32, row: usize, col: usize) {
+        if lines == 0 {
+            return;
+        }
+        let mode = *self.term.lock().mode();
+        if mode.intersects(TermMode::MOUSE_MODE) {
+            // Button 64 = wheel up, 65 = wheel down.
+            let button: u8 = if lines > 0 { 64 } else { 65 };
+            let mut bytes = Vec::new();
+            for _ in 0..lines.unsigned_abs().min(10) {
+                if mode.contains(TermMode::SGR_MOUSE) {
+                    bytes.extend_from_slice(format!("\x1b[<{button};{};{}M", col + 1, row + 1).as_bytes());
+                } else {
+                    let enc = |v: usize| (33 + v.min(222)) as u8;
+                    bytes.extend_from_slice(&[0x1b, b'[', b'M', 32 + button, enc(col), enc(row)]);
+                }
+            }
+            self.notifier.notify(bytes);
+            return;
+        }
+        self.scroll(lines);
+    }
+
     fn scroll_to_bottom(&self) {
         self.term.lock().scroll_display(Scroll::Bottom);
     }

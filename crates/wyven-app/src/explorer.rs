@@ -54,6 +54,9 @@ pub struct Explorer {
     /// (Keys: lowercase paths – git and the explorer may spell a path differently on Windows.)
     git: std::collections::HashMap<String, wyven_git::ChangeKind>,
     git_dirs: HashSet<String>,
+    /// An empty row before row `gap` while a new file or folder name is typed there, so the
+    /// field pushes the entries below down instead of covering one.
+    gap: Option<usize>,
 }
 
 impl Explorer {
@@ -69,6 +72,7 @@ impl Explorer {
         let mut ex = Self {
             icon_family,
             git: Default::default(),
+            gap: None,
             git_dirs: HashSet::new(),
             expanded: HashSet::from([root.clone()]),
             roots: vec![root],
@@ -313,7 +317,7 @@ impl Explorer {
             Some(i) if new_entry => (i + 1, self.rows[i].depth + 1),
             Some(i) => (i, self.rows[i].depth),
             // The main folder in a one-folder explorer has no row: new entries go on top.
-            None if new_entry && self.roots.iter().any(|r| r == path) => (self.scroll, 0),
+            None if new_entry && self.roots.iter().any(|r| r == path) => (0, 0),
             None => return None,
         };
         if !visible.contains(&row) {
@@ -322,6 +326,24 @@ impl Explorer {
         let x = self.area.x + self.font.cell_w * (1.0 + 2.0 * depth as f32);
         let y = top + (row - self.scroll) as f32 * lh;
         Some((x, y - 1.0, self.area.x + self.area.w - x - self.font.cell_w * 0.6, lh + 2.0))
+    }
+
+    /// Makes room for a new entry in `dir` (its first row), or none (`None`).
+    pub fn set_new_entry(&mut self, dir: Option<&Path>) {
+        let gap = dir.and_then(|d| match self.rows.iter().position(|r| r.path == d) {
+            Some(i) => Some(i + 1),
+            // The main folder of a one-folder explorer has no row: on top.
+            None => self.roots.iter().any(|r| r == d).then_some(0),
+        });
+        if gap != self.gap {
+            self.gap = gap;
+            self.dirty = true;
+        }
+    }
+
+    /// Screen row of entry `i` (one lower behind the gap).
+    fn screen_row(&self, i: usize) -> usize {
+        i + usize::from(self.gap.is_some_and(|g| i >= g))
     }
 
     /// Closes every folder (workspace folders stay open).
@@ -367,7 +389,12 @@ impl Explorer {
         if y < top {
             return None;
         }
-        let i = self.scroll + ((y - top) / self.font.line_h) as usize;
+        let mut i = self.scroll + ((y - top) / self.font.line_h) as usize;
+        match self.gap {
+            Some(g) if i == g => return None,
+            Some(g) if i > g => i -= 1,
+            _ => {}
+        }
         (i < self.rows.len()).then_some(i)
     }
 
@@ -403,7 +430,11 @@ impl Explorer {
             K::Deleted | K::Conflict => theme.git_deleted,
             _ => theme.git_modified,
         };
-        for row in self.rows.iter().skip(self.scroll).take(visible) {
+        for (ri, row) in self.rows.iter().enumerate().skip(self.scroll).take(visible) {
+            if self.gap == Some(ri) {
+                spans.push(("\n".into(), theme.panel_dim, false));
+                closes.push(("\n".into(), theme.panel_dim));
+            }
             if row.is_root {
                 closes.push((if self.multi() { "×\n" } else { "\n" }.into(), theme.panel_dim));
                 let marker = if row.expanded { "▾ " } else { "▸ " };
@@ -490,11 +521,11 @@ impl Explorer {
         under.push(Quad { x: a.x, y: a.y, w: a.w, h: a.h, color: theme.panel_bg });
         let top = a.y + self.header_h();
         if let Some(h) = self.hover.filter(|&h| h != self.selected && h >= self.scroll && h < self.scroll + self.rows_visible()) {
-            let y = top + (h - self.scroll) as f32 * self.font.line_h;
+            let y = top + (self.screen_row(h) - self.scroll) as f32 * self.font.line_h;
             under.push(Quad { x: a.x, y, w: a.w, h: self.font.line_h, color: theme.row_selected_unfocused.with_alpha(0x90) });
         }
         if self.selected >= self.scroll && self.selected < self.scroll + self.rows_visible() {
-            let y = top + (self.selected - self.scroll) as f32 * self.font.line_h;
+            let y = top + (self.screen_row(self.selected) - self.scroll) as f32 * self.font.line_h;
             let color = if focused { theme.row_selected } else { theme.row_selected_unfocused };
             under.push(Quad { x: a.x, y, w: a.w, h: self.font.line_h, color });
         }

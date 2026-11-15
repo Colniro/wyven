@@ -73,8 +73,16 @@ Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; Value
 
 [Run]
 Filename: "{app}\wyven.exe"; Description: "{cm:LaunchProgram,Wyven}"; Flags: nowait postinstall skipifsilent
+; An update from inside Wyven (silent, with /RESTARTAPPLICATIONS): Wyven closed itself, start it again.
+Filename: "{app}\wyven.exe"; Flags: nowait runasoriginaluser; Check: IsInAppUpdate
 
 [Code]
+// Wyven's updater runs the setup silently with /RESTARTAPPLICATIONS (all versions since 0.4).
+function IsInAppUpdate: Boolean;
+begin
+  Result := WizardSilent and (Pos('/RESTARTAPPLICATIONS', Uppercase(GetCmdTail)) > 0);
+end;
+
 function NeedsAddPath(Dir: string): Boolean;
 var
   Path: string;

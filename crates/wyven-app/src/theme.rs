@@ -5,7 +5,7 @@ use wyven_render::Rgba;
 use wyven_syntax::Highlight;
 
 /// Theme names as written in settings.toml, with their display names.
-pub const THEMES: &[(&str, &str)] = &[("dark", "Wyven Dark"), ("light", "Wyven Light")];
+pub const THEMES: &[(&str, &str)] = &[("dark", "Wyven Dark"), ("light", "Wyven Light"), ("andromeda", "Wyven Andromeda")];
 
 /// Syntax colors of one theme.
 pub struct SyntaxColors {
@@ -21,6 +21,12 @@ pub struct SyntaxColors {
     pub punctuation: Rgba,
     pub attribute: Rgba,
     pub link: Rgba,
+    /// Colors of their own for variables, parameters, operators and markup tags; `None`:
+    /// variables and operators like the text, parameters like properties, tags like keywords.
+    pub variable: Option<Rgba>,
+    pub parameter: Option<Rgba>,
+    pub operator: Option<Rgba>,
+    pub tag: Option<Rgba>,
 }
 
 pub struct Theme {
@@ -76,6 +82,7 @@ impl Theme {
         match name.trim().to_lowercase().as_str() {
             "dark" | "dunkel" | "wyven dark" | "wyven dunkel" => Some(Self::dark()),
             "light" | "hell" | "wyven light" | "wyven hell" => Some(Self::light()),
+            "andromeda" | "wyven andromeda" => Some(Self::andromeda()),
             _ => None,
         }
     }
@@ -134,6 +141,101 @@ impl Theme {
                 punctuation: Rgba::rgb(0xA8, 0xAE, 0xB8),
                 attribute: Rgba::rgb(0xC5, 0x86, 0xC0),
                 link: Rgba::rgb(0x37, 0x94, 0xFF),
+                variable: None,
+                parameter: None,
+                operator: None,
+                tag: None,
+            },
+        }
+    }
+
+    /// Wyven Andromeda: the colors of the Andromeda theme (EliverLara) on its gray-blue
+    /// background, with extra colors for variables, parameters, operators and punctuation, a
+    /// faint cyan glow on the current line, and cyan as accent.
+    pub const fn andromeda() -> Self {
+        const CYAN: Rgba = Rgba::rgb(0x00, 0xE8, 0xC6);
+        const PURPLE: Rgba = Rgba::rgb(0xC7, 0x4D, 0xED);
+        const PINK: Rgba = Rgba::rgb(0xFF, 0x00, 0xAA);
+        const YELLOW: Rgba = Rgba::rgb(0xFF, 0xE6, 0x6D);
+        const GREEN: Rgba = Rgba::rgb(0x96, 0xE0, 0x72);
+        const ORANGE: Rgba = Rgba::rgb(0xF3, 0x9C, 0x12);
+        const RED: Rgba = Rgba::rgb(0xEE, 0x5D, 0x43);
+        const BLUE: Rgba = Rgba::rgb(0x7C, 0xB7, 0xFF);
+        const TEXT: Rgba = Rgba::rgb(0xD5, 0xCE, 0xD9);
+        Self {
+            name: "andromeda",
+            background: Rgba::rgb(0x23, 0x26, 0x2E),
+            text: TEXT,
+            gutter_text: Rgba::rgb(0x5C, 0x5F, 0x6B),
+            gutter_current: CYAN,
+            // A faint cyan glow.
+            current_line: Rgba::rgb(0x23, 0x32, 0x38),
+            selection: Rgba(0x3D, 0x43, 0x52, 0xE0),
+            cursor: CYAN,
+            status_bg: Rgba::rgb(0x1B, 0x1D, 0x24),
+            status_text: Rgba::rgb(0x9A, 0x96, 0xA3),
+            status_accent: CYAN,
+            panel_bg: Rgba::rgb(0x20, 0x23, 0x2B),
+            panel_text: TEXT,
+            panel_dim: Rgba::rgb(0x7E, 0x7A, 0x88),
+            row_selected: Rgba::rgb(0x2C, 0x3B, 0x45),
+            row_selected_unfocused: Rgba::rgb(0x29, 0x2D, 0x37),
+            accent: CYAN,
+            tab_bar: Rgba::rgb(0x1E, 0x20, 0x27),
+            tab_active: Rgba::rgb(0x23, 0x26, 0x2E),
+            tab_text: Rgba::rgb(0x8A, 0x86, 0x93),
+            tab_text_active: Rgba::rgb(0xEC, 0xE7, 0xEF),
+            divider: Rgba::rgb(0x2D, 0x31, 0x3B),
+            popup_bg: Rgba::rgb(0x27, 0x2B, 0x34),
+            popup_border: Rgba::rgb(0x3B, 0x40, 0x4D),
+            popup_key: YELLOW,
+            error: RED,
+            warning: YELLOW,
+            info: BLUE,
+            git_added: GREEN,
+            git_modified: YELLOW,
+            git_deleted: RED,
+            diff_removed: Rgba(0xEE, 0x5D, 0x43, 0x38),
+            diff_added: Rgba(0x96, 0xE0, 0x72, 0x30),
+            diff_filler: Rgba(0x00, 0x00, 0x00, 0x40),
+            debug_line: Rgba(0xFF, 0xE6, 0x6D, 0x30),
+            frame: Rgba::rgb(0x19, 0x1B, 0x21),
+            dark: true,
+            ansi: Some([
+                Rgba::rgb(0x23, 0x26, 0x2E),
+                RED,
+                GREEN,
+                YELLOW,
+                BLUE,
+                PINK,
+                CYAN,
+                TEXT,
+                Rgba::rgb(0x74, 0x6F, 0x77),
+                Rgba::rgb(0xFF, 0x7A, 0x63),
+                Rgba::rgb(0xB0, 0xF0, 0x8C),
+                Rgba::rgb(0xFF, 0xF0, 0x8F),
+                Rgba::rgb(0x9C, 0xCB, 0xFF),
+                Rgba::rgb(0xFF, 0x4D, 0xC4),
+                Rgba::rgb(0x5C, 0xF5, 0xDB),
+                Rgba::rgb(0xFF, 0xFF, 0xFF),
+            ]),
+            syntax: SyntaxColors {
+                keyword: PURPLE,
+                type_: YELLOW,
+                function: YELLOW,
+                string: GREEN,
+                escape: ORANGE,
+                comment: Rgba::rgb(0x8B, 0x8D, 0x95),
+                number: ORANGE,
+                constant: RED,
+                property: BLUE,
+                punctuation: Rgba::rgb(0xE0, 0x9F, 0xC6),
+                attribute: ORANGE,
+                link: BLUE,
+                variable: Some(CYAN),
+                parameter: Some(Rgba::rgb(0xFF, 0xB8, 0x6C)),
+                operator: Some(RED),
+                tag: Some(Rgba::rgb(0xF9, 0x26, 0x72)),
             },
         }
     }
@@ -192,6 +294,10 @@ impl Theme {
                 punctuation: Rgba::rgb(0x55, 0x5B, 0x63),
                 attribute: Rgba::rgb(0xAF, 0x00, 0xDB),
                 link: Rgba::rgb(0x00, 0x66, 0xCC),
+                variable: None,
+                parameter: None,
+                operator: None,
+                tag: None,
             },
         }
     }
@@ -254,7 +360,8 @@ impl Theme {
         use Highlight::*;
         let s = &self.syntax;
         match h {
-            Keyword | Tag | Heading => s.keyword,
+            Keyword | Heading => s.keyword,
+            Tag => s.tag.unwrap_or(s.keyword),
             Type | Namespace => s.type_,
             Function => s.function,
             String => s.string,
@@ -262,8 +369,11 @@ impl Theme {
             Comment => s.comment,
             Number => s.number,
             Constant => s.constant,
-            Property | Parameter => s.property,
-            Variable | Operator | Label => self.text,
+            Property => s.property,
+            Parameter => s.parameter.unwrap_or(s.property),
+            Variable => s.variable.unwrap_or(self.text),
+            Operator => s.operator.unwrap_or(self.text),
+            Label => self.text,
             Punctuation => s.punctuation,
             Attribute => s.attribute,
             Link => s.link,

@@ -534,6 +534,8 @@ struct State {
     tooltip: Option<completion::Tooltip>,
     /// Where and since when the mouse rests (for hover info).
     hover_rest: Option<(Instant, f32, f32)>,
+    /// Touchpad scrolling below one line, kept for the next event (x, y).
+    wheel_rest: (f32, f32),
     /// Errors shown in the hover tooltip (where, text), to combine with the server's info.
     hover_problems: Option<(f32, f32, String)>,
 
@@ -1357,6 +1359,7 @@ impl State {
             completion: None,
             tooltip: None,
             hover_rest: None,
+            wheel_rest: (0.0, 0.0),
             hover_problems: None,
             latency: InputLatency::default(),
             started,
@@ -7787,8 +7790,15 @@ impl State {
         let (dx, dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (x * 3.0, y * 3.0),
             MouseScrollDelta::PixelDelta(p) => {
+                // Touchpads send small pixel steps: collect them into whole lines, else each
+                // step would round to 0 and nothing would scroll.
                 let lh = self.font.line_h as f64;
-                ((p.x / lh) as f32, (p.y / lh) as f32)
+                self.wheel_rest.0 += (p.x / lh) as f32;
+                self.wheel_rest.1 += (p.y / lh) as f32;
+                let (lx, ly) = (self.wheel_rest.0.trunc(), self.wheel_rest.1.trunc());
+                self.wheel_rest.0 -= lx;
+                self.wheel_rest.1 -= ly;
+                (lx, ly)
             }
         };
         let (x, y) = (self.mouse.x, self.mouse.y);
@@ -7798,8 +7808,9 @@ impl State {
             return;
         }
         if self.panel_shown(Panel::Terminal) && self.terminal.contains(x, y) {
+            let (row, col) = self.terminal.cell_at(x, y);
             if let Some(t) = self.terminal.term() {
-                t.scroll(dy.round() as i32);
+                t.scroll_at(dy.round() as i32, row, col);
             }
             self.terminal.dirty = true;
             self.window.request_redraw();
@@ -8161,6 +8172,14 @@ impl State {
         // Which panels show (before the panels hand out their text for this frame).
         let shown = Panel::ALL.map(|p| self.panel_shown(p));
         let focused_panel = self.focused_panel();
+        // A new file or folder name typed in the explorer: room for it there.
+        let new_entry_dir = match &self.overlay {
+            Overlay::ExplorerPrompt { op: ExplorerOp::NewFile | ExplorerOp::NewFolder, target, .. } => Some(target.clone()),
+            _ => None,
+        };
+        if let Some(ex) = &mut self.explorer {
+            ex.set_new_entry(new_entry_dir.as_deref());
+        }
         let show_welcome = self.welcome_shown();
         if show_welcome {
             let now = Instant::now();
