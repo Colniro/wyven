@@ -40,6 +40,10 @@ brace_new_line = "csharp"
 auto_close = true
 # Inlay hints (parameter names like "value:") appear this many milliseconds after you stop typing
 hints_delay_ms = 4000
+# Comments with a marker in colors: // ! (red), // ? (blue), // TODO (orange), // * (green), // NOTE
+colored_comments = true
+# C#: warn about code that compiles but would fail when it runs (casts, Parse, / 0, indexes, null)
+runtime_checks = true
 # Brackets in colors by nesting depth
 bracket_colors = true
 # Thin lines at each indentation level
@@ -208,6 +212,8 @@ pub struct EditorSettings {
     pub hints_delay_ms: u64,
     pub brace_new_line: String,
     pub bracket_colors: bool,
+    pub colored_comments: bool,
+    pub runtime_checks: bool,
     pub indent_guides: bool,
     pub color_preview: bool,
     pub auto_save_delay_ms: u64,
@@ -249,7 +255,7 @@ impl Default for FontSettings {
 
 impl Default for EditorSettings {
     fn default() -> Self {
-        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_close: true, hints_delay_ms: 4000, brace_new_line: "csharp".into(), bracket_colors: true, indent_guides: true, color_preview: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
+        Self { tab_width: 4, indent: "spaces".into(), auto_complete: true, auto_save: true, auto_close: true, hints_delay_ms: 4000, brace_new_line: "csharp".into(), bracket_colors: true, colored_comments: true, runtime_checks: true, indent_guides: true, color_preview: true, auto_save_delay_ms: 1000, hover: true, minimap: "blocks".into(), sticky_scroll: true, word_wrap: false, inlay_hints: true, code_lens: true }
     }
 }
 

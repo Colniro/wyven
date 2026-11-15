@@ -35,6 +35,7 @@ mod metrics;
 mod palette;
 mod popup;
 mod problems;
+mod runtime_check;
 mod search_panel;
 mod settings;
 mod settings_page;
@@ -174,7 +175,7 @@ fn main() {
             open_zen = true;
         } else if arg == "--split" {
             open_split = true;
-        } else if arg == "--compass" || arg == "--menu" {
+        } else if arg == "--compass" || arg == "--menu" || arg == "--card" {
             // Screenshots: a running drag with the compass, or a right-click menu.
             demo = arg.to_str().map(str::to_string);
         } else if let Some(g) = arg.to_str().and_then(|a| a.strip_prefix("--popup=")) {
@@ -703,6 +704,16 @@ impl ApplicationHandler<UserEvent> for App {
                     state.panel_drag_move(x, y);
                 }
             }
+            Some("--card") => {
+                // Screenshots: the update question as a dialog card (nothing to install).
+                let title = "Update: Wyven 9.9.9 is available\nYou have 0.5.7. Installing takes a few seconds; Wyven starts again by itself.\n\nWhat's new: a sample text to see how longer notes wrap inside the card.";
+                let items = vec![
+                    ("Install 9.9.9 now".to_string(), wyven_lsp::Value::Bool(true)),
+                    ("Later".to_string(), wyven_lsp::Value::Bool(false)),
+                ];
+                let fs = state.renderer.font_system();
+                state.overlay = Overlay::Update(menu::Menu::new(fs, state.ui_font, title, items).card());
+            }
             Some("--menu") => {
                 if let Some(r) = state.explorer.as_ref().and(state.pane_rect(Panel::Explorer)) {
                     let (x, y) = (r.x + r.w * 0.4, r.y + state.ui_font.line_h * 6.3);
@@ -811,6 +822,15 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
                 if matches!(state.overlay, Overlay::ColorPick(_)) {
+                    state.window.request_redraw();
+                }
+                // Dialog cards: the button under the mouse is the selected one.
+                if let Overlay::Update(m) | Overlay::ConfirmClose(m) | Overlay::ConfirmDiscard(m, ..) | Overlay::ConfirmDelete(m, _) = &mut state.overlay
+                    && m.is_card()
+                    && let Some(i) = m.row_at(x, y)
+                    && i != m.selected_index()
+                {
+                    m.set_selected(i);
                     state.window.request_redraw();
                 }
                 // Theme list: the row under the mouse is selected and previewed.
@@ -1943,7 +1963,7 @@ impl State {
                 ];
                 let mut m = menu::Menu::new(self.renderer.font_system(), self.ui_font, &title, items);
                 m.select(1);
-                self.overlay = Overlay::ConfirmDelete(m, p);
+                self.overlay = Overlay::ConfirmDelete(m.card(), p);
             }
             C::CopyPath(p) => {
                 self.set_clipboard((p.display().to_string(), false));
@@ -2777,7 +2797,7 @@ impl State {
                 ];
                 let mut menu = menu::Menu::new(fs, self.ui_font, &title, items);
                 menu.select(1);
-                self.overlay = Overlay::ConfirmDelete(menu, path);
+                self.overlay = Overlay::ConfirmDelete(menu.card(), path);
             }
             ExplorerOp::NewFile | ExplorerOp::NewFolder => {
                 let dir = if is_dir { path } else { path.parent().map(Path::to_path_buf).unwrap_or(path) };
@@ -3483,7 +3503,7 @@ impl State {
         ];
         let mut m = menu::Menu::new(self.renderer.font_system(), self.ui_font, &title, items);
         m.select(0);
-        self.overlay = Overlay::ConfirmClose(m);
+        self.overlay = Overlay::ConfirmClose(m.card());
         self.window.focus_window();
         self.window.request_redraw();
         false
@@ -4360,6 +4380,24 @@ impl State {
                     message: if d.code.is_empty() { d.message.clone() } else { format!("{}: {}", d.code, d.message) },
                 })
                 .collect();
+            // C#: places that build but would fail when they run, as warnings.
+            if self.settings.editor.runtime_checks && t.language_name() == "C#" {
+                let text = t.doc.text().to_string();
+                let rope = t.doc.text();
+                let len = rope.len_chars();
+                for f in runtime_check::check_csharp(&text) {
+                    let (start, end) = (f.start.min(len), f.end.min(len));
+                    t.diagnostics.push(editor::DiagSpan {
+                        start,
+                        end,
+                        start_byte: rope.char_to_byte(start),
+                        end_byte: rope.char_to_byte(end),
+                        severity: 2,
+                        message: f.message,
+                        raw: wyven_lsp::Value::Null,
+                    });
+                }
+            }
         }
     }
 
@@ -4669,6 +4707,7 @@ impl State {
         view.bracket_colors = self.settings.editor.bracket_colors;
         view.indent_guides = self.settings.editor.indent_guides;
         view.color_preview = self.settings.editor.color_preview;
+        view.colored_comments = self.settings.editor.colored_comments;
         view.scale = self.renderer.scale_factor();
         if !view.doc.indent_detected() {
             view.doc.indent_unit = self.settings.indent_unit();
@@ -4742,14 +4781,14 @@ impl State {
         for ev in events {
             match ev {
                 update::UpdateEvent::Checked { found: Some(m), .. } => {
-                    let notes = if m.notes.trim().is_empty() { String::new() } else { format!(" – {}", m.notes.trim()) };
-                    let title = format!("Wyven {} is available (you have {}){notes}", m.version, update::CURRENT);
+                    let notes = if m.notes.trim().is_empty() { String::new() } else { format!("\n\nWhat's new: {}", m.notes.trim()) };
+                    let title = format!("Update: Wyven {} is available\nYou have {}. Installing takes a few seconds; Wyven starts again by itself.{notes}", m.version, update::CURRENT);
                     let items = vec![
-                        (format!("Install {} now (Wyven restarts)", m.version), wyven_lsp::Value::Bool(true)),
+                        (format!("Install {} now", m.version), wyven_lsp::Value::Bool(true)),
                         ("Later".to_string(), wyven_lsp::Value::Bool(false)),
                     ];
                     let fs = self.renderer.font_system();
-                    self.overlay = Overlay::Update(menu::Menu::new(fs, self.ui_font, &title, items));
+                    self.overlay = Overlay::Update(menu::Menu::new(fs, self.ui_font, &title, items).card());
                     self.update_offer = Some(m);
                 }
                 update::UpdateEvent::Checked { found: None, manual } => {
@@ -5785,7 +5824,7 @@ impl State {
                 ];
                 let mut m = menu::Menu::new(self.renderer.font_system(), self.ui_font, &title, items);
                 m.select(1);
-                self.overlay = Overlay::ConfirmDiscard(m, rel, kind);
+                self.overlay = Overlay::ConfirmDiscard(m.card(), rel, kind);
             }
             A::Sync => self.git_command(leader::GitCmd::Sync),
             A::Branches => self.git_command(leader::GitCmd::Branch),
@@ -7440,6 +7479,31 @@ impl State {
 
     /// Mouse on the theme list: a click keeps the theme, a click elsewhere goes back.
     fn theme_list_click(&mut self, x: f32, y: f32) -> bool {
+        // Dialog cards (update, close, discard, delete): a click on a button chooses it.
+        let card_row = match &mut self.overlay {
+            Overlay::Update(m) | Overlay::ConfirmClose(m) | Overlay::ConfirmDiscard(m, ..) | Overlay::ConfirmDelete(m, _) if m.is_card() => {
+                let row = m.row_at(x, y);
+                if let Some(i) = row {
+                    m.set_selected(i);
+                }
+                Some(row)
+            }
+            _ => None,
+        };
+        if let Some(row) = card_row {
+            if row.is_some() {
+                let enter = Key::Named(NamedKey::Enter);
+                match &self.overlay {
+                    Overlay::Update(_) => self.update_key(&enter),
+                    Overlay::ConfirmClose(_) => self.confirm_close_key(&enter),
+                    Overlay::ConfirmDiscard(..) => self.confirm_discard_key(&enter),
+                    Overlay::ConfirmDelete(..) => self.confirm_delete_key(&enter),
+                    _ => {}
+                }
+            }
+            self.window.request_redraw();
+            return true;
+        }
         // The layout list works with the mouse too.
         if let Overlay::Layouts(menu) = &self.overlay {
             match menu.row_at(x, y).and_then(|i| menu.items.get(i).map(|(_, v)| v.clone())) {
@@ -8458,11 +8522,15 @@ impl State {
                 | Overlay::ConfirmDiscard(m, ..)
                 | Overlay::Layouts(m)
                 | Overlay::ConfirmClose(m) => {
-                    let (x, y) = match (&self.overlay, self.theme_anchor) {
-                        (Overlay::Themes(_), Some(at)) => at,
-                        _ => (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h),
-                    };
-                    m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
+                    if m.is_card() {
+                        m.draw_card(theme, self.ui_font, window, scale, &mut overlay_cards, &mut overlay_text);
+                    } else {
+                        let (x, y) = match (&self.overlay, self.theme_anchor) {
+                            (Overlay::Themes(_), Some(at)) => at,
+                            _ => (l.editor.x + self.ui_font.cell_w * 4.0, l.editor.y + self.ui_font.line_h),
+                        };
+                        m.draw(theme, self.ui_font, x, y, window, scale, &mut overlay, &mut overlay_text)
+                    }
                 }
                 // New file / folder and rename: typed right in the explorer tree when it is on
                 // screen, else in a dialog card in the middle.

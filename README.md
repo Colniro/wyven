@@ -65,6 +65,8 @@ Benutzerhandbuch (englisch): [docs/guide.md](docs/guide.md), Plugins: [docs/plug
 - **Explorer mit Symbolen**: Ordner- und Dateisymbole in der Farbe des Dateityps; geänderte Dateien in Git-Farben mit Buchstabe (M, U …) rechts, Ordner mit Änderungen mit Punkt.
 - **Benannte Layouts** (`Alt → w → l`): die aktuelle Fensteranordnung unter einem Namen speichern („Coding“, „Debugging“ …) und per Klick oder Enter umschalten; `Entf` löscht eines.
 - **Farbvorschau** in CSS, HTML und XAML: ein kleines Quadrat vor `#1E90FF`, `#fff`, `rgb(…)`; ein Klick darauf (oder `Alt → c → k`) öffnet eine Farbpalette, ein Klick ersetzt die Farbe.
+- **Farbige Kommentare**: `// !` rot, `// ?` blau, `// TODO` orange, `// *` grün, `// NOTE` cyan, `////` abgeblendet (Einstellung „Colored comments“).
+- **Laufzeit-Prüfungen für C#**: Wyven warnt (gelb unterstrichen) bei Code, der baut, aber beim Ausführen abstürzen würde – falsches Entpacken (`object o = 5; (long)o`), `int.Parse("abc")` oder zu große Zahlen, Division durch 0, ein Index hinter dem Array-Ende, ein Zugriff direkt nach `= null` (Einstellung „Runtime checks (C#)“).
 - **Klammerpaare in Farben** nach Verschachtelung (Gold, Orchidee, Blau; ohne Gegenstück rot) und **Einrückungslinien** (beides abschaltbar).
 - **Startseite** statt eines leeren „Untitled“-Tabs: Neue Datei, Datei/Ordner öffnen, Suchfeld, Einstellungen, Tastenkürzel, die letzten Projekte und ein paar Tipps; einfach lostippen startet eine neue Datei.
 - **Dateien und Ordner ins Fenster ziehen**: Dateien öffnen sich als Tabs, Ordner kommen in den Workspace.

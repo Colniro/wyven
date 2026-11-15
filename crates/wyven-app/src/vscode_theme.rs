@@ -352,6 +352,7 @@ fn build(label: &str, raw: &Raw) -> Theme {
         parameter: None,
         operator: None,
         tag: None,
+        groups: None,
         keyword: syntax_color(&["keyword.control", "keyword", "storage.type", "storage.modifier"], base.syntax.keyword),
         type_: syntax_color(
             &["entity.name.type", "entity.name.class", "support.type", "support.class", "storage.type"],

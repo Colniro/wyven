@@ -440,6 +440,8 @@ pub struct EditorView {
     pub indent_guides: bool,
     /// Small squares showing colors written in CSS, HTML and XAML.
     pub color_preview: bool,
+    /// Comments with a marker (`// !`, `// TODO` …) in colors of their own.
+    pub colored_comments: bool,
     /// Bracket depth at the start of each line (for the document version), up to some line.
     bracket_depths: Option<(u64, Vec<i32>)>,
 }
@@ -627,6 +629,7 @@ impl EditorView {
             bracket_colors: true,
             indent_guides: true,
             color_preview: true,
+            colored_comments: true,
             bracket_depths: None,
         };
         view.refresh_disk_mtime();
@@ -657,6 +660,7 @@ impl EditorView {
         v.bracket_colors = self.bracket_colors;
         v.indent_guides = self.indent_guides;
         v.color_preview = self.color_preview;
+        v.colored_comments = self.colored_comments;
         v.scale = self.scale;
         v.git_base = self.git_base.clone();
         v.mirror_from(self);
@@ -1981,6 +1985,10 @@ impl EditorView {
                 None => Vec::new(),
             };
             let mut span_i = 0;
+            // The color of the current span when it depends on its text (keyword groups,
+            // comment markers): worked out once per span.
+            let mut span_color: Option<(usize, Rgba)> = None;
+            let colored_comments = self.colored_comments;
             for (li, &line) in lines[seg..seg_end].iter().enumerate() {
             let mut depth = line_depth.get(seg + li).copied().unwrap_or(0);
             // CodeLens row above the line, indented like it.
@@ -2046,8 +2054,23 @@ impl EditorView {
                 while span_i < spans.len() && spans[span_i].end <= byte {
                     span_i += 1;
                 }
-                let hl = spans.get(span_i).filter(|s| s.start <= byte).map(|s| s.highlight);
+                let span = spans.get(span_i).filter(|s| s.start <= byte);
+                let hl = span.map(|s| s.highlight);
                 let mut color = hl.map_or(theme.text, |h| theme.highlight(h));
+                if let Some(s) = span
+                    && matches!(s.highlight, wyven_syntax::Highlight::Comment | wyven_syntax::Highlight::Keyword | wyven_syntax::Highlight::Type)
+                {
+                    color = match span_color {
+                        Some((i, c)) if i == span_i => c,
+                        _ => {
+                            let end = s.end.min(rope.len_bytes());
+                            let text = rope.byte_slice(s.start.min(end)..end).to_string();
+                            let c = theme.token_color(s.highlight, &text, colored_comments);
+                            span_color = Some((span_i, c));
+                            c
+                        }
+                    };
+                }
                 // Bracket pairs in colors by depth (not inside strings and comments).
                 if pair_colors && !matches!(hl, Some(wyven_syntax::Highlight::String | wyven_syntax::Highlight::Comment)) {
                     match ch {

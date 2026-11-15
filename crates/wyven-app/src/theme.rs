@@ -27,6 +27,82 @@ pub struct SyntaxColors {
     pub parameter: Option<Rgba>,
     pub operator: Option<Rgba>,
     pub tag: Option<Rgba>,
+    /// Keywords and built-in types in groups of their own (control flow, modifiers, number,
+    /// text and truth types …); `None`: all keywords alike.
+    pub groups: Option<KeywordGroups>,
+}
+
+/// Colors for groups of keywords, so similar words look alike and different kinds differ.
+pub struct KeywordGroups {
+    /// if, else, for, while, return, try, throw, await …
+    pub control: Rgba,
+    /// public, private, static, readonly, async, override …
+    pub modifier: Rgba,
+    /// Whole numbers: int, long, short, byte, uint …
+    pub integer: Rgba,
+    /// Numbers with a fraction: float, double, decimal (close to `integer`).
+    pub fraction: Rgba,
+    /// string, char
+    pub text: Rgba,
+    /// bool
+    pub truth: Rgba,
+    /// void, object, var, dynamic
+    pub other_type: Rgba,
+}
+
+impl KeywordGroups {
+    /// The group color of a keyword or built-in type (C#, also TypeScript/Rust words).
+    pub fn color_of(&self, word: &str) -> Option<Rgba> {
+        Some(match word {
+            "if" | "else" | "for" | "foreach" | "while" | "do" | "switch" | "case" | "default" | "break" | "continue"
+            | "return" | "goto" | "try" | "catch" | "finally" | "throw" | "yield" | "await" | "when" | "loop" | "match"
+            | "in" => self.control,
+            "public" | "private" | "protected" | "internal" | "static" | "readonly" | "const" | "virtual" | "override"
+            | "abstract" | "sealed" | "async" | "extern" | "unsafe" | "volatile" | "partial" | "required" | "pub"
+            | "mut" | "export" => self.modifier,
+            "int" | "uint" | "long" | "ulong" | "short" | "ushort" | "byte" | "sbyte" | "nint" | "nuint" | "i8" | "i16"
+            | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" | "isize" | "number" | "bigint" => self.integer,
+            "float" | "double" | "decimal" | "f32" | "f64" => self.fraction,
+            "string" | "char" | "str" | "String" => self.text,
+            "bool" | "boolean" => self.truth,
+            "void" | "object" | "var" | "dynamic" | "any" | "unknown" => self.other_type,
+            _ => return None,
+        })
+    }
+}
+
+/// Comments with a marker get a color of their own (like the "Better Comments" extension):
+/// `// !` or FIXME/BUG red, `// ?` blue, `// TODO` orange, `// *` green, `// NOTE` cyan,
+/// `////` dimmed.
+pub fn comment_marker_color(theme: &Theme, comment: &str) -> Option<Rgba> {
+    let t = comment.trim_start();
+    let body = t
+        .strip_prefix("///")
+        .or_else(|| t.strip_prefix("//"))
+        .or_else(|| t.strip_prefix("/*"))
+        .or_else(|| t.strip_prefix("<!--"))
+        .or_else(|| t.strip_prefix('#'))
+        .or_else(|| t.strip_prefix("--"))
+        .unwrap_or(t);
+    if body.starts_with("//") {
+        return Some(theme.gutter_text);
+    }
+    let body = body.trim_start_matches('*').trim_start();
+    let starts = |w: &str| body.len() >= w.len() && body[..w.len()].eq_ignore_ascii_case(w);
+    let raw = t.trim_start_matches(['/', '#', '-', '<', '!']).trim_start();
+    if raw.starts_with('!') || starts("FIXME") || starts("BUG") || starts("HACK") {
+        Some(theme.error)
+    } else if raw.starts_with('?') {
+        Some(theme.info)
+    } else if starts("TODO") {
+        Some(theme.warning)
+    } else if t.trim_start_matches(['/', '#']).trim_start().starts_with('*') && !t.starts_with("/*") {
+        Some(theme.git_added)
+    } else if starts("NOTE") || starts("INFO") {
+        Some(theme.accent)
+    } else {
+        None
+    }
 }
 
 pub struct Theme {
@@ -145,6 +221,7 @@ impl Theme {
                 parameter: None,
                 operator: None,
                 tag: None,
+                groups: None,
             },
         }
     }
@@ -153,14 +230,14 @@ impl Theme {
     /// background, with extra colors for variables, parameters, operators and punctuation, a
     /// faint cyan glow on the current line, and cyan as accent.
     pub const fn andromeda() -> Self {
-        const CYAN: Rgba = Rgba::rgb(0x00, 0xE8, 0xC6);
-        const PURPLE: Rgba = Rgba::rgb(0xC7, 0x4D, 0xED);
-        const PINK: Rgba = Rgba::rgb(0xFF, 0x00, 0xAA);
-        const YELLOW: Rgba = Rgba::rgb(0xFF, 0xE6, 0x6D);
-        const GREEN: Rgba = Rgba::rgb(0x96, 0xE0, 0x72);
-        const ORANGE: Rgba = Rgba::rgb(0xF3, 0x9C, 0x12);
-        const RED: Rgba = Rgba::rgb(0xEE, 0x5D, 0x43);
-        const BLUE: Rgba = Rgba::rgb(0x7C, 0xB7, 0xFF);
+        const CYAN: Rgba = Rgba::rgb(0x5E, 0xD4, 0xC0);
+        const PURPLE: Rgba = Rgba::rgb(0xB4, 0x86, 0xD8);
+        const PINK: Rgba = Rgba::rgb(0xE0, 0x6F, 0xB4);
+        const YELLOW: Rgba = Rgba::rgb(0xE6, 0xD3, 0x8A);
+        const GREEN: Rgba = Rgba::rgb(0xA4, 0xCF, 0x8C);
+        const ORANGE: Rgba = Rgba::rgb(0xE0, 0xA6, 0x6A);
+        const RED: Rgba = Rgba::rgb(0xDE, 0x83, 0x72);
+        const BLUE: Rgba = Rgba::rgb(0x8C, 0xB6, 0xE6);
         const TEXT: Rgba = Rgba::rgb(0xD5, 0xCE, 0xD9);
         Self {
             name: "andromeda",
@@ -229,13 +306,25 @@ impl Theme {
                 number: ORANGE,
                 constant: RED,
                 property: BLUE,
-                punctuation: Rgba::rgb(0xE0, 0x9F, 0xC6),
+                punctuation: Rgba::rgb(0xB9, 0xA2, 0xB4),
                 attribute: ORANGE,
                 link: BLUE,
                 variable: Some(CYAN),
-                parameter: Some(Rgba::rgb(0xFF, 0xB8, 0x6C)),
+                parameter: Some(Rgba::rgb(0xE8, 0xBC, 0x92)),
                 operator: Some(RED),
-                tag: Some(Rgba::rgb(0xF9, 0x26, 0x72)),
+                tag: Some(Rgba::rgb(0xE0, 0x73, 0x95)),
+                groups: Some(KeywordGroups {
+                    // Control flow pink-violet, modifiers a quiet lavender, declarations purple.
+                    control: Rgba::rgb(0xD4, 0x84, 0xC0),
+                    modifier: Rgba::rgb(0x98, 0x8F, 0xBF),
+                    // Built-in types in teal-blue shades: whole and fractional numbers close
+                    // together, text greener, truth warmer.
+                    integer: Rgba::rgb(0x6F, 0xBF, 0xD6),
+                    fraction: Rgba::rgb(0x84, 0xAE, 0xDE),
+                    text: Rgba::rgb(0x7C, 0xC9, 0xAE),
+                    truth: Rgba::rgb(0xD6, 0xA6, 0x82),
+                    other_type: Rgba::rgb(0xA3, 0xAD, 0xC2),
+                }),
             },
         }
     }
@@ -298,6 +387,7 @@ impl Theme {
                 parameter: None,
                 operator: None,
                 tag: None,
+                groups: None,
             },
         }
     }
@@ -354,6 +444,18 @@ impl Theme {
 
     pub fn display_name(&self) -> &'static str {
         THEMES.iter().find(|(n, _)| *n == self.name).map_or(self.name, |(_, d)| d)
+    }
+
+    /// The color of a token: like [`Theme::highlight`], with keyword groups and colored
+    /// comments (`text`: the token's text).
+    pub fn token_color(&self, h: Highlight, text: &str, colored_comments: bool) -> Rgba {
+        match h {
+            Highlight::Comment if colored_comments => comment_marker_color(self, text).unwrap_or(self.syntax.comment),
+            Highlight::Keyword | Highlight::Type => {
+                self.syntax.groups.as_ref().and_then(|g| g.color_of(text.trim())).unwrap_or_else(|| self.highlight(h))
+            }
+            _ => self.highlight(h),
+        }
     }
 
     pub fn highlight(&self, h: Highlight) -> Rgba {

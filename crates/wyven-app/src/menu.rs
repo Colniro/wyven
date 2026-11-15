@@ -30,7 +30,18 @@ pub struct Menu {
     width_cells: usize,
     /// Where the list was drawn (x, y, width, row height), for the mouse.
     drawn: std::cell::Cell<(f32, f32, f32, f32)>,
+    /// Shown as a dialog card in the middle (questions like "install the update?"): the title's
+    /// first line bold, the rest as wrapped text, the items as buttons.
+    card: bool,
+    card_title: Option<Buffer>,
+    card_text: Option<Buffer>,
+    card_items: Vec<Buffer>,
+    /// The first button's top and the buttons' height (card mode).
+    card_rows: std::cell::Cell<(f32, f32)>,
 }
+
+/// Width of a dialog card in cells.
+const CARD_CELLS: f32 = 64.0;
 
 impl Menu {
     pub fn new(fs: &mut FontSystem, font: FontMetrics, title: &str, items: Vec<(String, Value)>) -> Self {
@@ -42,12 +53,35 @@ impl Menu {
             buffer: line_buffer(fs, font),
             width_cells: 0,
             drawn: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
+            card: false,
+            card_title: None,
+            card_text: None,
+            card_items: Vec::new(),
+            card_rows: std::cell::Cell::new((0.0, 0.0)),
         }
+    }
+
+    /// Shows the menu as a dialog card in the middle of the window.
+    pub fn card(mut self) -> Self {
+        self.card = true;
+        self
+    }
+
+    pub fn is_card(&self) -> bool {
+        self.card
     }
 
     /// The item under the mouse (index into `items`).
     pub fn row_at(&self, x: f32, y: f32) -> Option<usize> {
         let (mx, my, w, lh) = self.drawn.get();
+        if self.card {
+            let (top, row_h) = self.card_rows.get();
+            if row_h <= 0.0 || x < mx || x >= mx + w || y < top {
+                return None;
+            }
+            let i = ((y - top) / row_h) as usize;
+            return (i < self.items.len() && y < top + i as f32 * row_h + row_h * 0.85).then_some(i);
+        }
         if lh <= 0.0 || x < mx || x >= mx + w || y < my + lh {
             return None;
         }
@@ -105,6 +139,10 @@ impl Menu {
     }
 
     pub fn prepare(&mut self, fs: &mut FontSystem, theme: &Theme, family: &str) {
+        if self.card {
+            self.prepare_card(fs, family);
+            return;
+        }
         let attrs = Attrs::new().family(Family::Name(family));
         let mut spans: Vec<(String, Rgba)> = vec![(format!("{}\n", self.title), theme.panel_dim)];
         let mut width = self.title.chars().count();
@@ -124,6 +162,93 @@ impl Menu {
             None,
         );
         self.buffer.shape_until_scroll(fs, false);
+    }
+
+    fn prepare_card(&mut self, fs: &mut FontSystem, family: &str) {
+        if self.card_title.is_some() && self.card_items.len() == self.items.len() {
+            return;
+        }
+        let m = self.buffer.metrics();
+        let font_w = m.font_size * 0.6;
+        let width = CARD_CELLS * font_w;
+        let attrs = Attrs::new().family(Family::Name(family));
+        let bold = attrs.clone().weight(wyven_render::Weight::BOLD);
+        let (head, rest) = self.title.split_once('\n').unwrap_or((self.title.as_str(), ""));
+        let mut mk = |t: &str, a: &Attrs, wrap: bool| {
+            let mut b = Buffer::new(fs, m);
+            b.set_wrap(if wrap { Wrap::WordOrGlyph } else { Wrap::None });
+            if wrap {
+                b.set_size(Some(width), None);
+            }
+            b.set_text(t, a, Shaping::Advanced, None);
+            b.shape_until_scroll(fs, false);
+            b
+        };
+        self.card_title = Some(mk(head, &bold, true));
+        self.card_text = (!rest.trim().is_empty()).then(|| mk(rest.trim(), &attrs, true));
+        let labels: Vec<String> = self.items.iter().map(|(l, _)| l.clone()).collect();
+        self.card_items = labels.iter().map(|l| mk(l, &attrs, false)).collect();
+    }
+
+    /// The menu as a dialog card in the upper middle: title, text, the items as buttons (the
+    /// selected one filled in the accent color).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_card<'a>(
+        &'a self,
+        theme: &Theme,
+        font: FontMetrics,
+        window: (f32, f32),
+        scale: f32,
+        cards: &mut Vec<wyven_render::RoundRect>,
+        text: &mut Vec<TextBlock<'a>>,
+    ) {
+        let (Some(title), true) = (&self.card_title, self.card) else { return };
+        let pad = (font.cell_w * 2.0).round();
+        let height = |b: &Buffer| b.layout_runs().last().map_or(font.line_h, |r| r.line_top + r.line_height);
+        let inner_w = (CARD_CELLS * font.cell_w).min(window.0 - 40.0 - 2.0 * pad);
+        let w = inner_w + 2.0 * pad;
+        let title_h = height(title);
+        let text_h = self.card_text.as_ref().map_or(0.0, |b| height(b) + font.line_h * 0.5);
+        let row_h = (font.line_h * 1.9).round();
+        let h = pad + title_h + font.line_h * 0.6 + text_h + self.items.len() as f32 * row_h + pad * 0.6;
+        let x = ((window.0 - w) / 2.0).round();
+        let y = (window.1 * 0.22).round().min((window.1 - h).max(0.0));
+        let r = (10.0 * scale).round();
+        let shadow = wyven_render::Rgba(0, 0, 0, if theme.dark { 0x99 } else { 0x40 });
+        cards.push(wyven_render::RoundRect::shadow(x, y, w, h, shadow, r, (18.0 * scale).round()));
+        cards.push(wyven_render::RoundRect::new(x, y, w, h, theme.accent.with_alpha(0xA0), r));
+        cards.push(wyven_render::RoundRect::new(x + 1.5, y + 1.5, w - 3.0, h - 3.0, theme.popup_bg, r - 1.0));
+        // A colored band on top, like the key popup.
+        cards.push(wyven_render::RoundRect::new(x + pad, y + (5.0 * scale).round(), (34.0 * scale).round(), (3.0 * scale).round(), theme.accent, 2.0 * scale));
+        let mut ty = y + pad;
+        text.push(TextBlock { buffer: title, x: x + pad, y: ty, color: theme.panel_text, clip: None });
+        ty += title_h + font.line_h * 0.6;
+        if let Some(b) = &self.card_text {
+            text.push(TextBlock { buffer: b, x: x + pad, y: ty, color: theme.panel_dim, clip: None });
+            ty += text_h;
+        }
+        self.card_rows.set((ty, row_h));
+        self.drawn.set((x + pad, y, inner_w, font.line_h));
+        let bh = (row_h * 0.82).round();
+        for (i, label) in self.card_items.iter().enumerate() {
+            let by = ty + i as f32 * row_h;
+            let on = i == self.selected;
+            let br = (6.0 * scale).round();
+            if on {
+                cards.push(wyven_render::RoundRect::new(x + pad, by, inner_w, bh, theme.accent, br));
+            } else {
+                cards.push(wyven_render::RoundRect::new(x + pad, by, inner_w, bh, theme.divider, br));
+                cards.push(wyven_render::RoundRect::new(x + pad + 1.0, by + 1.0, inner_w - 2.0, bh - 2.0, theme.popup_bg, br - 1.0));
+            }
+            let lw = label.layout_runs().next().map_or(0.0, |run| run.line_w);
+            text.push(TextBlock {
+                buffer: label,
+                x: (x + pad + (inner_w - lw) / 2.0).round(),
+                y: by + (bh - font.line_h) / 2.0,
+                color: if on { theme.background } else { theme.panel_text },
+                clip: None,
+            });
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
