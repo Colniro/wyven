@@ -334,9 +334,11 @@ impl Document {
             '[' => Some(']'),
             '{' => Some('}'),
             '"' | '\'' | '`' => Some(c),
+            // Generic types (List<…>): decided per cursor below.
+            '<' => Some('>'),
             _ => None,
         };
-        let is_closer = matches!(c, ')' | ']' | '}' | '"' | '\'' | '`');
+        let is_closer = matches!(c, ')' | ']' | '}' | '"' | '\'' | '`' | '>');
         if close.is_none() && !is_closer {
             self.insert(text);
             return;
@@ -356,10 +358,30 @@ impl Document {
             // Step over a closing character that is already there (a quote only at the end of a
             // string: before `"abc"` a typed quote is a new one).
             let at_string_end = !quote || prev.is_some_and(|p| !p.is_whitespace() && !matches!(p, '(' | '[' | '{' | ',' | '='));
+            // `>` steps over only the end of an open `<…>` on this line (not in `->`, `=>`, `a > b`).
+            let line_start = rope.line_to_char(rope.char_to_line(r.from()));
+            let open_angles = || {
+                let before: String = rope.slice(line_start..r.from()).to_string();
+                before.matches('<').count() > before.matches('>').count()
+            };
+            if c == '>' && !(next == Some('>') && open_angles()) {
+                return plain;
+            }
             if is_closer && next == Some(c) && at_string_end {
                 return (Change { start: r.from(), end: r.from(), text: String::new() }, 1);
             }
             let Some(cl) = close else { return plain };
+            // `<` pairs only after a type name: `List<|>`, `Dictionary<`, not `i < 5`.
+            if c == '<' {
+                let ident: Vec<char> = (line_start..r.from())
+                    .rev()
+                    .map(|i| rope.char(i))
+                    .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+                    .collect();
+                if !ident.last().is_some_and(|ch| ch.is_uppercase()) {
+                    return plain;
+                }
+            }
             // Brackets also pair right before a closing quote: "insert into T (|" .
             let free_after = next.is_none_or(|n| n.is_whitespace() || matches!(n, ')' | ']' | '}' | ';' | ',' | '.' | ':' | '>'))
                 || (!quote && matches!(next, Some('"' | '\'' | '`')));
@@ -521,7 +543,7 @@ impl Document {
             // Between an empty pair `(|)`: both go.
             if pos < rope.len_chars() {
                 let (a, b) = (rope.char(pos - 1), rope.char(pos));
-                if matches!((a, b), ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('\'', '\'') | ('`', '`')) {
+                if matches!((a, b), ('(', ')') | ('[', ']') | ('{', '}') | ('<', '>') | ('"', '"') | ('\'', '\'') | ('`', '`')) {
                     return (Change { start: pos - 1, end: pos + 1, text: String::new() }, 0);
                 }
             }
@@ -1260,5 +1282,28 @@ mod tests {
         assert_eq!(del(line, start), "Console.WriteLine(Hallo Welt\");");
         // An empty string: both quotes.
         assert_eq!(del("f(\"\");", 3), "f();");
+    }
+
+    #[test]
+    fn angle_brackets_close_after_type_names() {
+        let typed = |text: &str, at: usize, c: &str| {
+            let mut d = Document::from_str(text);
+            d.set_cursor(at);
+            d.type_char(c);
+            (d.text().to_string(), d.selection().primary().head)
+        };
+        assert_eq!(typed("var l = new List;", 16, "<"), ("var l = new List<>;".into(), 17));
+        assert_eq!(typed("Dictionary<string, List>", 23, "<"), ("Dictionary<string, List<>>".into(), 24));
+        // Comparisons and lowercase names stay single.
+        assert_eq!(typed("if (i ) {}", 6, "<"), ("if (i <) {}".into(), 7));
+        assert_eq!(typed("x", 1, "<"), ("x<".into(), 2));
+        // Typing > at the end of List<int> steps over it; elsewhere it is a plain >.
+        assert_eq!(typed("List<int>", 8, ">"), ("List<int>".into(), 9));
+        assert_eq!(typed("a = b>", 5, ">"), ("a = b>>".into(), 6));
+        // Backspace in an empty <> removes both.
+        let mut d = Document::from_str("List<>");
+        d.set_cursor(5);
+        d.backspace();
+        assert_eq!(d.text().to_string(), "List");
     }
 }

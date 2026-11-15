@@ -65,7 +65,7 @@ pub const ITEMS: &[Item] = &[
     item("Editor", E, "brace_new_line", "Brace on its own line", "Enter after a { at the end of a line moves the brace down to a line of its own (Visual Studio's C# style).",
          Kind::Choice(&[("csharp", "C# only"), ("all", "All languages"), ("off", "Off")])),
     item("Editor", E, "hints_delay_ms", "Inlay hint delay", "New hints (like \"value:\") appear this many milliseconds after you stop typing.", num(0.0, 10000.0, 500.0, 0)),
-    item("Editor", E, "auto_close", "Close brackets and quotes", "Typing ( [ { \" ' also inserts the closing partner; typing it again steps over it.", Kind::Toggle),
+    item("Editor", E, "auto_close", "Close brackets and quotes", "Typing ( [ { \" ' (and < after a type name like List) also inserts the closing partner; typing it again steps over it.", Kind::Toggle),
     item("Editor", E, "auto_save", "Auto save", "Changed files save by themselves shortly after you stop typing (Ctrl+Shift+S saves all at once).", Kind::Toggle),
     item("Editor", E, "auto_save_delay_ms", "Auto save delay", "Milliseconds after the last change.", num(300.0, 10000.0, 100.0, 0)),
     item("Editor", E, "auto_complete", "Suggestions while typing", "Ctrl+Space always shows them.", Kind::Toggle),

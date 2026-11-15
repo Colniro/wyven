@@ -447,27 +447,38 @@ pub struct EditorView {
 /// An empty error range in front of a line's code (servers put "; expected" there, at the start
 /// of the next line) moves to the end of the code on the line above, where the `;` is missing.
 pub fn place_empty_diagnostic(rope: &Rope, start: usize, end: usize) -> (usize, usize) {
-    let start = start.min(rope.len_chars());
-    if end > start {
-        return (start, end);
+    let len = rope.len_chars();
+    let (start, end) = (start.min(len), end.min(len).max(start.min(len)));
+    let line_text_end = |l: usize| {
+        let ls = rope.line_to_char(l);
+        let text = rope.line(l);
+        ls + (0..text.len_chars()).rev().find(|&i| !text.char(i).is_whitespace()).map_or(0, |i| i + 1)
+    };
+    let blank_before = |pos: usize| {
+        let ls = rope.line_to_char(rope.char_to_line(pos));
+        (ls..pos).all(|i| rope.char(i).is_whitespace())
+    };
+    // A range from the end of a line to the start of the next one (over the line break only):
+    // it belongs at the end of the first line.
+    let (sl, el) = (rope.char_to_line(start), rope.char_to_line(end));
+    if el > sl && blank_before(end) && start >= line_text_end(sl) {
+        let at = line_text_end(sl).max(start);
+        return (at, at);
     }
+    // Empty, or only blanks in front of a line's code: the end of the code line above.
+    let only_blanks = (start..end).all(|i| rope.char(i).is_whitespace());
     let line = rope.char_to_line(start);
-    let line_start = rope.line_to_char(line);
-    let in_front = (line_start..start).all(|i| rope.char(i).is_whitespace());
-    if !in_front || line == 0 {
-        return (start, start);
+    if !only_blanks || !blank_before(start) || line == 0 {
+        return (start, end);
     }
     // The nearest line above with code; after its last non-blank character.
     for l in (line.saturating_sub(5)..line).rev() {
-        let ls = rope.line_to_char(l);
-        let text = rope.line(l);
-        let len = text.chars().count();
-        if let Some(last) = (0..len).rev().find(|&i| !text.char(i).is_whitespace()) {
-            let pos = ls + last + 1;
+        let pos = line_text_end(l);
+        if pos > rope.line_to_char(l) {
             return (pos, pos);
         }
     }
-    (start, start)
+    (start, end)
 }
 
 /// Where a byte position (start or end of a range) is after an edit.
@@ -2762,6 +2773,10 @@ mod tests {
         // A real range or one inside code stays.
         assert_eq!(super::place_empty_diagnostic(&rope, next + 4, next + 9), (next + 4, next + 9));
         assert_eq!(super::place_empty_diagnostic(&rope, next + 6, next + 6), (next + 6, next + 6));
+        // Over the line break (end of the code line to the start of the next one).
+        assert_eq!(super::place_empty_diagnostic(&rope, end_of_code, next), (end_of_code, end_of_code));
+        // Only the indentation of the next line.
+        assert_eq!(super::place_empty_diagnostic(&rope, next, next + 4), (end_of_code, end_of_code));
     }
 
     #[test]

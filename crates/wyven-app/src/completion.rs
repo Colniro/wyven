@@ -113,7 +113,10 @@ impl Completion {
                     let (f, p) = (it.filter.to_lowercase(), prefix.to_lowercase());
                     // Exactly the typed word first (a snippet before the keyword), then prefixes.
                     let control = CONTROL.iter().position(|c| *c == f);
-                    let bonus = if f == p {
+                    // The type expected after `new` (sorted "\u{1}…") comes first.
+                    let bonus = if it.sort.starts_with('\u{1}') && f.starts_with(&p) {
+                        5000
+                    } else if f == p {
                         if it.snippet { 4000 } else { 3000 }
                     } else if let (Some(rank), true) = (control, f.starts_with(&p)) {
                         // `i` → if, `w` → while: one Tab away.

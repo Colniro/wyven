@@ -4042,6 +4042,22 @@ impl State {
                     // The built-in snippets of the language join the list (not after a dot:
                     // `connection.op` wants members, not `prop`).
                     let after_dot = anchor > 0 && anchor <= rope.len_chars() && rope.char(anchor - 1) == '.';
+                    // C#: the declared type after `new` on top of the list.
+                    if ed.language_name() == "C#" && head <= rope.len_chars() {
+                        let line_start = rope.line_to_char(rope.char_to_line(head));
+                        let before = rope.slice(line_start..head).to_string();
+                        if let Some((ty, _)) = snippets::expected_new_type(&before) {
+                            items.insert(0, lsp::CompletionItem {
+                                label: ty.clone(),
+                                detail: "expected type".into(),
+                                insert: format!("{ty}()"),
+                                filter: ty.clone(),
+                                sort: "\u{1}".into(),
+                                snippet: false,
+                                kind: 7,
+                            });
+                        }
+                    }
                     for sn in snippets::for_language(ed.language_name(), &self.user_snippets).into_iter().filter(|_| !after_dot) {
                         if !items.iter().any(|i| i.label == sn.prefix && i.snippet) {
                             items.push(lsp::CompletionItem {
@@ -7368,6 +7384,18 @@ impl State {
         }
         self.update_completion(typed.as_deref(), trigger);
         self.editor_mut().set_ghost(None);
+        // C#: after `new` in `Queue<char> q = new `, the declared type as gray text (Tab).
+        if typing && self.completion.is_none() && self.editor().language_name() == "C#" {
+            let ed = self.editor();
+            let head = ed.doc.selection().primary().head;
+            let rope = ed.doc.text();
+            let line_start = rope.line_to_char(rope.char_to_line(head));
+            let before = rope.slice(line_start..head).to_string();
+            if let Some((ty, typed)) = snippets::expected_new_type(&before) {
+                let rest: String = ty.chars().skip(typed).collect();
+                self.editor_mut().set_ghost(Some((head, format!("{rest}()"))));
+            }
+        }
         if typing {
             self.last_typed = Some(Instant::now());
             if let Some(h) = &mut self.held_hints {

@@ -597,6 +597,25 @@ impl Parser<'_> {
     }
 }
 
+/// After `new` in a declaration with its type written out (`Queue<char> letters = new Qu`):
+/// that type (with its type arguments) and how much of it is typed already. Like Visual Studio,
+/// which offers `Queue<char>()` there.
+pub fn expected_new_type(before: &str) -> Option<(String, usize)> {
+    use std::sync::OnceLock;
+    static P: OnceLock<regex::Regex> = OnceLock::new();
+    let re = P.get_or_init(|| {
+        regex::Regex::new(r"(?P<ty>[A-Za-z_][\w.]*(?:<[^=;()]*>)?)\??\s+[A-Za-z_]\w*\s*(?:\{[^}]*\}\s*)?=\s*new\s+(?P<typed>[A-Za-z_][\w.<>, ]*)?$").unwrap()
+    });
+    let c = re.captures(before)?;
+    let ty = c.name("ty")?.as_str().to_string();
+    if matches!(ty.as_str(), "var" | "return" | "new") || ty.chars().next().is_some_and(|ch| ch.is_lowercase()) && !ty.contains('<') {
+        // `var x = new …` names no type; `int x = new` is no use.
+        return None;
+    }
+    let typed = c.name("typed").map_or("", |m| m.as_str());
+    (ty.starts_with(typed) && typed.len() < ty.len()).then(|| (ty, typed.chars().count()))
+}
+
 /// The class (or struct/record/interface) the position is in: the last declaration before it.
 pub fn enclosing_class(text_before: &str) -> Option<String> {
     let words: Vec<&str> = text_before.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).collect();
@@ -663,6 +682,17 @@ mod tests {
 
     fn vars() -> Vars {
         Vars { file_base: "Person".into(), file_name: "Person.cs".into(), class_name: "Person".into() }
+    }
+
+    #[test]
+    fn the_declared_type_is_offered_after_new() {
+        assert_eq!(expected_new_type("        Queue<char> letters = new "), Some(("Queue<char>".into(), 0)));
+        assert_eq!(expected_new_type("Queue<char> letters = new Que"), Some(("Queue<char>".into(), 3)));
+        assert_eq!(expected_new_type("private Dictionary<string, List<int>> map = new "), Some(("Dictionary<string, List<int>>".into(), 0)));
+        assert_eq!(expected_new_type("public List<string> Names { get; set; } = new "), Some(("List<string>".into(), 0)));
+        assert_eq!(expected_new_type("var x = new "), None);
+        assert_eq!(expected_new_type("Queue<char> q = new Stack"), None);
+        assert_eq!(expected_new_type("Queue<char> q = new Queue<char>"), None);
     }
 
     #[test]
