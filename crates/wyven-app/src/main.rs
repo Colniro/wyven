@@ -7565,6 +7565,17 @@ impl State {
                 self.window.request_redraw();
                 return;
             }
+        // Dialog cards (update, close, discard, delete): a click on a button chooses it, a
+        // click beside the card leaves the question open.
+        if let Overlay::Update(m) | Overlay::ConfirmClose(m) | Overlay::ConfirmDiscard(m, ..) | Overlay::ConfirmDelete(m, _) = &self.overlay
+            && m.is_card()
+        {
+            if button == MouseButton::Left {
+                let (x, y) = (self.mouse.x, self.mouse.y);
+                self.theme_list_click(x, y);
+            }
+            return;
+        }
         if let Overlay::Context(menu) = &self.overlay {
             let action = (button == MouseButton::Left).then(|| menu.row_at(self.mouse.x, self.mouse.y)).flatten().and_then(|r| menu.action(r));
             let inside = menu.contains(self.mouse.x, self.mouse.y);
