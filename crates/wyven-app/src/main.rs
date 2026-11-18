@@ -43,6 +43,7 @@ mod tasks;
 mod welcome;
 mod snippets;
 mod terminal;
+mod vyre_link;
 mod theme;
 mod vscode_theme;
 mod workspace;
@@ -782,7 +783,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 state.window.request_redraw();
             }
-            WindowEvent::ModifiersChanged(m) => state.modifiers = m.state(),
+            WindowEvent::ModifiersChanged(m) => {
+                state.modifiers = m.state();
+                // Releasing Ctrl ends the link highlight in the terminal.
+                if !state.modifiers.control_key() && state.terminal.link_hover.take().is_some() {
+                    state.window.request_redraw();
+                }
+            }
             // Files and folders dropped from Windows: files open as tabs, folders join the workspace.
             WindowEvent::HoveredFile(_) => state.show("Drop to open (folders join the workspace)"),
             WindowEvent::HoveredFileCancelled => state.message = None,
@@ -928,7 +935,16 @@ impl ApplicationHandler<UserEvent> for App {
                     && !welcome
                     && ((state.diff.is_none() && !state.editor().settings_page && state.editor().text_contains(x, y))
                         || (state.panel_shown(Panel::Terminal) && state.terminal.screen_contains(x, y)));
+                // Ctrl over a URL in the terminal: underline it, pointer cursor (Ctrl+click → Vyre).
+                let link = (state.modifiers.control_key() && state.panel_shown(Panel::Terminal))
+                    .then(|| state.terminal.link_at(x, y))
+                    .flatten();
+                if link != state.terminal.link_hover {
+                    state.terminal.link_hover = link;
+                    state.window.request_redraw();
+                }
                 let icon = match edge {
+                    _ if state.terminal.link_hover.is_some() => Ci::Pointer,
                     Some(dock::Dir::Column) => Ci::RowResize,
                     Some(dock::Dir::Row) => Ci::ColResize,
                     None if over_text => Ci::Text,
@@ -7687,6 +7703,15 @@ impl State {
                 }
                 return;
             }
+            // Ctrl+click on a URL: open it in Vyre next to Wyven.
+            if button == MouseButton::Left
+                && self.modifiers.control_key()
+                && let Some((_, _, _, url)) = self.terminal.link_at(x, y) {
+                    let msg = vyre_link::open(&url, &self.window);
+                    self.terminal.link_hover = None;
+                    self.show(msg);
+                    return;
+                }
             if button == MouseButton::Left {
                 let (row, col) = self.terminal.cell_at(x, y);
                 if let Some(t) = self.terminal.term() {

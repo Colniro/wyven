@@ -126,6 +126,8 @@ pub struct TerminalPanel {
     pub dirty: bool,
     /// Mouse is dragging a selection.
     pub selecting: bool,
+    /// URL under the mouse while Ctrl is held: (row, first column, end column, url).
+    pub link_hover: Option<(usize, usize, usize, String)>,
     /// Extra environment for the shell (e.g. the port Claude Code uses to find Wyven).
     pub env: Vec<(String, String)>,
 }
@@ -162,6 +164,7 @@ impl TerminalPanel {
             snapshot: None,
             dirty: true,
             selecting: false,
+            link_hover: None,
             env: Vec::new(),
         }
     }
@@ -391,6 +394,21 @@ impl TerminalPanel {
         (row.min(rows - 1), col.min(cols - 1))
     }
 
+    /// The URL under a window position, if any: (row, first column, end column, url).
+    pub fn link_at(&self, x: f32, y: f32) -> Option<(usize, usize, usize, String)> {
+        if !self.screen_contains(x, y) {
+            return None;
+        }
+        let (row, col) = self.cell_at(x, y);
+        let line = self.snapshot.as_ref()?.lines.get(row)?;
+        // One character per column (wide characters leave a spacer cell, kept as a space).
+        let text: String = line.iter().map(|c| if c.spacer { ' ' } else { c.c }).collect();
+        crate::vyre_link::find_links(&text)
+            .into_iter()
+            .find(|(start, end, _)| col >= *start && col < *end)
+            .map(|(start, end, url)| (row, start, end, url))
+    }
+
     /// Keys while the terminal has focus. Everything goes to the shell except copy/paste.
     pub fn key(&mut self, event: &KeyEvent, mods: ModifiersState) -> KeyResult {
         let Some(t) = self.terms.get(self.active) else { return KeyResult::Handled };
@@ -594,6 +612,17 @@ impl TerminalPanel {
                     let u = Rgba::rgb(cell.fg[0], cell.fg[1], cell.fg[2]);
                     over.push(Quad { x: c.x + i as f32 * cw, y: y + lh - 2.0 * scale, w: cw, h: scale.max(1.0), color: u });
                 }
+                // Ctrl held over a URL: underline it in the link color (Ctrl+click opens it in Vyre).
+                if let Some((lr, start, end, _)) = &self.link_hover
+                    && *lr == r {
+                        over.push(Quad {
+                            x: c.x + *start as f32 * cw,
+                            y: y + lh - 2.0 * scale,
+                            w: (*end - *start) as f32 * cw,
+                            h: scale.max(1.0),
+                            color: theme.syntax.link,
+                        });
+                    }
             }
             if let Some((r, col, style)) = snap.cursor {
                 let (x, y) = (c.x + col as f32 * cw, c.y + r as f32 * lh);

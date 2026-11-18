@@ -4820,6 +4820,7 @@ dependencies = [
  "ureq",
  "uuid",
  "wasmi",
+ "windows-sys 0.61.2",
  "winit",
  "wyven-ai",
  "wyven-buffer",
