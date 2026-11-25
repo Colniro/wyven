@@ -48,6 +48,8 @@ pub struct KeywordGroups {
     pub truth: Rgba,
     /// void, object, var, dynamic
     pub other_type: Rgba,
+    /// Collections: List, Dictionary, HashSet, Queue, Stack, arrays …
+    pub collection: Rgba,
 }
 
 impl KeywordGroups {
@@ -66,6 +68,15 @@ impl KeywordGroups {
             "string" | "char" | "str" | "String" => self.text,
             "bool" | "boolean" => self.truth,
             "void" | "object" | "var" | "dynamic" | "any" | "unknown" => self.other_type,
+            // C# (System.Collections …), TypeScript and Rust collections.
+            "List" | "Dictionary" | "HashSet" | "SortedSet" | "Queue" | "Stack" | "LinkedList" | "SortedList"
+            | "SortedDictionary" | "PriorityQueue" | "ArrayList" | "Hashtable" | "Array" | "ObservableCollection"
+            | "Collection" | "KeyValuePair" | "IEnumerable" | "ICollection" | "IList" | "IDictionary" | "ISet"
+            | "IReadOnlyList" | "IReadOnlyCollection" | "IReadOnlyDictionary" | "IReadOnlySet"
+            | "ConcurrentDictionary" | "ConcurrentQueue" | "ConcurrentStack" | "ConcurrentBag" | "ImmutableList"
+            | "ImmutableArray" | "ImmutableDictionary" | "ImmutableHashSet" | "BitArray" | "Map" | "Set"
+            | "WeakMap" | "WeakSet" | "ReadonlyArray" | "Vec" | "VecDeque" | "HashMap" | "BTreeMap" | "BTreeSet"
+            | "BinaryHeap" => self.collection,
             _ => return None,
         })
     }
@@ -322,6 +333,7 @@ impl Theme {
                     text: Rgba::rgb(0x6E, 0xD6, 0xA4),       // mint (string, char)
                     truth: Rgba::rgb(0xF5, 0xA3, 0xB8),      // light rose (bool, like true/false)
                     other_type: Rgba::rgb(0x9A, 0x8C, 0xF8), // indigo (void, object, var)
+                    collection: Rgba::rgb(0xFF, 0xE1, 0x4D), // bright yellow (List, Dictionary)
                 }),
             },
         }

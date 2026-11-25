@@ -456,12 +456,25 @@ impl Document {
         });
     }
 
-    /// Tab: inserts indentation, or indents all lines when a selection spans several lines.
+    /// Tab: inserts indentation, or indents all lines when a selection spans several lines or
+    /// covers all the text of its line (a whole line selected is moved, not replaced).
     pub fn indent(&mut self) {
-        let multiline = self.selection.ranges().iter().any(|r| {
-            !r.is_empty() && self.rope.char_to_line(r.from()) != self.rope.char_to_line(r.to())
+        let rope = &self.rope;
+        let whole_lines = self.selection.ranges().iter().any(|r| {
+            if r.is_empty() {
+                return false;
+            }
+            let line = rope.char_to_line(r.from());
+            if line != rope.char_to_line(r.to()) {
+                return true;
+            }
+            // From at most the first non-blank character to at least the end of the text.
+            let start = rope.line_to_char(line);
+            let text_start = start + rope.line(line).chars().take_while(|c| *c == ' ' || *c == '\t').count();
+            let text_end = start + line_len_chars(rope, line);
+            text_end > text_start && r.from() <= text_start && r.to() >= text_end
         });
-        if multiline {
+        if whole_lines {
             self.indent_lines();
             return;
         }
@@ -1032,6 +1045,23 @@ mod tests {
         assert_eq!(b.is_dirty(), a.is_dirty());
         assert_eq!(b.selection().primary().head, 5, "own cursor stays");
         assert!(!b.undo(), "no foreign history");
+    }
+
+    #[test]
+    fn tab_on_a_whole_selected_line_indents_it() {
+        // The whole line, with and without its indentation.
+        let mut d = doc("    let x = 1;\nfoo\n", &[(0, 14)]);
+        d.indent();
+        assert_eq!(d.text().to_string(), "        let x = 1;\nfoo\n");
+        let r = d.selection().primary();
+        assert_eq!((r.from(), r.to()), (0, 18), "the line stays selected");
+        let mut d = doc("    let x = 1;\nfoo\n", &[(4, 14)]);
+        d.indent();
+        assert_eq!(d.text().to_string(), "        let x = 1;\nfoo\n");
+        // Part of a line is still replaced by the indentation.
+        let mut d = doc("let x = 1;\n", &[(4, 5)]);
+        d.indent();
+        assert_eq!(d.text().to_string(), "let      = 1;\n");
     }
 
     fn doc(text: &str, ranges: &[(usize, usize)]) -> Document {

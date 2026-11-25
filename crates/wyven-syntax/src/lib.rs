@@ -531,6 +531,15 @@ impl Syntax {
             let Some(highlight) = self.config.styles[cap.index as usize] else { continue };
             let (s, e) = (cap.node.start_byte(), cap.node.end_byte());
             if last == Some((s, e)) {
+                // The first capture of a node wins, except the catch-all `(identifier)
+                // @variable` (first in the C# query): a more specific one (type, method …)
+                // replaces it, so `List`, class names and the like get their own color.
+                if let Some(prev) = spans.last_mut()
+                    && prev.highlight == Highlight::Variable
+                    && highlight != Highlight::Variable
+                {
+                    prev.highlight = highlight;
+                }
                 continue;
             }
             last = Some((s, e));
@@ -574,6 +583,22 @@ mod tests {
     fn all_queries_compile() {
         let names: Vec<_> = registry().iter().map(|c| c.name).collect();
         assert_eq!(names.len(), definitions().len(), "loaded: {names:?}");
+    }
+
+    #[test]
+    fn csharp_type_names_are_types_not_variables() {
+        let config = language_for_path(Path::new("Program.cs")).unwrap();
+        let src = "class Kitchen { void M() { List<string> names = new List<string>(); } }";
+        let rope = Rope::from_str(src);
+        let syntax = Syntax::new(config, &rope);
+        let spans = flatten(&syntax.highlights(&rope, 0..rope.len_bytes()), 0..rope.len_bytes());
+        let at = |word: &str| {
+            let b = src.find(word).unwrap();
+            spans.iter().find(|s| s.start <= b && b < s.end).map(|s| s.highlight)
+        };
+        assert_eq!(at("Kitchen"), Some(Highlight::Type));
+        assert_eq!(at("List"), Some(Highlight::Type));
+        assert_eq!(at("names"), Some(Highlight::Variable));
     }
 
     #[test]
