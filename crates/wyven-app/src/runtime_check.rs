@@ -27,7 +27,7 @@ fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
 
 /// The text with comments and the contents of strings and chars replaced by spaces (same
 /// length), so patterns do not match inside them. Quotes stay.
-fn code_only(text: &str) -> String {
+pub(crate) fn code_only(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;

@@ -36,6 +36,7 @@ mod palette;
 mod popup;
 mod problems;
 mod runtime_check;
+mod event_handler;
 mod search_panel;
 mod settings;
 mod settings_page;
@@ -542,6 +543,8 @@ struct State {
     hover_problems: Option<(f32, f32, String)>,
     /// Where the problems in the hover tooltip are (its "Quick Fix …" line asks there).
     hover_fix: Option<usize>,
+    /// C#: after `button1.Click +=`, the handler Tab would add (tab, cursor position).
+    handler_offer: Option<(usize, usize, event_handler::Offer)>,
 
     settings: settings::Settings,
     settings_mtime: Option<std::time::SystemTime>,
@@ -1403,6 +1406,7 @@ impl State {
             wheel_rest: (0.0, 0.0),
             hover_problems: None,
             hover_fix: None,
+            handler_offer: None,
             latency: InputLatency::default(),
             started,
             first_frame: None,
@@ -6272,6 +6276,16 @@ impl State {
         let Some((pos, text)) = self.editor().active_ghost().map(|(p, t)| (p, t.to_string())) else { return false };
         let plain = !mods.control_key() && !mods.alt_key() && !mods.shift_key();
         let ctrl_only = mods.control_key() && !mods.alt_key() && !mods.shift_key();
+        if matches!(key, Key::Named(NamedKey::Tab))
+            && plain
+            && let Some((tab, at, offer)) = self.handler_offer.take()
+            && tab == self.active
+            && at == pos
+            && offer.ghost == text
+        {
+            self.accept_handler(pos, &offer);
+            return true;
+        }
         let piece = match key {
             Key::Named(NamedKey::Tab) if plain => text.clone(),
             Key::Named(NamedKey::ArrowRight) if ctrl_only => ai::next_word(&text).to_string(),
@@ -6294,6 +6308,29 @@ impl State {
         self.ai.cancel();
         self.window.request_redraw();
         true
+    }
+
+    /// Tab after `button1.Click +=`: the handler's name, and its method below the current one
+    /// (one undo step); the cursor stays after the `;`.
+    fn accept_handler(&mut self, pos: usize, offer: &event_handler::Offer) {
+        let ed = self.editor_mut();
+        let rope = ed.doc.text();
+        let text = rope.to_string();
+        let cursor_byte = rope.char_to_byte(pos);
+        let mut changes = vec![wyven_buffer::Change { start: pos, end: pos, text: offer.ghost.clone() }];
+        let unit = ed.doc.indent_unit.clone();
+        if let Some((at_byte, method)) = event_handler::stub(&text, cursor_byte, offer, &unit) {
+            let at = rope.byte_to_char(at_byte);
+            changes.push(wyven_buffer::Change { start: at, end: at, text: method });
+        }
+        ed.set_ghost(None);
+        ed.doc.apply_changes(changes);
+        ed.doc.set_cursor(pos + offer.ghost.chars().count());
+        ed.after_edit();
+        ed.ensure_cursor_visible();
+        self.lsp_after_edit();
+        self.ai.cancel();
+        self.window.request_redraw();
     }
 
     fn ai_toggle(&mut self) {
@@ -7502,13 +7539,33 @@ impl State {
                 self.editor_mut().set_ghost(Some((head, format!("{rest}()"))));
             }
         }
+        // C#: after `button1.Click +=`, the handler's name as gray text (Tab adds the method).
+        self.handler_offer = None;
+        let mut handler_offered = false;
+        if typing && self.completion.is_none() && self.editor().language_name() == "C#" {
+            let ed = self.editor();
+            let head = ed.doc.selection().primary().head;
+            let rope = ed.doc.text();
+            let line_start = rope.line_to_char(rope.char_to_line(head));
+            let before = rope.slice(line_start..head).to_string();
+            if before.trim_end().ends_with("+=") {
+                let text_before = rope.slice(..head).to_string();
+                if let Some(o) = event_handler::offer(&before, &text_before) {
+                    let ghost = o.ghost.clone();
+                    self.handler_offer = Some((self.active, head, o));
+                    self.editor_mut().set_ghost(Some((head, ghost)));
+                    handler_offered = true;
+                }
+            }
+        }
         if typing {
             self.last_typed = Some(Instant::now());
             if let Some(h) = &mut self.held_hints {
                 h.0 = Instant::now() + Duration::from_millis(self.settings.editor.hints_delay_ms.min(30_000));
             }
         }
-        if typing && self.focus == Focus::Editor {
+        // The handler offer stays; an AI suggestion would replace it.
+        if typing && self.focus == Focus::Editor && !handler_offered {
             self.ai.schedule(Instant::now());
         } else {
             self.ai.cancel();
@@ -7642,6 +7699,14 @@ impl State {
                 let (x, y) = (self.mouse.x, self.mouse.y);
                 self.theme_list_click(x, y);
             }
+            return;
+        }
+        // Theme list, layout list, color picker: a left click picks (and the theme is stored);
+        // any other click counts as a click beside the list (the theme preview goes back).
+        if matches!(self.overlay, Overlay::Themes(_) | Overlay::Layouts(_) | Overlay::ColorPick(_)) {
+            let (x, y) = if button == MouseButton::Left { (self.mouse.x, self.mouse.y) } else { (-1.0, -1.0) };
+            let _ = self.theme_list_click(x, y) || self.color_pick_click(x, y);
+            self.window.request_redraw();
             return;
         }
         // The quick action list (Ctrl+. / Quick Fix): a click on a row runs it.
