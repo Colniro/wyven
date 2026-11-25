@@ -4788,7 +4788,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "wyven-ai"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "keyring",
  "log",
@@ -4798,7 +4798,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-app"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "arboard",
  "embed-resource",
@@ -4836,7 +4836,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-buffer"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "ropey",
  "unicode-width",
@@ -4844,7 +4844,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-dap"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "env_logger",
  "log",
@@ -4853,7 +4853,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-git"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "log",
  "similar",
@@ -4861,7 +4861,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-lsp"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "log",
  "serde_json",
@@ -4871,7 +4871,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-plugin"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "serde",
  "serde_json",
@@ -4879,7 +4879,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-render"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "glyphon",
  "log",
@@ -4889,7 +4889,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-search"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "ignore",
  "log",
@@ -4898,7 +4898,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-syntax"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "log",
  "streaming-iterator",
@@ -4918,7 +4918,7 @@ dependencies = [
 
 [[package]]
 name = "wyven-terminal"
-version = "0.5.10"
+version = "0.5.11"
 dependencies = [
  "alacritty_terminal",
  "log",
