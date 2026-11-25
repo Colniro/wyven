@@ -78,6 +78,10 @@ pub enum Event {
     OrganizeActions(Vec<Value>),
     Status,
     Message(String),
+    /// A missing using to add by itself (title like "using System.Text.Json;").
+    AutoImport { edit: Value, what: String },
+    /// No single using for that name: the next missing name can be asked about.
+    NoAutoImport(PathBuf),
 }
 
 enum Pending {
@@ -90,6 +94,9 @@ enum Pending {
     Rename { new_name: String },
     CodeActions,
     Resolve { title: String },
+    /// Quick fixes for a missing name: a single "using …;" is applied by itself.
+    AutoImport { path: PathBuf },
+    ResolveAutoImport { title: String },
     InlayHints { path: PathBuf, version: u64 },
     CodeLens { path: PathBuf, version: u64 },
     LensResolve { path: PathBuf, version: u64, start: Value },
@@ -178,6 +185,18 @@ fn config_value(section: &str) -> Value {
     }
     let key = section.rsplit('.').next().unwrap_or("");
     if section.contains("inlay_hints") && INLAY_HINT_SETTINGS.contains(&key) { json!(true) } else { Value::Null }
+}
+
+/// A quick fix that adds a using (Roslyn tags it "AddImport"; its title is the using line).
+pub fn is_add_import(action: &Value) -> bool {
+    let tagged = action["data"]["CustomTags"].as_array().is_some_and(|t| t.iter().any(|t| t == "AddImport"));
+    let title = action["title"].as_str().unwrap_or("");
+    tagged && title.starts_with("using ") && title.ends_with(';')
+}
+
+/// Problems that a using can fix: name, type or (extension) method not found.
+pub fn missing_name_code(code: &str) -> bool {
+    matches!(code, "CS0103" | "CS0246" | "CS1061" | "CS1935" | "CS0234" | "CS0119")
 }
 
 /// Which language server a file needs.
@@ -669,6 +688,20 @@ impl LanguageServer {
         self.pending.insert(id, Pending::CodeActions);
     }
 
+    /// Asks for the fixes of one "name not found" problem (`diagnostic` as the server sent it);
+    /// if exactly one is a using, it comes back as [`Event::AutoImport`].
+    pub fn auto_import(&mut self, path: &Path, diagnostic: Value) {
+        let id = self.client.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": { "uri": path_to_uri(path) },
+                "range": diagnostic["range"].clone(),
+                "context": { "diagnostics": [diagnostic], "only": ["quickfix"], "triggerKind": 1 }
+            }),
+        );
+        self.pending.insert(id, Pending::AutoImport { path: path.to_path_buf() });
+    }
+
     /// "Find all references" at a char position.
     pub fn references(&mut self, path: &Path, rope: &Rope, pos: usize) {
         let mut params = Self::position_params(path, rope, pos);
@@ -935,6 +968,31 @@ impl LanguageServer {
                     .unwrap_or_default();
                 events.push(Event::CodeActions(actions));
             }
+            Pending::AutoImport { path } => {
+                // Only when exactly one namespace fits (`Timer` has several: no guessing).
+                let mut usings: Vec<&Value> = Vec::new();
+                for a in value.as_array().into_iter().flatten() {
+                    if is_add_import(a) && !usings.iter().any(|u| u["title"] == a["title"]) {
+                        usings.push(a);
+                    }
+                }
+                if let [one] = usings[..] {
+                    let title = one["title"].as_str().unwrap_or("using").to_string();
+                    if one["edit"].is_object() {
+                        events.push(Event::AutoImport { edit: one["edit"].clone(), what: title });
+                    } else {
+                        let id = self.client.request("codeAction/resolve", one.clone());
+                        self.pending.insert(id, Pending::ResolveAutoImport { title });
+                    }
+                } else {
+                    events.push(Event::NoAutoImport(path));
+                }
+            }
+            Pending::ResolveAutoImport { title } => {
+                if value["edit"].is_object() {
+                    events.push(Event::AutoImport { edit: value["edit"].clone(), what: title });
+                }
+            }
             Pending::Resolve { title } => {
                 if value["edit"].is_object() {
                     events.push(Event::WorkspaceEdit { edit: value["edit"].clone(), what: title });
@@ -1199,6 +1257,17 @@ mod tests {
             .collect();
         doc.apply_changes(changes);
         doc.text().to_string()
+    }
+
+    #[test]
+    fn only_using_fixes_count_as_auto_imports() {
+        let using = json!({ "title": "using System.Text.Json;", "data": { "CustomTags": ["x", "AddImport"] } });
+        let qualify = json!({ "title": "System.Text.Json.JsonSerializer", "data": { "CustomTags": ["FullyQualify"] } });
+        let generate = json!({ "title": "Generate variable 'X'", "command": {} });
+        assert!(is_add_import(&using));
+        assert!(!is_add_import(&qualify));
+        assert!(!is_add_import(&generate));
+        assert!(missing_name_code("CS0103") && missing_name_code("CS0246") && !missing_name_code("CS1002"));
     }
 
     #[test]

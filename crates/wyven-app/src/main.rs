@@ -545,6 +545,12 @@ struct State {
     hover_fix: Option<usize>,
     /// C#: after `button1.Click +=`, the handler Tab would add (tab, cursor position).
     handler_offer: Option<(usize, usize, event_handler::Offer)>,
+    /// Missing names already asked about for a using (file and message), so a name that
+    /// several namespaces offer is not asked about again and again.
+    auto_import_asked: HashSet<(PathBuf, String)>,
+    /// One using at a time (each changes the top of the file): until when to wait for the
+    /// answer before asking about the next name.
+    auto_import_wait: Option<Instant>,
 
     settings: settings::Settings,
     settings_mtime: Option<std::time::SystemTime>,
@@ -1407,6 +1413,8 @@ impl State {
             hover_problems: None,
             hover_fix: None,
             handler_offer: None,
+            auto_import_asked: HashSet::new(),
+            auto_import_wait: None,
             latency: InputLatency::default(),
             started,
             first_frame: None,
@@ -4159,6 +4167,11 @@ impl State {
                 },
                 lsp::Event::OrganizeActions(actions) => self.organize_actions(actions),
                 lsp::Event::CodeActions(actions) => self.show_actions("Quick actions (digit or Enter, Esc)", actions),
+                lsp::Event::AutoImport { edit, what } => self.apply_auto_import(&edit, &what),
+                lsp::Event::NoAutoImport(path) => {
+                    self.auto_import_wait = None;
+                    self.ask_auto_import(&path);
+                }
                 lsp::Event::InlayHints { path, version, hints } => {
                     if let Some(i) = self.tab_for(&path)
                         && self.tabs[i].doc.version() == version
@@ -4383,7 +4396,28 @@ impl State {
         };
     }
 
+    /// C#: asks about the next missing name whether a using fixes it (one at a time; the
+    /// answer adds it by itself or lets the next name be asked).
+    fn ask_auto_import(&mut self, path: &Path) {
+        if !self.settings.editor.auto_usings
+            || self.auto_import_wait.is_some_and(|t| Instant::now() < t)
+            || !self.tabs.iter().any(|t| t.doc.path() == Some(path) && t.language_name() == "C#")
+        {
+            return;
+        }
+        let Some(server) = self.servers.values_mut().find(|s| s.diagnostics.contains_key(path)) else { return };
+        let list = server.diagnostics.get(path).cloned().unwrap_or_default();
+        for d in list.iter().filter(|d| d.severity == 1 && lsp::missing_name_code(&d.code)) {
+            if self.auto_import_asked.insert((path.to_path_buf(), d.message.clone())) {
+                server.auto_import(path, d.raw.clone());
+                self.auto_import_wait = Some(Instant::now() + Duration::from_secs(5));
+                return;
+            }
+        }
+    }
+
     fn apply_diagnostics(&mut self, path: &Path) {
+        self.ask_auto_import(path);
         let list = self.servers.values().find_map(|s| s.diagnostics.get(path).cloned()).unwrap_or_default();
         if let Some(t) = self.tabs.iter_mut().find(|t| t.doc.path() == Some(path)) {
             let rope = t.doc.text();
@@ -4721,6 +4755,24 @@ impl State {
         }
         self.show(msg);
         self.editor_mut().ensure_cursor_visible();
+    }
+
+    /// A missing using, added by itself: the view keeps showing the same code (the lines
+    /// added at the top do not push it down).
+    fn apply_auto_import(&mut self, edit: &wyven_lsp::Value, what: &str) {
+        // The next name is asked about when the server has checked the changed file.
+        self.auto_import_wait = None;
+        // Lines moved: names asked about before (with old places) may be asked again.
+        self.auto_import_asked.clear();
+        let lines_before = self.editor().doc.text().len_lines();
+        let scrolled = self.editor().scroll_line > 0;
+        self.apply_workspace_edit(edit, &format!("Added {what}"));
+        let ed = self.editor_mut();
+        let added = ed.doc.text().len_lines().saturating_sub(lines_before);
+        if scrolled {
+            ed.scroll_line += added;
+        }
+        self.window.request_redraw();
     }
 
     /// F8: jumps to the next problem after the cursor (wraps around).

@@ -2392,7 +2392,13 @@ impl EditorView {
                 _ => theme.info,
             };
             let (l0, c0) = col_of(d.start);
-            let (l1, c1) = col_of(d.end.max(d.start + 1).min(rope.len_chars()));
+            // An empty range (a missing `;` at the end of a line) is one cell wide, on its own
+            // line, not on the line break (which would put it at the start of the next line).
+            let (l1, c1) = if d.end <= d.start {
+                (l0, c0 + 1)
+            } else {
+                col_of(d.end.min(rope.len_chars()))
+            };
             for line in l0.max(first)..=l1.min(last.saturating_sub(1)) {
                 let s0 = if line == l0 { c0 } else { 0 };
                 let e0 = if line == l1 {
