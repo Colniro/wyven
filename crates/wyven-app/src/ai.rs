@@ -96,6 +96,20 @@ impl AiAssist {
         Some(self.last_typed.map_or_else(Instant::now, |t| t + self.show_after))
     }
 
+    /// Ctrl+Shift+Space: no waiting for the pause after typing; a held suggestion shows at
+    /// once, a new one as soon as it is ready. Ok, or why not.
+    pub fn skip_wait(&mut self) -> Result<(), &'static str> {
+        if !self.enabled {
+            return Err("AI suggestions are off (Alt a t turns them on).");
+        }
+        if !self.usable() {
+            return Err("No AI model is set up (Alt a m / Alt a k).");
+        }
+        self.paused_until = None;
+        self.last_typed = None;
+        Ok(())
+    }
+
     /// The held suggestion, once the pause is long enough.
     pub fn take_due(&mut self, now: Instant) -> Option<(usize, u64, usize, String)> {
         if self.show_due().is_some_and(|due| now >= due) { self.held.take() } else { None }

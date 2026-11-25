@@ -51,6 +51,8 @@ pub enum Command {
     /// Opens the search field with a mode prefix ("" files, ">" commands, "@" symbols, ":" line).
     OpenPalette(&'static str),
     TriggerCompletion,
+    /// Ctrl+Shift+Space: an AI suggestion right away, without the pause after typing.
+    AiNow,
     GotoDefinition,
     /// Shift+F12: all places that use the symbol at the cursor.
     FindReferences,
@@ -178,6 +180,7 @@ impl Keymap {
                 NamedKey::F2 => Rename,
                 NamedKey::F8 => NextProblem,
                 NamedKey::F3 => FindNext { back: shift },
+                NamedKey::Space if ctrl && shift => AiNow,
                 NamedKey::Space if ctrl => TriggerCompletion,
                 _ => return None,
             },
@@ -197,7 +200,8 @@ impl Keymap {
                 ("a", false) => SelectAll,
                 ("d", false) => AddNextOccurrence,
                 ("l", true) => DeleteLines,
-                ("#", false) => Comment(CommentMode::Toggle),
+                // Ctrl+# or Ctrl+§ (Swiss keyboards: the key left of 1).
+                ("#" | "§", false) => Comment(CommentMode::Toggle),
                 ("+", _) => FontSize(1),
                 ("-", false) => FontSize(-1),
                 ("0", false) => FontSizeReset,

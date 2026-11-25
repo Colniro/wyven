@@ -246,6 +246,11 @@ pub struct Tooltip {
     pub x: f32,
     pub y: f32,
     size: (f32, f32),
+    /// A clickable line at the bottom (e.g. "Quick Fix …"), with its width.
+    link: Option<(Buffer, f32)>,
+    /// Where it was drawn last: the box and the link row (x, y, w, h).
+    drawn: std::cell::Cell<[f32; 4]>,
+    link_drawn: std::cell::Cell<[f32; 4]>,
 }
 
 impl Tooltip {
@@ -263,19 +268,65 @@ impl Tooltip {
             w = w.max(run.line_w);
             lines += 1;
         }
-        Self { buffer, x, y, size: (w, lines.max(1) as f32 * font.line_h) }
+        Self {
+            buffer,
+            x,
+            y,
+            size: (w, lines.max(1) as f32 * font.line_h),
+            link: None,
+            drawn: std::cell::Cell::new([0.0; 4]),
+            link_drawn: std::cell::Cell::new([0.0; 4]),
+        }
+    }
+
+    /// Adds a clickable line below the text (accent colored, under a thin line).
+    pub fn with_link(mut self, fs: &mut FontSystem, font: FontMetrics, family: &str, label: &str) -> Self {
+        let mut b = Buffer::new(fs, Metrics::new(font.size, font.line_h));
+        b.set_size(None, None);
+        b.set_text(label, &Attrs::new().family(Family::Name(family)), Shaping::Advanced, None);
+        b.shape_until_scroll(fs, false);
+        let w = b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
+        self.size.0 = self.size.0.max(w);
+        self.link = Some((b, w));
+        self
+    }
+
+    pub fn has_link(&self) -> bool {
+        self.link.is_some()
+    }
+
+    /// The mouse is on the tooltip (or right beside it, on the way there).
+    pub fn contains(&self, x: f32, y: f32, margin: f32) -> bool {
+        let [bx, by, w, h] = self.drawn.get();
+        w > 0.0 && x >= bx - margin && x < bx + w + margin && y >= by - margin && y < by + h + margin
+    }
+
+    /// The mouse is on the clickable line.
+    pub fn link_at(&self, x: f32, y: f32) -> bool {
+        let [bx, by, w, h] = self.link_drawn.get();
+        self.link.is_some() && w > 0.0 && x >= bx && x < bx + w && y >= by && y < by + h
     }
 
     pub fn draw<'a>(&'a self, theme: &Theme, font: FontMetrics, window: (f32, f32), scale: f32, quads: &mut Vec<Quad>, text: &mut Vec<TextBlock<'a>>) {
         let pad = font.cell_w;
-        let (w, h) = (self.size.0 + 2.0 * pad, self.size.1 + pad);
+        let link_h = if self.link.is_some() { (font.line_h * 1.5).round() } else { 0.0 };
+        let (w, h) = (self.size.0 + 2.0 * pad, self.size.1 + pad + link_h);
         let x = self.x.min(window.0 - w - 4.0).max(0.0);
-        // Above the mouse if possible, so the hovered word stays visible.
-        let y = if self.y - h - font.line_h * 0.5 > 0.0 { self.y - h - font.line_h * 0.5 } else { self.y + font.line_h };
+        // Above the mouse if possible, so the hovered word stays visible; close to it, so the
+        // mouse can move onto it (the link) without leaving the word for long.
+        let gap = (font.line_h * 0.3).round();
+        let y = if self.y - h - gap > 0.0 { self.y - h - gap } else { self.y + font.line_h };
         let b = scale.round().max(1.0);
         quads.push(Quad { x: x - b, y: y - b, w: w + 2.0 * b, h: h + 2.0 * b, color: theme.popup_border });
         quads.push(Quad { x, y, w, h, color: theme.popup_bg });
         text.push(TextBlock { buffer: &self.buffer, x: x + pad, y: y + pad * 0.5, color: theme.panel_text, clip: None });
+        self.drawn.set([x - b, y - b, w + 2.0 * b, h + 2.0 * b]);
+        if let Some((buf, lw)) = &self.link {
+            let ly = y + h - link_h;
+            quads.push(Quad { x, y: ly, w, h: b, color: theme.popup_border });
+            text.push(TextBlock { buffer: buf, x: x + pad, y: ly + (link_h - font.line_h) / 2.0, color: theme.accent, clip: None });
+            self.link_drawn.set([x, ly, (lw + 2.0 * pad).max(w), link_h]);
+        }
     }
 }
 

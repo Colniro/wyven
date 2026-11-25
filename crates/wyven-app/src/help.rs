@@ -21,6 +21,8 @@ const BASICS: &[(&str, &str)] = &[
     ("Ctrl+Click / F12", "Go to definition"),
     ("Shift+F12 / click on \"N references\"", "List all references"),
     ("Ctrl+Space", "Autocomplete"),
+    ("Ctrl+Shift+Space", "AI suggestion now (no waiting)"),
+    ("Ctrl+§ / Ctrl+#", "Comment / uncomment the selected lines"),
     ("Ctrl+K, Ctrl+I", "Symbol info (or rest the mouse briefly)"),
     ("F2", "Rename"),
     ("Ctrl+.", "Quick actions"),

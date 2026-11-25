@@ -116,6 +116,7 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Go to: All References", "Shift+F12", K(C::FindReferences)),
         ("Go to: Implementation", "Ctrl+F12", K(C::GotoImplementation)),
         ("Code: Organize Usings / Imports", "Alt c o", K(C::OrganizeUsings)),
+        ("AI: Suggest Now", "Ctrl+Shift+Space", K(C::AiNow)),
         ("AI: Suggestions On / Off", "Alt a t", Ld(L::AiToggle)),
         ("AI: Switch Model (Haiku / Sonnet)", "Alt a m", Ld(L::AiModel)),
         ("AI: Set API Key …", "Alt a k", Ld(L::AiKey)),
@@ -175,7 +176,7 @@ pub fn commands() -> Vec<(&'static str, &'static str, Cmd)> {
         ("Edit: Delete Line", "Ctrl+Shift+L", K(C::DeleteLines)),
         ("Edit: Comment", "Ctrl+K Ctrl+C", K(C::Comment(CommentMode::Add))),
         ("Edit: Uncomment", "Ctrl+K Ctrl+U", K(C::Comment(CommentMode::Remove))),
-        ("Edit: Toggle Comment", "Ctrl+#", K(C::Comment(CommentMode::Toggle))),
+        ("Edit: Toggle Comment", "Ctrl+§ / Ctrl+#", K(C::Comment(CommentMode::Toggle))),
     ]
 }
 

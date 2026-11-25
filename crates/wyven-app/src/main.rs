@@ -540,6 +540,8 @@ struct State {
     wheel_rest: (f32, f32),
     /// Errors shown in the hover tooltip (where, text), to combine with the server's info.
     hover_problems: Option<(f32, f32, String)>,
+    /// Where the problems in the hover tooltip are (its "Quick Fix …" line asks there).
+    hover_fix: Option<usize>,
 
     settings: settings::Settings,
     settings_mtime: Option<std::time::SystemTime>,
@@ -800,6 +802,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(t) = &state.tooltip
                     && state.activity.hover.is_none()
                     && state.dock_bar.hover.is_none()
+                    && !(t.has_link() && t.contains(x, y, 4.0))
                     && ((t.x - x).abs() > 12.0 || (t.y - y).abs() > 12.0) {
                         state.tooltip = None;
                         state.window.request_redraw();
@@ -831,9 +834,10 @@ impl ApplicationHandler<UserEvent> for App {
                 if matches!(state.overlay, Overlay::ColorPick(_)) {
                     state.window.request_redraw();
                 }
-                // Dialog cards: the button under the mouse is the selected one.
-                if let Overlay::Update(m) | Overlay::ConfirmClose(m) | Overlay::ConfirmDiscard(m, ..) | Overlay::ConfirmDelete(m, _) = &mut state.overlay
-                    && m.is_card()
+                // Dialog cards and the quick action list: the row under the mouse is selected.
+                let list = matches!(state.overlay, Overlay::Menu(_));
+                if let Overlay::Update(m) | Overlay::ConfirmClose(m) | Overlay::ConfirmDiscard(m, ..) | Overlay::ConfirmDelete(m, _) | Overlay::Menu(m) = &mut state.overlay
+                    && (m.is_card() || list)
                     && let Some(i) = m.row_at(x, y)
                     && i != m.selected_index()
                 {
@@ -945,6 +949,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 let icon = match edge {
                     _ if state.terminal.link_hover.is_some() => Ci::Pointer,
+                    _ if state.tooltip.as_ref().is_some_and(|t| t.link_at(x, y)) => Ci::Pointer,
                     Some(dock::Dir::Column) => Ci::RowResize,
                     Some(dock::Dir::Row) => Ci::ColResize,
                     None if over_text => Ci::Text,
@@ -1397,6 +1402,7 @@ impl State {
             hover_rest: None,
             wheel_rest: (0.0, 0.0),
             hover_problems: None,
+            hover_fix: None,
             latency: InputLatency::default(),
             started,
             first_frame: None,
@@ -4196,12 +4202,11 @@ impl State {
                 lsp::Event::References(refs) => self.show_references(refs),
                 lsp::Event::Hover { text, x, y } => {
                     // Below the errors at the same place, if any.
-                    let text = match &self.hover_problems {
-                        Some((px, py, p)) if *px == x && *py == y => format!("{p}\n\n{text}"),
-                        _ => text,
+                    let (text, fix) = match &self.hover_problems {
+                        Some((px, py, p)) if *px == x && *py == y => (format!("{p}\n\n{text}"), true),
+                        _ => (text, false),
                     };
-                    let fs = self.renderer.font_system();
-                    self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &text, x, y));
+                    self.tooltip = Some(self.hover_tooltip(&text, x, y, fix));
                 }
                 lsp::Event::Format { path, version, edits } => {
                     let Some(i) = self.tabs.iter().position(|t| t.doc.path() == Some(path.as_path())) else { continue };
@@ -4446,8 +4451,8 @@ impl State {
                     // server's info joins them when it answers).
                     let problems = self.editor().diagnostics_at(pos);
                     if !problems.is_empty() {
-                        let fs = self.renderer.font_system();
-                        self.tooltip = Some(completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, &problems, x, y));
+                        self.hover_fix = Some(pos);
+                        self.tooltip = Some(self.hover_tooltip(&problems, x, y, true));
                         self.hover_problems = Some((x, y, problems));
                     } else {
                         self.hover_problems = None;
@@ -4540,6 +4545,28 @@ impl State {
                 }
             }
         }
+    }
+
+    /// The tooltip when the mouse rests on code; with problems there (and a language server),
+    /// a clickable "Quick Fix …" line at the bottom, like in VS Code.
+    fn hover_tooltip(&mut self, text: &str, x: f32, y: f32, problems: bool) -> completion::Tooltip {
+        let fix = problems && self.editor().lsp_kind().is_some();
+        let fs = self.renderer.font_system();
+        let t = completion::Tooltip::new(fs, self.ui_font, &self.family, &self.theme, text, x, y);
+        if fix { t.with_link(fs, self.ui_font, &self.family, "\u{1F4A1} Quick Fix …   (Ctrl+.)") } else { t }
+    }
+
+    /// "Quick Fix …" in the hover tooltip: the cursor goes to the problem, then the quick
+    /// actions there open (as with Ctrl+.).
+    fn hover_quick_fix(&mut self) {
+        let Some(pos) = self.hover_fix.take() else { return };
+        self.tooltip = None;
+        let ed = self.editor_mut();
+        let pos = pos.min(ed.doc.text().len_chars());
+        ed.doc.set_cursor(pos);
+        ed.ensure_cursor_visible();
+        self.request_quick_actions();
+        self.window.request_redraw();
     }
 
     /// Strg+.: asks the server what can be done at the cursor or selection.
@@ -6105,6 +6132,22 @@ impl State {
         self.ai.start(tab, version, head, ctx);
     }
 
+    /// Ctrl+Shift+Space: a suggestion right away (a ready one shows at once, otherwise it is
+    /// asked for now and appears as soon as it arrives).
+    fn ai_now(&mut self) {
+        if let Err(why) = self.ai.skip_wait() {
+            self.show(why);
+            return;
+        }
+        if self.ai.held.is_some() {
+            self.show_held_suggestion();
+            return;
+        }
+        self.ai.cancel();
+        self.ai_trigger();
+        self.window.request_redraw();
+    }
+
     /// Shows the prepared suggestion when the pause after typing is long enough and the
     /// cursor is still where it was asked for.
     fn show_held_suggestion(&mut self) {
@@ -7198,6 +7241,10 @@ impl State {
     }
 
     fn run(&mut self, cmd: Command) {
+        if matches!(cmd, Command::AiNow) {
+            self.ai_now();
+            return;
+        }
         let mut follow_cursor = true;
         let typed = if let Command::Insert(t) = &cmd { Some(t.clone()) } else { None };
         let keeps_completion =
@@ -7411,6 +7458,7 @@ impl State {
                 follow_cursor = false;
                 self.request_quick_actions();
             }
+            Command::AiNow => {}
             Command::NextProblem => {
                 follow_cursor = false;
                 self.next_problem();
@@ -7573,6 +7621,10 @@ impl State {
             return;
         }
         self.alt_alone = false;
+        if button == MouseButton::Left && self.tooltip.as_ref().is_some_and(|t| t.link_at(self.mouse.x, self.mouse.y)) {
+            self.hover_quick_fix();
+            return;
+        }
         self.tooltip = None;
         self.completion = None;
         if matches!(self.overlay, Overlay::Palette) && button == MouseButton::Left
@@ -7590,6 +7642,19 @@ impl State {
                 let (x, y) = (self.mouse.x, self.mouse.y);
                 self.theme_list_click(x, y);
             }
+            return;
+        }
+        // The quick action list (Ctrl+. / Quick Fix): a click on a row runs it.
+        if let Overlay::Menu(menu) = &self.overlay {
+            let picked = (button == MouseButton::Left)
+                .then(|| menu.row_at(self.mouse.x, self.mouse.y))
+                .flatten()
+                .and_then(|i| menu.items.get(i).map(|(_, v)| v.clone()));
+            match picked {
+                Some(action) => self.run_action(action),
+                None => self.overlay = Overlay::None,
+            }
+            self.window.request_redraw();
             return;
         }
         if let Overlay::Context(menu) = &self.overlay {
